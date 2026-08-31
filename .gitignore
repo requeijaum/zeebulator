@@ -1,0 +1,30 @@
+# Build output
+build/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Editor/IDE
+.vs/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Never commit game dumps, SDK material, or any Qualcomm/Zeebo copyrighted content
+*.ggz
+*.bar
+*.mif
+*.mod
+/research/
