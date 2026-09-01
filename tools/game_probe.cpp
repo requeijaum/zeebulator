@@ -2748,6 +2748,19 @@ int main(int argc, char** argv) {
   };
   bool control_wants_quit = false;
   bool dbg_paused = false;  // Fase 2: set when a bp/wp trips; cleared by `cont`.
+  // Fase 4: RAM search / cheat finder. Host-side incremental search over
+  // guest RAM. rsreset seeds candidates from a [lo,hi) scan at a cell
+  // width (1/2/4); rsfilter keeps only candidates matching an op against
+  // either an exact value or the previous snapshot; rslist returns the
+  // surviving addresses. State lives here (captured by ControlExec) so it
+  // persists across IPC calls and is only ever touched on the loop thread.
+  struct RamSearch {
+    uint32_t lo = 0, hi = 0;
+    int width = 4;         // 1, 2 or 4
+    bool seeded = false;
+    std::vector<uint32_t> addrs;   // surviving candidate addresses
+    std::vector<uint32_t> prev;    // last snapshot values, parallel to addrs
+  } ramsearch;
   // Advances the guest by exactly `n` real game ticks (drives the same
   // self-rearming ISHELL_SetTimer callbacks the main loop's own timer burst
   // does), presenting between them. Returns after the requested ticks or as
@@ -2955,6 +2968,96 @@ int main(int argc, char** argv) {
       zeebulator::DebugHooks::Instance().ClearHit();
       dbg_paused = false;
       req->reply.set_value("{\"ok\":true,\"resumed\":true}");
+    } else if (c == "rsreset") {
+      // rsreset lo hi [width]: seed candidates over [lo,hi) at cell width.
+      uint32_t lo = req->has_i0 ? static_cast<uint32_t>(req->i0) : 0x80000000u;
+      uint32_t hi = req->has_i2 ? static_cast<uint32_t>(req->i2) : (lo + 0x100000u);
+      int w = req->has_width ? static_cast<int>(req->width) : 4;
+      if (w != 1 && w != 2 && w != 4) w = 4;
+      if (hi <= lo) hi = lo + w;
+      // Cap the candidate count so a huge range can't blow up memory.
+      constexpr size_t kMaxCells = 4u * 1024 * 1024;  // up to 4M candidates
+      ramsearch.lo = lo; ramsearch.hi = hi; ramsearch.width = w;
+      ramsearch.addrs.clear(); ramsearch.prev.clear();
+      auto& mem = cpu.GetMemory();
+      auto readcell = [&](uint32_t a) -> uint32_t {
+        if (w == 1) return mem.Read8(a);
+        if (w == 2) return mem.Read16(a);
+        return mem.Read32(a);
+      };
+      size_t n = 0;
+      for (uint32_t a = lo; a + static_cast<uint32_t>(w) <= hi && n < kMaxCells; a += w, ++n) {
+        ramsearch.addrs.push_back(a);
+        ramsearch.prev.push_back(readcell(a));
+      }
+      ramsearch.seeded = true;
+      std::snprintf(buf, sizeof(buf),
+                    "{\"ok\":true,\"seeded\":%zu,\"lo\":%u,\"hi\":%u,\"width\":%d}",
+                    ramsearch.addrs.size(), lo, hi, w);
+      req->reply.set_value(buf);
+    } else if (c == "rsfilter") {
+      // rsfilter op[=str_mode] [value]: keep candidates matching op.
+      // ops vs exact value: eq ne lt gt   ; vs previous snapshot:
+      // inc(>prev) dec(<prev) changed unchanged.
+      if (!ramsearch.seeded) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"rsreset first\"}");
+      } else {
+        const std::string& op = req->str_mode;
+        uint32_t v = static_cast<uint32_t>(req->val);
+        bool have_v = req->has_val;
+        auto& mem = cpu.GetMemory();
+        int w = ramsearch.width;
+        auto readcell = [&](uint32_t a) -> uint32_t {
+          if (w == 1) return mem.Read8(a);
+          if (w == 2) return mem.Read16(a);
+          return mem.Read32(a);
+        };
+        std::vector<uint32_t> na, np;
+        na.reserve(ramsearch.addrs.size());
+        np.reserve(ramsearch.addrs.size());
+        for (size_t i = 0; i < ramsearch.addrs.size(); ++i) {
+          uint32_t a = ramsearch.addrs[i];
+          uint32_t cur = readcell(a);
+          uint32_t prev = ramsearch.prev[i];
+          bool keep = false;
+          if (op == "eq") keep = have_v && cur == v;
+          else if (op == "ne") keep = have_v && cur != v;
+          else if (op == "lt") keep = have_v && cur < v;
+          else if (op == "gt") keep = have_v && cur > v;
+          else if (op == "inc") keep = cur > prev;
+          else if (op == "dec") keep = cur < prev;
+          else if (op == "changed") keep = cur != prev;
+          else if (op == "unchanged") keep = cur == prev;
+          if (keep) { na.push_back(a); np.push_back(cur); }
+        }
+        ramsearch.addrs.swap(na);
+        ramsearch.prev.swap(np);
+        std::snprintf(buf, sizeof(buf),
+                      "{\"ok\":true,\"op\":\"%s\",\"remaining\":%zu}",
+                      op.c_str(), ramsearch.addrs.size());
+        req->reply.set_value(buf);
+      }
+    } else if (c == "rslist") {
+      // rslist [n]: return up to n surviving candidates (addr+value).
+      size_t limit = req->has_i0 ? static_cast<size_t>(req->i0) : 32;
+      if (limit > 256) limit = 256;
+      std::string out = "{\"ok\":true,\"count\":" +
+                        std::to_string(ramsearch.addrs.size()) + ",\"width\":" +
+                        std::to_string(ramsearch.width) + ",\"cells\":[";
+      auto& mem = cpu.GetMemory();
+      int w = ramsearch.width;
+      auto readcell = [&](uint32_t a) -> uint32_t {
+        if (w == 1) return mem.Read8(a);
+        if (w == 2) return mem.Read16(a);
+        return mem.Read32(a);
+      };
+      for (size_t i = 0; i < ramsearch.addrs.size() && i < limit; ++i) {
+        if (i) out += ",";
+        out += "{\"addr\":" + std::to_string(ramsearch.addrs[i]) +
+               ",\"value\":" + std::to_string(readcell(ramsearch.addrs[i])) + "}";
+      }
+      out += "]}";
+      req->reply.set_value(out);
     } else if (c == "screenshot") {
       std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
       const auto& fb = display.LastPresentedFramebuffer();

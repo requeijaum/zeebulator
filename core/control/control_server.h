@@ -67,11 +67,15 @@ struct ControlRequest {
   std::string str_path;  // for screenshot
   std::string str_hex;   // for write (hex bytes payload)
   std::string str_mode;  // for watch (r|w|rw)
-  long i0 = 0;           // generic int arg (ticks / n / addr)
+  long i0 = 0;           // generic int arg (ticks / n / addr / lo)
   long i1 = 0;           // generic int arg (len)
-  long val = 0;          // explicit "value" arg (for setreg)
+  long i2 = 0;           // generic int arg (hi, for range commands)
+  long width = 0;        // cell width for RAM search (1|2|4)
+  long val = 0;          // explicit "value" arg (for setreg / rsfilter)
   bool has_i0 = false;
   bool has_i1 = false;
+  bool has_i2 = false;
+  bool has_width = false;
   bool has_val = false;
   std::promise<std::string> reply;  // main loop sets the JSON response line
 };
@@ -230,6 +234,16 @@ class ControlServer {
     if (ExtractInt(s, "value", &value)) {
       req.val = value;
       req.has_val = true;
+    }
+    long hi;
+    if (ExtractInt(s, "hi", &hi)) {
+      req.i2 = hi;
+      req.has_i2 = true;
+    }
+    long w;
+    if (ExtractInt(s, "width", &w)) {
+      req.width = w;
+      req.has_width = true;
     }
     return true;
   }
