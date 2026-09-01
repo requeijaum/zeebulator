@@ -50,6 +50,10 @@ class DynarmicArmCore : public IArmCore {
   void SetCallOutRange(uint32_t base, uint32_t size) override;
   void SetCallOutHandler(CallOutHandler handler) override;
 
+  // Invalidate cached JIT blocks for a code region that changed underneath
+  // the JIT (direct code pokes by loaders/harnesses; size 0 = whole space).
+  void NotifyCodeChanged(uint32_t base, uint32_t size) override;
+
   // Exposed so a differential phase can reach the reference interpreter
   // directly (lockstep compare) without going through the IArmCore surface.
   ArmInterpreter& reference_interpreter() { return interpreter_; }

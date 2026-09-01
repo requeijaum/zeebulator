@@ -14,6 +14,7 @@ add_executable(zeebulator_tests
   memory_test.cpp
   cpu_test.cpp
   dynarmic_arm_core_test.cpp
+  jit_differential_fuzz_test.cpp
   thumb_test.cpp
   bar_test.cpp
   ggz_test.cpp

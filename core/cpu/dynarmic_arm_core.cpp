@@ -14,6 +14,7 @@ namespace zeebulator {
 // is always correct and matches how the interpreter's Memory behaves.
 struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
   Memory* memory = nullptr;
+  Dynarmic::A32::Jit* jit = nullptr;  // for self-modifying-code invalidation
   std::uint64_t ticks_left = 0;
 
   std::uint8_t MemoryRead8(std::uint32_t a) override { return memory->Read8(a); }
@@ -27,7 +28,15 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
     return std::uint64_t(MemoryRead32(a)) | std::uint64_t(MemoryRead32(a + 4)) << 32;
   }
 
-  void MemoryWrite8(std::uint32_t a, std::uint8_t v) override { memory->Write8(a, v); }
+  // Guest stores can be self-modifying code (STR into a code page). dynarmic
+  // caches recompiled blocks by address, so every write must invalidate the
+  // touched range or a stale block would re-execute. InvalidateCacheRange is
+  // cheap when nothing is cached there. All wider writes compose from Write8,
+  // so invalidating here covers every store width.
+  void MemoryWrite8(std::uint32_t a, std::uint8_t v) override {
+    memory->Write8(a, v);
+    if (jit) jit->InvalidateCacheRange(a, 1);
+  }
   void MemoryWrite16(std::uint32_t a, std::uint16_t v) override {
     MemoryWrite8(a, std::uint8_t(v));
     MemoryWrite8(a + 1, std::uint8_t(v >> 8));
@@ -81,6 +90,7 @@ DynarmicArmCore::DynarmicArmCore()
   cfg.callbacks = callbacks_.get();
   cfg.arch_version = ZeeboArchVersion();
   jit_ = std::make_unique<Dynarmic::A32::Jit>(cfg);
+  callbacks_->jit = jit_.get();
   Reset();
 }
 
@@ -88,6 +98,7 @@ DynarmicArmCore::~DynarmicArmCore() = default;
 
 void DynarmicArmCore::Reset() {
   jit_->Reset();
+  jit_->ClearCache();
   jit_->Regs().fill(0);
   jit_->SetCpsr(0);
 }
@@ -141,6 +152,14 @@ void DynarmicArmCore::SetCallOutRange(uint32_t base, uint32_t size) {
 
 void DynarmicArmCore::SetCallOutHandler(CallOutHandler handler) {
   call_out_handler_ = std::move(handler);
+}
+
+void DynarmicArmCore::NotifyCodeChanged(uint32_t base, uint32_t size) {
+  if (size == 0) {
+    jit_->ClearCache();
+  } else {
+    jit_->InvalidateCacheRange(base, size);
+  }
 }
 
 CpuBackend SelectCpuBackendFromEnv() {

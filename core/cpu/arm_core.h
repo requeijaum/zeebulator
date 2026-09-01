@@ -71,6 +71,16 @@ class IArmCore {
   using CallOutHandler = std::function<void(IArmCore& core, uint32_t address)>;
   virtual void SetCallOutRange(uint32_t base, uint32_t size) = 0;
   virtual void SetCallOutHandler(CallOutHandler handler) = 0;
+
+  // Self-modifying code / direct code injection. Cores that cache decoded or
+  // recompiled instructions (the dynarmic JIT) must be told when guest code
+  // memory changes underneath them, otherwise a stale block is re-executed.
+  // Writes routed THROUGH the core's own Memory (STR into a code page) are
+  // handled internally; this hook is for callers that poke code bytes into
+  // Memory directly (loaders, test harnesses, patch tools) and then run. The
+  // interpreter decodes every fetch fresh, so its default is a no-op.
+  // Passing size 0 means "the whole address space" (full cache clear).
+  virtual void NotifyCodeChanged(uint32_t /*base*/, uint32_t /*size*/) {}
 };
 
 }  // namespace zeebulator
