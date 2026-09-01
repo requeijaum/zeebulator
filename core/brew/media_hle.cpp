@@ -4,6 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <utility>
@@ -11,6 +14,20 @@
 namespace zeebulator {
 
 namespace {
+
+// Env-gated audio/media trace (ZEEB_LOG_MEDIA=1). Off by default, so it
+// can stay committed like the rest of this codebase's instrumentation
+// family (ZEEB_LOG_SLOT / ZEEB_LOG_CREATEINSTANCE / ZEEB_LOG_FILE).
+void MediaLog(const char* fmt, ...) {
+  static const bool on = std::getenv("ZEEB_LOG_MEDIA") != nullptr;
+  if (!on) return;
+  std::va_list ap;
+  va_start(ap, fmt);
+  std::fprintf(stderr, "[media] ");
+  std::vfprintf(stderr, fmt, ap);
+  std::fprintf(stderr, "\n");
+  va_end(ap);
+}
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 void StubFailed(IArmCore& core) { core.SetRegister(kR0, 1); }  // AEE_EFAILED-ish
@@ -189,6 +206,8 @@ void MediaHle::RegisterNotifyImpl(IArmCore& core) {
   }
   it->second.notify_fn = core.GetRegister(kR1);
   it->second.notify_user = core.GetRegister(kR2);
+  MediaLog("obj=0x%08x RegisterNotify fn=0x%08x user=0x%08x", core.GetRegister(kR0),
+           core.GetRegister(kR1), core.GetRegister(kR2));
   core.SetRegister(kR0, 0);
 }
 
@@ -245,12 +264,22 @@ void MediaHle::SetMediaParmImpl(IArmCore& core) {
     media.samples = std::make_shared<const std::vector<int16_t>>(std::move(decoded->samples));
     media.has_data = true;
     media.state = kStateReady;
+    if (cls_data == kMmdFileName) {
+      MediaLog("obj=0x%08x SetData FILE '%s' -> %u ch, %u Hz, %zu samples",
+               core.GetRegister(kR0), ReadCString(memory_, data_ptr).c_str(),
+               media.channels, media.sample_rate, media.samples->size());
+    } else {
+      MediaLog("obj=0x%08x SetData BUFFER %u bytes -> %u ch, %u Hz, %zu samples",
+               core.GetRegister(kR0), data_size, media.channels, media.sample_rate,
+               media.samples->size());
+    }
     core.SetRegister(kR0, 0);
     return;
   }
 
   if (param_id == kParmPlayRepeat) {
     media.loop = (p1 == 0);  // 0 = forever; exact counts > 1 aren't tracked yet
+    MediaLog("obj=0x%08x SetRepeat p1=%u -> loop=%d", core.GetRegister(kR0), p1, media.loop);
     core.SetRegister(kR0, 0);
     return;
   }
@@ -268,6 +297,7 @@ void MediaHle::SetMediaParmImpl(IArmCore& core) {
     // this after Play() has already started.
     media.volume = std::clamp(static_cast<int32_t>(p1), 0, 100);
     if (media.has_voice) mixer_.SetVolume(media.voice, media.volume);
+    MediaLog("obj=0x%08x SetVolume %d", core.GetRegister(kR0), media.volume);
     core.SetRegister(kR0, 0);
     return;
   }
@@ -338,6 +368,9 @@ void MediaHle::PlayImpl(IArmCore& core) {
       mixer_.Play(media.samples, media.channels, media.sample_rate, media.loop, media.volume);
   media.has_voice = true;
   media.state = kStatePlay;
+  MediaLog("obj=0x%08x PLAY voice=%d %u ch %u Hz loop=%d vol=%d (%zu samples)",
+           it->first, media.voice, media.channels, media.sample_rate, media.loop,
+           media.volume, media.samples ? media.samples->size() : 0);
   // Real BREW sets the "ready" flag at obj+0x25 on successful Play();
   // the game's notify dispatcher (ddragonz.mod 0x11f4dc) requires it
   // nonzero to take the priority-reset path — without it the channel
@@ -360,6 +393,8 @@ void MediaHle::Tick() {
     if (mixer_.IsPlaying(media.voice)) continue;
     media.has_voice = false;
     media.state = kStateReady;
+    MediaLog("obj=0x%08x voice=%d FINISHED -> notify fn=0x%08x user=0x%08x",
+             object_addr, media.voice, media.notify_fn, media.notify_user);
     hle_.CallArmFunction(media.notify_fn, media.notify_user, notify_scratch_address_);
   }
 }
@@ -376,6 +411,7 @@ void MediaHle::StopImpl(IArmCore& core) {
     media.has_voice = false;
   }
   media.state = media.has_data ? kStateReady : kStateIdle;
+  MediaLog("obj=0x%08x STOP", core.GetRegister(kR0));
   core.SetRegister(kR0, 0);
 }
 

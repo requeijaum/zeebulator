@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -742,6 +743,41 @@ int main(int argc, char** argv) {
   if (std::string(argv[2]) != "-") MergeGgzInto(vfs, argv[2]);
   if (std::string(argv[3]) != "-") MergeGgzInto(vfs, argv[3]);
   if (argc >= 6) MergeBootPkgInto(vfs, argv[5]);
+  // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
+  // cluster, RE'd 2026-09-02) do NOT ship the shared arcade bootstrap in
+  // their own download: they busy-wait forever at tick 0 until they can open
+  // `boot.pkg` -> `boot.rom` (an 8192-byte 68000-style vector table). On a
+  // real device that file is installed system-wide; in this sanctioned local
+  // archive it physically ships in exactly one folder (Karnov's Revenge). So
+  // when no boot.pkg was passed explicitly, auto-discover one next to the
+  // game's own .mod (same dir, or a sibling mod folder). This matches the
+  // console's system-wide install and unblocks the whole cluster at once.
+  // Restricted to titles that ship no ggz (the pkg-based arcade ports); ggz
+  // games (Double Dragon, etc.) never open boot.rom, so we don't pollute
+  // their VFS with an unrelated bootstrap.
+  bool has_ggz = std::string(argv[2]) != "-" || std::string(argv[3]) != "-";
+  if (argc < 6 && !has_ggz) {
+    namespace fs = std::filesystem;
+    try {
+      fs::path mod_path = fs::absolute(argv[1]);
+      fs::path own_dir = mod_path.parent_path();
+      std::vector<fs::path> search;
+      if (fs::exists(own_dir / "boot.pkg")) search.push_back(own_dir / "boot.pkg");
+      if (search.empty() && own_dir.has_parent_path()) {
+        for (const auto& sib : fs::directory_iterator(own_dir.parent_path())) {
+          if (!sib.is_directory()) continue;
+          fs::path cand = sib.path() / "boot.pkg";
+          if (fs::exists(cand)) { search.push_back(cand); break; }
+        }
+      }
+      if (!search.empty()) {
+        std::printf("auto-discovered shared boot.pkg at %s\n", search.front().c_str());
+        MergeBootPkgInto(vfs, search.front().c_str());
+      }
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "boot.pkg auto-discovery skipped: %s\n", e.what());
+    }
+  }
   // ABD-style resource archives arrive either positionally (argv[6],
   // which needs a boot.pkg at argv[5]) or via repeatable `--bar` (no
   // positional constraint). Unify them into one list processed at the

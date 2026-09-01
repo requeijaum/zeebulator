@@ -1,6 +1,8 @@
 #include "core/brew/file_hle.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 #include "core/brew/interface_object.h"
 
@@ -68,6 +70,10 @@ void FileHle::OpenFileImpl(IArmCore& core) {
     handle = AllocateFileObject(name, &inserted->second, &inserted->second);
   }
   if (handle != 0) last_opened_handle_ = handle;
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] OpenFile('%s') mode=0x%x -> handle=0x%x\n",
+                 name.c_str(), mode, handle);
+  }
   core.SetRegister(kR0, handle);
 }
 
@@ -93,6 +99,9 @@ void FileHle::TestImpl(IArmCore& core) {
   // int Test(IFileMgr* piname, const char* pszName)
   std::string name = ReadCString(memory_, core.GetRegister(kR1));
   bool exists = vfs_.Exists(name) || writable_files_.count(name) != 0;
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] Test('%s') -> %s\n", name.c_str(), exists ? "OK" : "MISS");
+  }
   core.SetRegister(kR0, exists ? 0u : 1u);
 }
 
