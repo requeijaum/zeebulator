@@ -2,7 +2,9 @@
 
 #include <SDL.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "core/backend.h"
 #include "core/brew/gl_backend.h"
@@ -98,6 +100,18 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   // SetOverlayVisible) other than remembering the text for whenever it's
   // shown again within the same window.
   void ShowStatusMessage(const std::string& text);
+
+  // Reads the fully-composited current frame (real GLES app draws + 2D
+  // IDisplay quad + overlay, everything the window shows) back from the
+  // offscreen FBO into `out` as tightly-packed RGBA8, row 0 = TOP (already
+  // flipped from GL's bottom-left origin). `out` is resized to width_ *
+  // height_ * 4. Returns false if there is no FBO (headless/no-FBO path) --
+  // in that case the caller should fall back to the IDisplay framebuffer.
+  // MUST be called on the thread that owns the GL context (the tick loop).
+  // Used by the loopback mirror server so an out-of-band viewer/agent can
+  // see exactly what's on screen. Does not disturb app-owned GL state
+  // (saves/restores the framebuffer binding).
+  bool CaptureFrameRgba(std::vector<uint8_t>& out, int* out_w, int* out_h);
 
   // GlBackend -- CreateContext/DestroyContext are no-ops (true/nothing):
   // this class's one real context is created in the constructor and

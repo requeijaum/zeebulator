@@ -37,6 +37,7 @@
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
 #include "core/control/control_server.h"
+#include "core/control/mirror_server.h"
 #include "core/brew/virtual_filesystem.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/gl_texture_log.h"
@@ -2749,6 +2750,22 @@ int main(int argc, char** argv) {
     int port = std::atoi(cport);
     if (port > 0) control_server.Start(port);
   }
+  // Loopback HTTP screen mirror (ZEEB_MIRROR_PORT): serves the exact
+  // composited frame the native window shows, as PNG, so an out-of-band
+  // viewer/agent can watch what's on screen (browser at http://127.0.0.1:
+  // <port>/ or GET /frame.png). Frames are published from this GL-owning
+  // thread; the HTTP serving runs on the server's own thread. Off unless set.
+  zeebulator::MirrorServer mirror_server;
+  int mirror_every = 3;  // publish every N ticks (~10fps at ~31fps cadence)
+  if (const char* mport = std::getenv("ZEEB_MIRROR_PORT")) {
+    int port = std::atoi(mport);
+    if (port > 0) mirror_server.Start(port);
+    if (const char* mev = std::getenv("ZEEB_MIRROR_EVERY")) {
+      int e = std::atoi(mev);
+      if (e > 0) mirror_every = e;
+    }
+  }
+  std::vector<uint8_t> mirror_rgba;  // reused capture buffer
   std::printf("Reached the event loop with no unhandled instruction! Window will stay open.\n");
   bool running = true;
   zeebulator::ZPadState previous_pad_state;
@@ -3282,6 +3299,15 @@ int main(int argc, char** argv) {
     // real requested cadence.
     uint32_t elapsed_this_iter = SDL_GetTicks() - loop_start_ms;
     if (elapsed_this_iter < kTickMs) SDL_Delay(kTickMs - elapsed_this_iter);
+    // Publish a mirror frame every N ticks (captures the fully-composited
+    // FBO -- real GL app content + 2D + overlay). Done here, on the thread
+    // that owns the GL context.
+    if (mirror_server.IsRunning() && (tick_count % static_cast<uint64_t>(mirror_every) == 0)) {
+      int mw = 0, mh = 0;
+      if (backend.CaptureFrameRgba(mirror_rgba, &mw, &mh) && !mirror_rgba.empty()) {
+        mirror_server.PublishFrame(mirror_rgba.data(), mw, mh);
+      }
+    }
     // Fulfill a pending programmatic `step` once the guest has advanced the
     // requested number of ticks (or if the run stopped). Reports the tick
     // reached so the controller can pace itself against real game progress.
@@ -3295,6 +3321,7 @@ int main(int argc, char** argv) {
     }
   }
   control_server.Stop();
+  mirror_server.Stop();
 
   SDL_DestroyWindow(window);
   SDL_Quit();

@@ -1,6 +1,8 @@
 #include "frontends/standalone/sdl2_unified_backend.h"
 
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -480,6 +482,28 @@ void Sdl2UnifiedBackend::PresentFrame() {
   // Rebind for the next frame's rendering (this class's own and the
   // real app's) -- see InitFramebuffer's own doc comment.
   BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+}
+
+bool Sdl2UnifiedBackend::CaptureFrameRgba(std::vector<uint8_t>& out, int* out_w, int* out_h) {
+  if (out_w) *out_w = width_;
+  if (out_h) *out_h = height_;
+  if (fbo_ == 0) return false;  // no-FBO path: caller falls back to IDisplay fb
+  auto BindFramebuffer = reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+  const size_t row_bytes = static_cast<size_t>(width_) * 4;
+  out.resize(row_bytes * static_cast<size_t>(height_));
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+  // glReadPixels returns rows bottom-to-top; flip to top-origin in place.
+  std::vector<uint8_t> tmp(row_bytes);
+  for (int y = 0; y < height_ / 2; ++y) {
+    uint8_t* top = out.data() + static_cast<size_t>(y) * row_bytes;
+    uint8_t* bot = out.data() + static_cast<size_t>(height_ - 1 - y) * row_bytes;
+    std::memcpy(tmp.data(), top, row_bytes);
+    std::memcpy(top, bot, row_bytes);
+    std::memcpy(bot, tmp.data(), row_bytes);
+  }
+  return true;
 }
 
 void Sdl2UnifiedBackend::SetWindowScale(int scale) {
