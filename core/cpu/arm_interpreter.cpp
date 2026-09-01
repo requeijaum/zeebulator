@@ -1009,8 +1009,13 @@ void ArmInterpreter::Step() {
   // the call site (LR) + instruction. REMOVE after root-causing.
   if (fetch_addr >= 0x00090000 && fetch_addr < 0x0009F000) {
     std::fprintf(stderr,
-                 "[scratch-exec] pc=0x%08x lr=0x%08x instr=0x%08x sp=0x%08x\n",
-                 fetch_addr, regs_[kLR], memory_.Read32(fetch_addr), regs_[kSP]);
+                 "[scratch-exec] pc=0x%08x lr=0x%08x instr=0x%08x "
+                 "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x r4=0x%08x sp=0x%08x "
+                 "[r4]=0x%08x [r4+8]=0x%08x [r4+0x28]=0x%08x [r4+0x25]=0x%02x\n",
+                 fetch_addr, regs_[kLR], memory_.Read32(fetch_addr), regs_[kR0],
+                 regs_[kR1], regs_[kR2], regs_[kR3], regs_[kR4], regs_[kSP],
+                 memory_.Read32(regs_[kR4]), memory_.Read32(regs_[kR4] + 8),
+                 memory_.Read32(regs_[kR4] + 0x28), memory_.Read8(regs_[kR4] + 0x25));
   }
   if (call_out_size_ != 0 && fetch_addr >= call_out_base_ &&
       fetch_addr < call_out_base_ + call_out_size_) {
