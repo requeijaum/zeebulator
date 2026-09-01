@@ -44,6 +44,39 @@ const std::vector<TitleQuirk>& KnownTitles() {
           "the MIF id.",
           /*evidence=*/"research/sources/2026-09-01_abd-bringup.md",
       },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF18u,  // 17366808 -- neighbourhood sweep of first-party band
+          /*mif_clsid=*/0x01060000u,   // MIF value is a decoy
+          /*folder=*/"279159",
+          /*display_name=*/"Zeebo Peteca",
+          /*mod_filename=*/"zeebopeteca.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "First-party Zeebo title. Real clsid recovered 2026-09-01 by "
+          "neighbourhood sweep of the first-party band 0x0108ffxx (tennis "
+          "0x0108eff9 / volley 0x0108ff15 / peteca 0x0108ff18 / footparty "
+          "0x0108ff19 / ids 0x0108ff1a), verified through the real probe "
+          "(CreateInstance accepted, reaches tick=1). MIF id 0x01060000 is a "
+          "decoy.",
+          /*evidence=*/"research/sources/2026-09-01_clsid-recovery-breadth.md",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF19u,  // 17366809 -- sits between peteca and ids
+          /*mif_clsid=*/0x01060000u,   // MIF value is a decoy
+          /*folder=*/"279380",
+          /*display_name=*/"Foot Party",
+          /*mod_filename=*/"footparty.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "First-party Zeebo title. Real clsid recovered 2026-09-01 by "
+          "neighbourhood sweep; 0x0108ff19 sits exactly between peteca "
+          "(0x0108ff18) and ids (0x0108ff1a), confirming the sequential "
+          "first-party clsid allocation. Verified through the real probe "
+          "(reaches tick=1). MIF id 0x01060000 is a decoy.",
+          /*evidence=*/"research/sources/2026-09-01_clsid-recovery-breadth.md",
+      },
   };
   return kTitles;
 }
