@@ -73,6 +73,90 @@ TEST(DynarmicArmCore, RunMatchesInterpreter) {
   EXPECT_EQ(jit.GetRegister(kR2), 12u);
 }
 
+// Central-risk feature (design doc): the call-out trap must be a pure
+// control-flow decision in the adapter, never entangled with a JIT block.
+// A branch into the trap range must fire the handler with the trapped
+// address and stop, exactly like the interpreter — not decode/execute
+// whatever bytes happen to sit there.
+//   0x00: MOV R0, #1     E3A00001
+//   0x04: B   0xF0000000 (link range) -> encoded relative branch to trap
+// We instead just set PC directly into the trap range for determinism.
+TEST(DynarmicArmCore, CallOutTrapFiresHandlerAndStopsLikeInterpreter) {
+  const uint32_t kTrapBase = 0xF0000000u;
+  const uint32_t kTrapSize = 0x00010000u;
+  const uint32_t kTrapAddr = kTrapBase + 0x40u;
+
+  auto run_case = [&](IArmCore& core) {
+    core.Reset();
+    uint32_t seen_addr = 0;
+    int hits = 0;
+    core.SetCallOutRange(kTrapBase, kTrapSize);
+    core.SetCallOutHandler([&](IArmCore& c, uint32_t addr) {
+      seen_addr = addr;
+      ++hits;
+      // Emulate the real HLE returning from a call-out: advance PC past it
+      // so the next step resumes normal execution (here: nothing more).
+      c.SetRegister(kPC, addr + 4);
+    });
+    core.SetRegister(kPC, kTrapAddr);
+    core.Step();
+    return std::pair<uint32_t, int>{seen_addr, hits};
+  };
+
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  auto [interp_addr, interp_hits] = run_case(interp);
+  auto [jit_addr, jit_hits] = run_case(jit);
+
+  EXPECT_EQ(interp_hits, 1);
+  EXPECT_EQ(jit_hits, 1);
+  EXPECT_EQ(interp_addr, kTrapAddr);
+  EXPECT_EQ(jit_addr, kTrapAddr);
+  EXPECT_EQ(interp.GetRegister(kPC), jit.GetRegister(kPC));
+  EXPECT_EQ(jit.GetRegister(kPC), kTrapAddr + 4);
+}
+
+// A program that runs real instructions, then branches into the trap range:
+// Run() must execute the real instructions, then trap once and stop, with
+// the instruction count and final state matching the interpreter.
+TEST(DynarmicArmCore, RunExecutesThenTrapsInLockstep) {
+  const uint32_t kTrapBase = 0xF0000000u;
+  const uint32_t kTrapSize = 0x00010000u;
+
+  auto run_case = [&](IArmCore& core) {
+    core.Reset();
+    // MOV R0,#5 ; MOV R1,#7 ; LDR PC,[PC,#-4]@0x0C holding the trap target.
+    //   0x00 MOV R0,#5      E3A00005
+    //   0x04 MOV R1,#7      E3A01007
+    //   0x08 LDR PC,[PC,#-4] E51FF004  (loads word at 0x0C into PC)
+    //   0x0C .word 0xF0000010 (trap target)
+    core.GetMemory().Write32(0x00, 0xE3A00005);
+    core.GetMemory().Write32(0x04, 0xE3A01007);
+    core.GetMemory().Write32(0x08, 0xE51FF004);
+    core.GetMemory().Write32(0x0C, 0xF0000010);
+    int hits = 0;
+    core.SetCallOutRange(kTrapBase, kTrapSize);
+    core.SetCallOutHandler([&](IArmCore&, uint32_t) { ++hits; });
+    core.SetRegister(kPC, 0x00);
+    uint64_t executed = core.Run(100);
+    return std::tuple<uint64_t, int, uint32_t>{executed, hits, core.GetRegister(kPC)};
+  };
+
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  auto [i_exec, i_hits, i_pc] = run_case(interp);
+  auto [j_exec, j_hits, j_pc] = run_case(jit);
+
+  EXPECT_EQ(i_hits, 1);
+  EXPECT_EQ(j_hits, 1);
+  EXPECT_EQ(i_exec, j_exec) << "instruction count diverged";
+  EXPECT_EQ(i_pc, j_pc) << "PC at trap diverged";
+  EXPECT_EQ(j_pc, 0xF0000010u);
+  EXPECT_EQ(interp.GetRegister(kR0), jit.GetRegister(kR0));
+  EXPECT_EQ(interp.GetRegister(kR1), jit.GetRegister(kR1));
+  EXPECT_EQ(jit.GetRegister(kR1), 7u);
+}
+
 TEST(DynarmicArmCore, FactoryReturnsRequestedBackend) {
   auto interp = MakeArmCore(CpuBackend::kInterpreter);
   auto jit = MakeArmCore(CpuBackend::kDynarmic);

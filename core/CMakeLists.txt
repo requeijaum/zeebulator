@@ -80,6 +80,10 @@ target_include_directories(zeebulator_core PUBLIC ${PROJECT_SOURCE_DIR})
 # generated zconf.h (in the binary dir) needs to be added explicitly.
 target_include_directories(zeebulator_core PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
 target_link_libraries(zeebulator_core PRIVATE zlibstatic liblzma)
+# dynarmic A32 JIT backend (Phase 9a): DynarmicArmCore's real JIT core. The
+# `dynarmic` target propagates its own public include dir (src/), so
+# #include "dynarmic/interface/A32/a32.h" resolves without extra wiring.
+target_link_libraries(zeebulator_core PRIVATE dynarmic)
 # liblzma's own CMakeLists doesn't propagate its public API header dir as
 # a usage requirement (unlike a `find_package(LibLZMA)`-found install
 # would via pkg-config), so add it explicitly, the same way zlib's own

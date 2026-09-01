@@ -115,6 +115,29 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(generaluser_gs_soundfont)
 
+# dynarmic A32 JIT (Phase 9a): alternative IArmCore backend selected at
+# runtime via ZEEB_CPU=jit. Pinned to yuzu-mirror/dynarmic, the actively
+# reachable mirror of the (now-unavailable) upstream merryhime/dynarmic --
+# critically, this mirror VENDORS all of dynarmic's externals (mcl, xbyak,
+# fmt, zydis, oaknut, robin-map, zycore) in-tree with no external git
+# submodules, so a single shallow fetch resolves everything offline-style.
+# DYNARMIC_TESTS OFF: don't register dynarmic's own catch2 suite as CTest
+# tests of this project. DYNARMIC_FRONTENDS A32: we only use the 32-bit
+# frontend (ARM1136J-S). DYNARMIC_WARNINGS_AS_ERRORS OFF: dynarmic's -Werror
+# trips on a false-positive -Wstringop-overread under GCC 14 in
+# a32_emit_x64.cpp; this is third-party code we don't gate on. Declared
+# BEFORE this project's own -Wall/-Wextra scoping so those flags never leak
+# into dynarmic's targets.
+set(DYNARMIC_TESTS OFF CACHE BOOL "" FORCE)
+set(DYNARMIC_FRONTENDS "A32" CACHE STRING "" FORCE)
+set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  dynarmic
+  GIT_REPOSITORY https://github.com/yuzu-mirror/dynarmic.git
+  GIT_TAG 9d4582339990d4eae53f1dc7160686920fc2075c
+)
+FetchContent_MakeAvailable(dynarmic)
+
 # Scoped here (after every FetchContent_MakeAvailable above, before any
 # of this project's own add_subdirectory calls below) so it only applies
 # to this project's own targets, not vendored third-party ones (zlib,
