@@ -4,11 +4,6 @@
 
 namespace zeebulator {
 
-// TEMPORARY debug: current PC exposed to Memory for write-watches.
-// Set by ArmInterpreter::Step(); read by Memory::Write8. REMOVE after
-// the +0x28 media-source write is identified.
-uint32_t g_watch_pc = 0;
-
 namespace {
 
 uint32_t RotateRight(uint32_t value, uint32_t amount) {
@@ -1009,20 +1004,6 @@ void ArmInterpreter::ExecuteThumb(uint16_t instr) {
 
 void ArmInterpreter::Step() {
   uint32_t fetch_addr = regs_[kPC];
-  g_watch_pc = fetch_addr;  // TEMPORARY watch support
-  // TEMPORARY debug hook: when PC lands in the game_probe scratch
-  // region (0x0009xxxx — where the AEEAppStart struct lives), print
-  // the call site (LR) + instruction. REMOVE after root-causing.
-  if (fetch_addr >= 0x00090000 && fetch_addr < 0x0009F000) {
-    std::fprintf(stderr,
-                 "[scratch-exec] pc=0x%08x lr=0x%08x instr=0x%08x "
-                 "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x r4=0x%08x sp=0x%08x "
-                 "[r4]=0x%08x [r4+8]=0x%08x [r4+0x28]=0x%08x [r4+0x25]=0x%02x\n",
-                 fetch_addr, regs_[kLR], memory_.Read32(fetch_addr), regs_[kR0],
-                 regs_[kR1], regs_[kR2], regs_[kR3], regs_[kR4], regs_[kSP],
-                 memory_.Read32(regs_[kR4]), memory_.Read32(regs_[kR4] + 8),
-                 memory_.Read32(regs_[kR4] + 0x28), memory_.Read8(regs_[kR4] + 0x25));
-  }
   if (call_out_size_ != 0 && fetch_addr >= call_out_base_ &&
       fetch_addr < call_out_base_ + call_out_size_) {
     if (call_out_handler_) {

@@ -35,17 +35,7 @@ uint32_t Memory::Read32(uint32_t address) const {
          (static_cast<uint32_t>(Read8(address + 3)) << 24);
  }
 
-// TEMPORARY debug: set by ArmInterpreter::Step (arm_interpreter.cpp).
-extern uint32_t g_watch_pc;
-
 void Memory::Write8(uint32_t address, uint8_t value) {
-  // TEMPORARY debug watch: the game's per-sound struct (module+0x1c8,
-  // the crash object) — log every byte write with the interpreter PC.
-  // REMOVE after root-causing the +0x28 media-source write.
-  if (address >= 0x803001c8 && address < 0x80300200) {
-    std::fprintf(stderr, "[watch+0x%03x] pc=0x%08x addr=0x%08x val=0x%02x\n",
-                 address - 0x803001c8, zeebulator::g_watch_pc, address, value);
-  }
   MutablePage(address / kPageSize)[address & kPageMask] = value;
 }
 
@@ -54,23 +44,38 @@ void Memory::Write16(uint32_t address, uint16_t value) {
   Write8(address + 1, static_cast<uint8_t>(value >> 8));
 }
 
+void Memory::SetMediaBindingGuardRegion(uint32_t start, uint32_t end) {
+  media_guard_start_ = start;
+  media_guard_end_ = end;
+  media_bound_slots_.clear();
+}
+
 void Memory::Write32(uint32_t address, uint32_t value) {
-  // TEMPORARY experiment (generalized): the game stores module+0x7b8
-  // (code) as each per-sound struct's +0x28 media source → vtable[6]
-  // garbage → crash. Generalize: any write to a struct's +0x28 gets
-  // replaced by that struct's OWN +8 field (the valid MediaHle object
-  // the game holds per channel — the 0x11f540 loop has ~5 structs).
-  // Match: address is a +0x28 slot in the module's bss struct array
-  // (0x803001c0..0x80301000, 8-aligned) AND the game's value is the
-  // module-code pointer it wrongly stores (module range — NOT the
-  // zero-init writes, which must pass through). REMOVE after root fix.
-  if (address >= 0x803001e0 && address < 0x80301000 && (address & 7) == 0 &&
-      value >= 0x80300000 && value < 0x80380000) {
-    uint32_t self_media = Read32(address - 0x20);  // struct +8
-    if (self_media >= 0x80000000 && self_media < 0x90000000) {
-      std::fprintf(stderr, "[redirect+0x28] addr=0x%08x game wrote 0x%08x → 0x%08x\n",
-                   address, value, self_media);
-      value = self_media;
+  // Phase-1 media-interface binding guard (replaces the old +0x28
+  // address-heuristic redirect HACK). See memory.h and
+  // research/sources/2026-08-31_dd-media-interface-contract.md.
+  //
+  // The proven bug: the game's Play helper (ddragonz.mod 0x11d04c) reads
+  // media_source+8 -> [+8]=iface -> [iface]=vtable -> vtable[6]=Play and
+  // calls it. Our HLE binds a real MediaHle interface object into that
+  // +8 slot, but the game's own Release helper (0x11f424) zeroes +8
+  // before the (input-gated) Play path runs, so vtable[6] dereferences
+  // NULL -> BX 0 wander. Zeemu avoids this by owning the IMediaPCM
+  // object's lifetime on the host side; we do the same minimally: once a
+  // slot holds a pointer INTO the HLE media-object region, suppress a
+  // later zero-clear of that exact slot so the binding survives to Play.
+  if (media_guard_end_ > media_guard_start_) {
+    if (value >= media_guard_start_ && value < media_guard_end_) {
+      // Game (or HLE) binds a real media interface here -> remember slot.
+      media_bound_slots_[address] = value;
+    } else if (value == 0) {
+      auto it = media_bound_slots_.find(address);
+      if (it != media_bound_slots_.end()) {
+        // Release-clear of a live HLE-owned media binding: skip it so the
+        // Play path still finds the interface. (Genuine rebinding to a
+        // different, non-zero pointer is handled by the branch above.)
+        return;
+      }
     }
   }
   Write8(address, static_cast<uint8_t>(value));

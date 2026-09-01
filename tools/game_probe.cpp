@@ -713,6 +713,15 @@ int main(int argc, char** argv) {
   }
   zeebulator::MediaHle media_hle(cpu.GetMemory(), hle, vfs, mixer, /*object_region=*/0x80200000,
                                   &soundfont_synth);
+  // Phase-1 fix: protect HLE-owned media interface bindings from the
+  // game's Release-clear (ddragonz.mod 0x11f424 zeroing media_source+8
+  // before the input-gated Play path 0x11d04c reads it). Region matches
+  // MediaHle's object_region above (objects are bump-allocated from
+  // 0x80200000; kNotifyScratchOffset keeps them well under 0x80300000).
+  // Replaces the old +0x28 address-heuristic redirect HACK — see
+  // core/memory/memory.{h,cpp} and
+  // research/sources/2026-08-31_dd-media-interface-contract.md.
+  cpu.GetMemory().SetMediaBindingGuardRegion(0x80200000, 0x80300000);
 
   constexpr uint32_t kBase = 0x00100000;
   zeebulator::LoadMod(cpu, mod_data, kBase);
