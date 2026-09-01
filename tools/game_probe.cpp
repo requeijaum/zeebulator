@@ -2508,6 +2508,38 @@ int main(int argc, char** argv) {
 
     stage = "HandleEvent(EVT_APP_RESUME)";
     constexpr uint32_t kEvtAppResume = 3;
+    // Root cause of the "first-party tick-1 wall" (AirRacez/Bajaz/Boiaz/
+    // JetBoardz/tennis/volley/... — RE'd 2026-09-02): these applets do NOT
+    // build their "current scene" object (app+0x64) during EVT_APP_START.
+    // Instead APP_START calls the scene-manager (the HLE clsid-0x01001017
+    // object at [app+0x60]) slot 7, which SCHEDULES a timer whose callback
+    // runs the scene-init FSM (AirRacez 0x110e84) that allocates the scene.
+    // The real console drains that timer on the next frame BEFORE the applet
+    // is resumed; the probe was firing EVT_APP_RESUME immediately, so RESUME
+    // dereferenced the still-null scene (blx [[app+0x34]]+0x34 -> 0x00090024).
+    // Fix: drain any timers the START handler scheduled before resuming, the
+    // same way the main event loop drains them per frame. Bounded so a title
+    // that self-re-arms a timer every frame can't spin here forever; the scene
+    // is built on the very first drained tick in practice.
+    {
+      constexpr int kMaxDrainTicks = 8;
+      for (int t = 0; t < kMaxDrainTicks; ++t) {
+        auto expired = shell_hle.Tick(16);
+        if (expired.empty()) break;
+        mod_runtime.Tick(16);
+        for (const auto& timer : expired) {
+          uint32_t call_r0 = timer.r0_override.value_or(timer.user_data);
+          uint32_t call_r1 = timer.r0_override.has_value() ? timer.user_data : 0;
+          try {
+            CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, timer.callback,
+                                   call_r0, call_r1, 0, 0, /*trace=*/false,
+                                   /*hle_trace=*/false, &display, &backend);
+          } catch (const std::exception& e) {
+            std::printf("  [pre-resume drain] timer callback threw: %s\n", e.what());
+          }
+        }
+      }
+    }
     std::printf("Calling HandleEvent(EVT_APP_RESUME)...\n");
     auto resume_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
                                                  applet_ptr, kEvtAppResume, 0, kAppStartAddr,
