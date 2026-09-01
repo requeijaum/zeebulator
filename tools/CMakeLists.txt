@@ -30,8 +30,9 @@ if(ZEEBULATOR_BUILD_STANDALONE)
     ${PROJECT_SOURCE_DIR}/frontends/standalone/zpad_edges.cpp
   )
   target_include_directories(zeebulator_game_probe PRIVATE ${PROJECT_SOURCE_DIR})
+  find_package(Threads REQUIRED)
   target_link_libraries(zeebulator_game_probe PRIVATE zeebulator_core SDL2::SDL2 SDL2::SDL2main
-                                                       OpenGL::GL)
+                                                       OpenGL::GL Threads::Threads)
 endif()
 
 add_executable(zeebulator_jit_lockstep jit_lockstep.cpp)

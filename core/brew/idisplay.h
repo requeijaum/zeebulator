@@ -166,6 +166,18 @@ class IDisplayHle {
     }
   }
 
+  // --- Read-only framebuffer accessors (control-server screenshots) -------
+  // Expose the last committed frame (or the live one as fallback) so an
+  // out-of-band controller can capture what's on screen without going
+  // through SDL/the GL backend. RGB565, row-major, width()*height() shorts.
+  int width() const { return width_; }
+  int height() const { return height_; }
+  bool HasPresentedFrame() const { return has_presented_; }
+  const std::vector<uint16_t>& LastPresentedFramebuffer() const {
+    return has_presented_ ? last_presented_ : framebuffer_;
+  }
+  const std::vector<uint16_t>& LiveFramebuffer() const { return framebuffer_; }
+
  private:
   void DrawText(IArmCore& core);
   void DrawRect(IArmCore& core);

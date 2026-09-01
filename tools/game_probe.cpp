@@ -36,6 +36,7 @@
 #include "core/brew/media_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
+#include "core/control/control_server.h"
 #include "core/brew/virtual_filesystem.h"
 #include "core/cpu/arm_interpreter.h"
 #include "core/gl_texture_log.h"
@@ -2709,14 +2710,150 @@ int main(int argc, char** argv) {
     }
   };
 
+  // --- Programmatic control channel (ZEEB_CONTROL_PORT) -------------------
+  // An out-of-band TCP/NDJSON server (core/control/control_server.h) lets an
+  // agent/script drive the emulator without synthesizing OS keystrokes into
+  // an X window. The accept/recv runs on its own thread and only ENQUEUES
+  // requests; every command is executed HERE, inline in the tick loop, so it
+  // shares the single-threaded CPU/Memory/HLE ownership with zero races.
+  // Off unless ZEEB_CONTROL_PORT is set. Names map to the same real Zeebo
+  // Z-Pad HID UIDs the keyboard/controller paths use.
+  zeebulator::ControlServer control_server;
+  auto ButtonUidByName = [](const std::string& n) -> uint32_t {
+    if (n == "up") return kHidUidDPadUp;
+    if (n == "down") return kHidUidDPadDown;
+    if (n == "left") return kHidUidDPadLeft;
+    if (n == "right") return kHidUidDPadRight;
+    if (n == "back") return kHidUidBack;
+    if (n == "button1") return kHidUidButton1;
+    if (n == "button2") return kHidUidButton2;
+    if (n == "button3") return kHidUidButton3;
+    if (n == "button4") return kHidUidButton4;
+    if (n == "lshoulder") return kHidUidLeftShoulderUpper;
+    if (n == "rshoulder") return kHidUidRightShoulderUpper;
+    return 0;
+  };
+  bool control_wants_quit = false;
+  // Advances the guest by exactly `n` real game ticks (drives the same
+  // self-rearming ISHELL_SetTimer callbacks the main loop's own timer burst
+  // does), presenting between them. Returns after the requested ticks or as
+  // soon as the run stops being trustworthy. Declared as a std::function so
+  // the command handler below can call it; defined via a lambda that
+  // captures the loop state by reference.
+  // NOTE: the actual per-tick guest advance is the `shell_hle.Tick` +
+  // `mod_runtime.Tick` + `media_hle.Tick` sequence the main loop already
+  // runs; `step` just requests N iterations of that to happen, which the
+  // main loop honors by looping locally here (it holds no other thread).
+
+  if (const char* cport = std::getenv("ZEEB_CONTROL_PORT")) {
+    int port = std::atoi(cport);
+    if (port > 0) control_server.Start(port);
+  }
   std::printf("Reached the event loop with no unhandled instruction! Window will stay open.\n");
   bool running = true;
   zeebulator::ZPadState previous_pad_state;
   SDL_Event event;
   constexpr uint32_t kTickMs = 16;
   uint64_t tick_count = 0;
+  // Pending programmatic `step`: a step command doesn't fulfill until the
+  // guest has actually advanced the requested number of ticks (below).
+  bool ctl_step_active = false;
+  uint64_t ctl_step_target = 0;
+  std::shared_ptr<zeebulator::ControlRequest> ctl_step_req;
+  // Executes one control request inline (main thread; safe re: CPU/HLE).
+  // `step` is the only deferred command; everything else fulfills here.
+  auto ControlExec = [&](const std::shared_ptr<zeebulator::ControlRequest>& req) {
+    const std::string& c = req->cmd;
+    char buf[256];
+    if (c == "ping") {
+      req->reply.set_value("{\"ok\":true,\"pong\":true}");
+    } else if (c == "press" || c == "down" || c == "up") {
+      uint32_t uid = ButtonUidByName(req->button);
+      if (uid == 0 || *captured_button_callback == 0) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"bad button or no callback\"}");
+      } else {
+        if (c == "press") {
+          InjectHidButtonEvent(uid, true);
+          InjectHidButtonEvent(uid, false);
+        } else {
+          InjectHidButtonEvent(uid, c == "down");
+        }
+        req->reply.set_value("{\"ok\":true}");
+      }
+    } else if (c == "state") {
+      std::snprintf(buf, sizeof(buf),
+                    "{\"ok\":true,\"tick\":%llu,\"pc\":%u,\"running\":%s}",
+                    static_cast<unsigned long long>(tick_count),
+                    cpu.GetRegister(zeebulator::kPC), running ? "true" : "false");
+      req->reply.set_value(buf);
+    } else if (c == "reg") {
+      if (!req->has_i0 || req->i0 < 0 || req->i0 > 16) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"reg n 0..16\"}");
+      } else {
+        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"n\":%ld,\"value\":%u}", req->i0,
+                      cpu.GetRegister(static_cast<int>(req->i0)));
+        req->reply.set_value(buf);
+      }
+    } else if (c == "read") {
+      long len = req->has_i1 ? req->i1 : 4;
+      if (!req->has_i0 || len <= 0 || len > 256) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"read addr + len(1..256)\"}");
+      } else {
+        std::string hex;
+        hex.reserve(static_cast<size_t>(len) * 2);
+        for (long i = 0; i < len; ++i) {
+          uint8_t byte = cpu.GetMemory().Read8(static_cast<uint32_t>(req->i0) + i);
+          char hb[3];
+          std::snprintf(hb, sizeof(hb), "%02x", byte);
+          hex += hb;
+        }
+        std::string out = "{\"ok\":true,\"addr\":" + std::to_string(req->i0) +
+                          ",\"hex\":\"" + hex + "\"}";
+        req->reply.set_value(out);
+      }
+    } else if (c == "screenshot") {
+      std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
+      const auto& fb = display.LastPresentedFramebuffer();
+      int w = display.width(), h = display.height();
+      std::FILE* f = std::fopen(path.c_str(), "wb");
+      if (!f) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"cannot open path\"}");
+      } else {
+        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (size_t i = 0; i < fb.size(); ++i) {
+          uint16_t px = fb[i];
+          uint8_t r = static_cast<uint8_t>(((px >> 11) & 0x1F) << 3);
+          uint8_t g = static_cast<uint8_t>(((px >> 5) & 0x3F) << 2);
+          uint8_t b = static_cast<uint8_t>((px & 0x1F) << 3);
+          uint8_t rgb[3] = {r, g, b};
+          std::fwrite(rgb, 1, 3, f);
+        }
+        std::fclose(f);
+        std::snprintf(buf, sizeof(buf),
+                      "{\"ok\":true,\"w\":%d,\"h\":%d,\"path\":\"%s\"}", w, h, path.c_str());
+        req->reply.set_value(buf);
+      }
+    } else if (c == "step") {
+      long n = req->has_i0 ? req->i0 : 1;
+      if (n < 1) n = 1;
+      if (n > 100000) n = 100000;
+      ctl_step_active = true;
+      ctl_step_target = tick_count + static_cast<uint64_t>(n);
+      ctl_step_req = req;  // fulfilled once tick_count reaches target
+    } else if (c == "quit") {
+      control_wants_quit = true;
+      req->reply.set_value("{\"ok\":true}");
+    } else {
+      req->reply.set_value("{\"ok\":false,\"error\":\"unknown cmd\"}");
+    }
+  };
   while (running) {
     uint32_t loop_start_ms = SDL_GetTicks();
+    // Drain queued programmatic control requests and run them inline.
+    if (control_server.IsRunning()) {
+      for (auto& req : control_server.Drain()) ControlExec(req);
+      if (control_wants_quit) running = false;
+    }
     while (SDL_PollEvent(&event)) {
       if (event.type == SDL_QUIT) running = false;
       // Frontend-only hotkeys (TASKS_TOOLING.md Phase A/D) -- F-keys are
@@ -3145,7 +3282,19 @@ int main(int argc, char** argv) {
     // real requested cadence.
     uint32_t elapsed_this_iter = SDL_GetTicks() - loop_start_ms;
     if (elapsed_this_iter < kTickMs) SDL_Delay(kTickMs - elapsed_this_iter);
+    // Fulfill a pending programmatic `step` once the guest has advanced the
+    // requested number of ticks (or if the run stopped). Reports the tick
+    // reached so the controller can pace itself against real game progress.
+    if (ctl_step_active && (tick_count >= ctl_step_target || !running)) {
+      char sbuf[96];
+      std::snprintf(sbuf, sizeof(sbuf), "{\"ok\":true,\"tick\":%llu,\"running\":%s}",
+                    static_cast<unsigned long long>(tick_count), running ? "true" : "false");
+      ctl_step_req->reply.set_value(sbuf);
+      ctl_step_req.reset();
+      ctl_step_active = false;
+    }
   }
+  control_server.Stop();
 
   SDL_DestroyWindow(window);
   SDL_Quit();
