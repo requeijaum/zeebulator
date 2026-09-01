@@ -1,5 +1,8 @@
 #include "core/brew/gl_hle.h"
 
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 
 #include "core/brew/interface_object.h"
@@ -9,6 +12,18 @@
 namespace zeebulator {
 
 namespace {
+
+// Env-gated GPU/GLES trace (ZEEB_LOG_GPU=1). Off by default.
+void GpuLog(const char* fmt, ...) {
+  static const bool on = std::getenv("ZEEB_LOG_GPU") != nullptr;
+  if (!on) return;
+  std::va_list ap;
+  va_start(ap, fmt);
+  std::fprintf(stderr, "[gpu] ");
+  std::vfprintf(stderr, fmt, ap);
+  std::fprintf(stderr, "\n");
+  va_end(ap);
+}
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 
@@ -145,12 +160,15 @@ void GlHle::EglMakeCurrent(IArmCore& core) {
 
 void GlHle::EglSwapBuffers(IArmCore& core) {
   backend_.SwapBuffers();
+  static uint32_t frame = 0;
+  GpuLog("SwapBuffers frame=%u", ++frame);
   core.SetRegister(kR0, kEglTrue);
 }
 
 // --- Core GL state / transform ------------------------------------------
 
 void GlHle::GlClear(IArmCore& core) {
+  GpuLog("Clear mask=0x%x", core.GetRegister(kR0));
   backend_.Clear(core.GetRegister(kR0));
 }
 
@@ -360,6 +378,7 @@ void GlHle::GlDrawArrays(IArmCore& core) {
     indices.push_back(static_cast<uint32_t>(first + i));
   }
   backend_.DrawArrays(mode, ExtractArrays(core.GetMemory(), indices));
+  GpuLog("DrawArrays mode=0x%x first=%d count=%d", mode, first, count);
 }
 
 void GlHle::GlDrawElements(IArmCore& core) {
@@ -379,6 +398,7 @@ void GlHle::GlDrawElements(IArmCore& core) {
     indices.push_back(index);
   }
   backend_.DrawArrays(mode, ExtractArrays(memory, indices));
+  GpuLog("DrawElements mode=0x%x count=%d type=0x%x", mode, count, type);
 }
 
 // --- Texture object management + upload -----------------------------------

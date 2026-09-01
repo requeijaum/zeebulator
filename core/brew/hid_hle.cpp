@@ -1,10 +1,26 @@
 #include "core/brew/hid_hle.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <cstdarg>
+
 #include "core/brew/interface_object.h"
 
 namespace zeebulator {
 
 namespace {
+
+// Env-gated controller/input trace (ZEEB_LOG_INPUT=1). Off by default.
+void InputLog(const char* fmt, ...) {
+  static const bool on = std::getenv("ZEEB_LOG_INPUT") != nullptr;
+  if (!on) return;
+  std::va_list ap;
+  va_start(ap, fmt);
+  std::fprintf(stderr, "[input] ");
+  std::vfprintf(stderr, fmt, ap);
+  std::fprintf(stderr, "\n");
+  va_end(ap);
+}
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 
@@ -73,6 +89,9 @@ void HidHle::GetNextButtonEventImpl(IArmCore& core) {
   }
   ButtonEvent event = event_queue_.front();
   event_queue_.pop_front();
+  InputLog("GetNextButtonEvent -> id=%d state=%s uid=0x%x (queue left=%zu)",
+           event.button_id, event.state ? "DOWN" : "UP", event.button_uid,
+           event_queue_.size());
 
   uint32_t info_addr = core.GetRegister(kR1);
   // struct AEEHIDButtonInfo { int nButtonID; int nState; int nButtonUID;
@@ -146,6 +165,7 @@ void HidHle::UpdateState(const ZPadState& state) {
     if (was_down == is_down) continue;
     int32_t button_id = static_cast<int32_t>(&mapping - kButtonMappings);
     event_queue_.push_back(ButtonEvent{button_id, is_down ? 1 : 0, mapping.uid});
+    InputLog("inject id=%d %s uid=0x%x", button_id, is_down ? "DOWN" : "UP", mapping.uid);
   }
   last_buttons_ = state.buttons;
 }

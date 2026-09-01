@@ -48,6 +48,18 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
     return;
   }
   if (index < functions_.size() && functions_[index]) {
+    // Env-gated full BREW-API trace (ZEEB_LOG_BREW=1): every IMPLEMENTED
+    // vtable slot a title invokes, with its label and args. Complements
+    // ZEEB_LOG_SLOT (which only fires for UNimplemented slots). Off by
+    // default; stderr only; non-perturbing (logs, then runs the real handler).
+    if (std::getenv("ZEEB_LOG_BREW") != nullptr) {
+      std::string label = LabelForAddress(address);
+      std::fprintf(stderr,
+                   "[brew] %s idx=%u r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
+                   label.empty() ? "(unlabeled)" : label.c_str(), index,
+                   core.GetRegister(kR0), core.GetRegister(kR1),
+                   core.GetRegister(kR2), core.GetRegister(kR3), core.GetRegister(kLR));
+    }
     functions_[index](core);
   } else if (std::getenv("ZEEB_LOG_SLOT") != nullptr) {
     // Phase 9c per-slot logger (env-gated, non-perturbing: stderr only, no new
