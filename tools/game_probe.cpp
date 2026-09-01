@@ -37,6 +37,7 @@
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
 #include "core/control/control_server.h"
+#include "core/control/debug_hooks.h"
 #include "core/control/mirror_server.h"
 #include "core/brew/virtual_filesystem.h"
 #include "core/cpu/arm_interpreter.h"
@@ -2735,6 +2736,7 @@ int main(int argc, char** argv) {
     return 0;
   };
   bool control_wants_quit = false;
+  bool dbg_paused = false;  // Fase 2: set when a bp/wp trips; cleared by `cont`.
   // Advances the guest by exactly `n` real game ticks (drives the same
   // self-rearming ISHELL_SetTimer callbacks the main loop's own timer burst
   // does), presenting between them. Returns after the requested ticks or as
@@ -2886,6 +2888,47 @@ int main(int argc, char** argv) {
                       req->i0, cpu.GetRegister(static_cast<int>(req->i0)));
         req->reply.set_value(buf);
       }
+    } else if (c == "bp") {
+      if (!req->has_i0) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"bp addr\"}");
+      } else {
+        zeebulator::DebugHooks::Instance().AddBreakpoint(
+            static_cast<uint32_t>(req->i0));
+        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"bp\":%ld}", req->i0);
+        req->reply.set_value(buf);
+      }
+    } else if (c == "bpclear") {
+      if (!req->has_i0) {
+        // No addr -> clear everything (bps + wps).
+        zeebulator::DebugHooks::Instance().ClearAll();
+        req->reply.set_value("{\"ok\":true,\"cleared\":\"all\"}");
+      } else {
+        zeebulator::DebugHooks::Instance().ClearBreakpoint(
+            static_cast<uint32_t>(req->i0));
+        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"bpclear\":%ld}", req->i0);
+        req->reply.set_value(buf);
+      }
+    } else if (c == "watch") {
+      long len = req->has_i1 ? req->i1 : 4;
+      if (!req->has_i0 || len <= 0) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"watch addr + len + mode(r|w|rw)\"}");
+      } else {
+        auto mode = zeebulator::DebugHooks::kW;
+        const std::string& mm = req->str_mode;
+        if (mm == "r") mode = zeebulator::DebugHooks::kR;
+        else if (mm == "rw") mode = zeebulator::DebugHooks::kRW;
+        else mode = zeebulator::DebugHooks::kW;
+        zeebulator::DebugHooks::Instance().AddWatchpoint(
+            static_cast<uint32_t>(req->i0), static_cast<uint32_t>(len), mode);
+        std::snprintf(buf, sizeof(buf),
+                      "{\"ok\":true,\"watch\":%ld,\"len\":%ld,\"mode\":\"%s\"}",
+                      req->i0, len, mm.empty() ? "w" : mm.c_str());
+        req->reply.set_value(buf);
+      }
+    } else if (c == "cont") {
+      zeebulator::DebugHooks::Instance().ClearHit();
+      dbg_paused = false;
+      req->reply.set_value("{\"ok\":true,\"resumed\":true}");
     } else if (c == "screenshot") {
       std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
       const auto& fb = display.LastPresentedFramebuffer();
@@ -3081,6 +3124,18 @@ int main(int argc, char** argv) {
       }
       previous_pad_state = pad_state;
     }
+
+    // Debugger pause gate (Fase 2). A breakpoint/watchpoint hit stops the
+    // guest from advancing (we skip mod_runtime.Tick below) while keeping
+    // the control channel live, so `read`/`reg`/`state`/`step`/`cont` all
+    // work at the trap point. Observation-only: nothing here alters what
+    // the interpreter did -- it already executed the trapping instruction.
+    if (zeebulator::DebugHooks::Instance().Hit() && !dbg_paused) {
+      dbg_paused = true;
+      std::printf("  [dbg] PAUSED: %s\n",
+                  zeebulator::DebugHooks::Instance().HitInfo().c_str());
+      std::fflush(stdout);
+    }
     // Flushes real save-game writes (see userdata_path's own doc
     // comment above) to a real host file as soon as they happen, not
     // just on a clean exit -- matches how real flash storage commits a
@@ -3098,7 +3153,7 @@ int main(int argc, char** argv) {
     // ISHELL_SetTimer from inside the callback (see core/brew/ishell.h).
     // Driving these is what actually runs the game's per-frame logic;
     // nothing calls into the module otherwise from here on.
-    mod_runtime.Tick(kTickMs);
+    if (!dbg_paused) mod_runtime.Tick(kTickMs);
     // Simulate a truthful "download/install 100% complete" notification
     // once the real callback has been registered (see the class-0x01005511
     // doc comment above) -- a real event struct shape confirmed via
@@ -3153,7 +3208,8 @@ int main(int argc, char** argv) {
     // plumbing draining it are kept intact as correct, real
     // infrastructure for whoever picks up real controller-driven
     // navigation next.
-    for (const auto& timer : shell_hle.Tick(kTickMs)) {
+    for (const auto& timer :
+         dbg_paused ? decltype(shell_hle.Tick(kTickMs)){} : shell_hle.Tick(kTickMs)) {
       bool trace_this_tick = tick_count < 10 || persistent_log;
       if (trace_this_tick) std::printf("--- tick %llu ---\n", static_cast<unsigned long long>(tick_count));
       try {

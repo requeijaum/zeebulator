@@ -66,6 +66,7 @@ struct ControlRequest {
   std::string button;    // for press/down/up
   std::string str_path;  // for screenshot
   std::string str_hex;   // for write (hex bytes payload)
+  std::string str_mode;  // for watch (r|w|rw)
   long i0 = 0;           // generic int arg (ticks / n / addr)
   long i1 = 0;           // generic int arg (len)
   long val = 0;          // explicit "value" arg (for setreg)
@@ -210,6 +211,7 @@ class ControlServer {
     req.button = ExtractString(s, "button");
     req.str_path = ExtractString(s, "path");
     req.str_hex = ExtractString(s, "hex");
+    req.str_mode = ExtractString(s, "mode");
     // Accept several int keys into i0 (first found wins) and len into i1.
     for (const char* k : {"ticks", "n", "addr", "port"}) {
       long v;

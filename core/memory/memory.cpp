@@ -1,5 +1,7 @@
 #include "core/memory/memory.h"
 
+#include "core/control/debug_hooks.h"
+
 #include <cstring>
 
 namespace zeebulator {
@@ -19,6 +21,7 @@ const Memory::Page* Memory::FindPage(uint32_t page_index) const {
 }
 
 uint8_t Memory::Read8(uint32_t address) const {
+  DebugHooks::Instance().OnMemRead(address, 1);
   const Page* page = FindPage(address / kPageSize);
   return page ? (*page)[address & kPageMask] : 0;
 }
@@ -36,6 +39,7 @@ uint32_t Memory::Read32(uint32_t address) const {
  }
 
 void Memory::Write8(uint32_t address, uint8_t value) {
+  DebugHooks::Instance().OnMemWrite(address, 1);
   MutablePage(address / kPageSize)[address & kPageMask] = value;
 }
 

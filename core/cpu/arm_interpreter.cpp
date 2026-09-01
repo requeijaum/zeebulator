@@ -1,5 +1,7 @@
 #include "core/cpu/arm_interpreter.h"
 
+#include "core/control/debug_hooks.h"
+
 #include <bit>
 
 namespace zeebulator {
@@ -1013,6 +1015,11 @@ void ArmInterpreter::Step() {
   }
 
   pc_updated_by_instruction_ = false;
+
+  // Observation-only breakpoint check (no-op with a single relaxed atomic
+  // load when no breakpoints are set). Never alters execution -- the
+  // interpreter stays the oracle; the game_probe loop decides to pause.
+  DebugHooks::Instance().OnExec(fetch_addr, *this);
 
   if (GetFlag(kCpsrT)) {
     uint16_t thumb_instr = memory_.Read16(fetch_addr);
