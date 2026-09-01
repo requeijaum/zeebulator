@@ -569,6 +569,7 @@ int main(int argc, char** argv) {
   // unconditional internal redirect would silently steal that output
   // out from under it.
   bool persistent_log = false;
+  std::vector<std::string> bar_paths;  // ABD-style titles ship a data.bar, no ggz
   {
     int write_i = 1;
     for (int read_i = 1; read_i < argc; ++read_i) {
@@ -578,6 +579,19 @@ int main(int argc, char** argv) {
       }
       if (std::string(argv[read_i]) == "--persistent-log") {
         persistent_log = true;
+        continue;
+      }
+      // ABD (and any BAR-only title): register a real `.bar` resource
+      // archive's raw bytes under its own basename in the VFS. The game
+      // opens it by name via ISHELL_LoadResDataEx (see core/loader/bar.h),
+      // exactly like MergeGgzInto's final AddFile does for a ggz -- no
+      // per-entry extraction is needed for the file-open path. Repeatable.
+      if (std::string(argv[read_i]) == "--bar") {
+        if (read_i + 1 >= argc) {
+          std::fprintf(stderr, "--bar needs a file path\n");
+          return 1;
+        }
+        bar_paths.emplace_back(argv[++read_i]);
         continue;
       }
       argv[write_i++] = argv[read_i];
@@ -598,9 +612,11 @@ int main(int argc, char** argv) {
     // before anything resembling real progress happens. See
     // PHASE8_LOG.md for how this was found.
     std::fprintf(stderr,
-                  "usage: %s <game.mod> <data.ggz> <sound.ggz> <cls_id_decimal> [boot.pkg] "
-                  "[resources.bar] [--load-state] [--persistent-log]\n",
-                  argv[0]);
+                  "usage: %s <game.mod> <data.ggz|-> <sound.ggz|-> <cls_id_decimal> [boot.pkg] "
+                  "[resources.bar] [--bar <file>] [--load-state] [--persistent-log]\n"
+                  "  Pass '-' for a ggz slot a title doesn't ship (e.g. ABD, which is\n"
+                  "  BAR-only: %s abd.mod - - 16975901 --bar data.bar).\n",
+                  argv[0], argv[0]);
     return 1;
   }
   if (persistent_log) {
@@ -641,9 +657,17 @@ int main(int argc, char** argv) {
   const std::string userdata_path = std::string(argv[1]) + ".userdata";
 
   zeebulator::VirtualFilesystem vfs;
-  MergeGgzInto(vfs, argv[2]);
-  MergeGgzInto(vfs, argv[3]);
+  // A title that doesn't ship a given ggz passes '-' for that slot (ABD is
+  // BAR-only). Skip the merge rather than aborting in GgzArchive::Parse.
+  if (std::string(argv[2]) != "-") MergeGgzInto(vfs, argv[2]);
+  if (std::string(argv[3]) != "-") MergeGgzInto(vfs, argv[3]);
   if (argc >= 6) MergeBootPkgInto(vfs, argv[5]);
+  // ABD-style resource archives arrive either positionally (argv[6],
+  // which needs a boot.pkg at argv[5]) or via repeatable `--bar` (no
+  // positional constraint). Unify them into one list processed at the
+  // shell-registration site below (where shell_hle exists).
+  std::vector<std::string> all_bar_paths = bar_paths;
+  if (argc >= 7) all_bar_paths.emplace_back(argv[6]);
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
     std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -775,9 +799,9 @@ int main(int argc, char** argv) {
   // a no-op rather than drawing anything wrong.
   std::optional<std::vector<uint8_t>> abd_font_atlas;
   AbdTextState abd_text_state;
-  if (argc >= 7) {
-    std::vector<uint8_t> bar_bytes = ReadFile(argv[6]);
-    abd_font_atlas = DecodeAbdFontAtlas(bar_bytes);
+  for (const std::string& bar_path : all_bar_paths) {
+    std::vector<uint8_t> bar_bytes = ReadFile(bar_path.c_str());
+    if (!abd_font_atlas) abd_font_atlas = DecodeAbdFontAtlas(bar_bytes);
     // Also expose the same raw bytes as a plain, directly-openable VFS
     // file under its own basename -- the same real "the archive's own
     // raw bytes need to be a VFS entry too" shape MergeGgzInto's own
@@ -790,8 +814,11 @@ int main(int argc, char** argv) {
     // directory can never resolve -- real code almost certainly falls
     // back to opening the file directly for those, the same real
     // pattern already confirmed for `sound.ggz`.
-    vfs.AddFile(BaseName(argv[6]), bar_bytes);
-    shell_hle.RegisterResourceFile(BaseName(argv[6]), std::move(bar_bytes));
+    std::string base = BaseName(bar_path.c_str());
+    vfs.AddFile(base, bar_bytes);
+    shell_hle.RegisterResourceFile(base, std::move(bar_bytes));
+    std::printf("loaded resource archive %s (registered as %s)\n", bar_path.c_str(),
+                base.c_str());
   }
   shell_hle.RegisterInstance(/*AEECLSID_DISPLAY=*/0x01001001, display_obj);
   // ClsId 0x01002001: a real BREW class Double Dragon's own graphics-init
