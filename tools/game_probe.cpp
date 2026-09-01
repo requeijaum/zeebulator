@@ -319,7 +319,11 @@ CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap
                                    zeebulator::IDisplayHle* display_for_liveness = nullptr,
                                    zeebulator::Sdl2UnifiedBackend* backend_for_liveness = nullptr,
                                    AbdTextState* abd_text_state = nullptr) {
-  constexpr uint64_t kMaxSteps = 5'000'000;
+  uint64_t kMaxSteps = 5'000'000;
+  if (const char* budget = std::getenv("ZEEB_MAX_STEPS")) {
+    uint64_t parsed = std::strtoull(budget, nullptr, 0);
+    if (parsed > 0) kMaxSteps = parsed;
+  }
   cpu.SetRegister(zeebulator::kR0, r0);
   cpu.SetRegister(zeebulator::kR1, r1);
   cpu.SetRegister(zeebulator::kR2, r2);
