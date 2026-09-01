@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cstddef>
 #include <cstring>
+#include <optional>
+#include <unordered_set>
 
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
@@ -16,6 +18,31 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
   Memory* memory = nullptr;
   Dynarmic::A32::Jit* jit = nullptr;  // for self-modifying-code invalidation
   std::uint64_t ticks_left = 0;
+  std::uint32_t call_out_base = 0;
+  std::uint32_t call_out_size = 0;
+  bool trap_faulted = false;  // set when a NoExecuteFault halted the block
+  // Pages (4 KiB) we have executed code from — the only pages where a guest
+  // store can invalidate a cached block.
+  std::unordered_set<std::uint32_t> code_pages;
+  bool code_pages_enabled = true;
+  bool IsExecutedPage(std::uint32_t a) const {
+    return code_pages.count(a >> 12) != 0;
+  }
+
+  bool InTrap(std::uint32_t a) const {
+    return call_out_size != 0 && a >= call_out_base &&
+           a < call_out_base + call_out_size;
+  }
+  // Code fetch inside the call-out range must NOT execute: returning nullopt
+  // makes dynarmic halt the block before running it (config.h: "Attempted to
+  // execute a code block at an address for which MemoryReadCode returned
+  // std::nullopt"). This is the block-mode equivalent of the interpreter's
+  // pre-fetch trap check, and it stops Jit::Run() exactly at the trap PC.
+  std::optional<std::uint32_t> MemoryReadCode(std::uint32_t a) override {
+    if (InTrap(a)) return std::nullopt;
+    if (code_pages_enabled) code_pages.insert(a >> 12);
+    return MemoryRead32(a);
+  }
 
   std::uint8_t MemoryRead8(std::uint32_t a) override { return memory->Read8(a); }
   std::uint16_t MemoryRead16(std::uint32_t a) override {
@@ -35,7 +62,15 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
   // so invalidating here covers every store width.
   void MemoryWrite8(std::uint32_t a, std::uint8_t v) override {
     memory->Write8(a, v);
-    if (jit) jit->InvalidateCacheRange(a, 1);
+    // Only invalidate when the store lands in a page we've actually executed
+    // from. Blind invalidate-on-every-store defeats the block cache for the
+    // common case (writing DATA, not code) and made block mode slower than the
+    // interpreter. Correctness is preserved: a write to a never-executed page
+    // can't have a cached block, and the first execution of any page compiles
+    // fresh; a write to an executed (code) page still invalidates. SMC into a
+    // page that is both written and executed is covered because that page is
+    // marked executed on its first run.
+    if (jit && IsExecutedPage(a)) jit->InvalidateCacheRange(a, 1);
   }
   void MemoryWrite16(std::uint32_t a, std::uint16_t v) override {
     MemoryWrite8(a, std::uint8_t(v));
@@ -56,7 +91,17 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
   // frames (undefined behaviour); Phase 2/3 differential runs are where such
   // encodings, if they ever appear, get catalogued.
   void CallSVC(std::uint32_t /*swi*/) override {}
-  void ExceptionRaised(std::uint32_t /*pc*/, Dynarmic::A32::Exception /*e*/) override {}
+  void ExceptionRaised(std::uint32_t pc, Dynarmic::A32::Exception e) override {
+    // MemoryReadCode returning nullopt in the trap range makes the frontend
+    // emit a NoExecuteFault exception at the trap PC. That is our block-mode
+    // call-out signal: halt the JIT so Jit::Run() returns with PC parked at the
+    // trap address, exactly where the interpreter's pre-fetch check would stop.
+    if (e == Dynarmic::A32::Exception::NoExecuteFault && jit) {
+      trap_faulted = true;
+      jit->HaltExecution();
+    }
+    (void)pc;
+  }
   // Never reached in practice: we don't request interpreter fallback for any
   // block (dynarmic's own docs note this callback "is never called"). Kept as
   // a no-op rather than std::terminate() so a hypothetical stray call can't
@@ -101,6 +146,7 @@ void DynarmicArmCore::Reset() {
   jit_->ClearCache();
   jit_->Regs().fill(0);
   jit_->SetCpsr(0);
+  callbacks_->code_pages.clear();
 }
 
 void DynarmicArmCore::Step() {
@@ -121,14 +167,48 @@ void DynarmicArmCore::Step() {
 }
 
 uint64_t DynarmicArmCore::Run(uint64_t max_instructions) {
-  // Byte-for-byte mirror of ArmInterpreter::Run (arm_interpreter.cpp:1217).
+  // Block execution: this is where the JIT actually pays off. Instead of
+  // recompiling one instruction per Step(), we let dynarmic run whole compiled
+  // blocks via Jit::Run() until either the instruction budget is exhausted or
+  // the PC reaches the call-out trap (MemoryReadCode returns nullopt there,
+  // halting the block exactly at the trap PC). Semantics stay identical to the
+  // interpreter's Run: same instruction count, same trap-then-handler order.
   uint64_t executed = 0;
   while (executed < max_instructions) {
     const uint32_t fetch_addr = jit_->Regs()[15];
-    const bool will_trap = IsCallOutAddress(fetch_addr);
-    Step();
-    ++executed;
-    if (will_trap) break;
+    if (IsCallOutAddress(fetch_addr)) {
+      if (call_out_handler_) call_out_handler_(*this, fetch_addr);
+      ++executed;  // the trap counts as one step, mirroring Step()
+      break;       // caller re-enters after servicing the call-out
+    }
+    const uint64_t budget = max_instructions - executed;
+    callbacks_->ticks_left = budget;
+    callbacks_->trap_faulted = false;
+    jit_->Run();
+    // AddTicks drained ticks_left by the number of instructions executed.
+    uint64_t ran = budget - callbacks_->ticks_left;
+    if (callbacks_->trap_faulted) {
+      // The block halted on a NoExecuteFault: dynarmic counted the faulting
+      // trap fetch as one cycle and advanced PC past it. Undo both so the
+      // observable state matches the interpreter's pre-fetch stop: PC parked
+      // AT the trap address, and that fetch NOT counted as an executed
+      // instruction. Instruction width is 2 in Thumb state, else 4.
+      const uint32_t step = (jit_->Cpsr() & (1u << 5)) ? 2u : 4u;
+      jit_->Regs()[15] -= step;
+      if (ran > 0) --ran;
+      executed += ran;
+      // Loop top will now see the trap PC and dispatch the handler.
+      continue;
+    }
+    executed += ran;
+    if (ran == 0) {
+      // No forward progress (e.g. immediately at a trap fetch that the loop
+      // top will service, or a zero-budget edge) — fall back to one Step to
+      // guarantee termination and exact single-instruction semantics.
+      Step();
+      ++executed;
+      if (IsCallOutAddress(jit_->Regs()[15])) break;
+    }
   }
   return executed;
 }
@@ -148,6 +228,11 @@ void DynarmicArmCore::SetCpsr(uint32_t value) { jit_->SetCpsr(value); }
 void DynarmicArmCore::SetCallOutRange(uint32_t base, uint32_t size) {
   call_out_base_ = base;
   call_out_size_ = size;
+  callbacks_->call_out_base = base;
+  callbacks_->call_out_size = size;
+  // A change to the trap range can change which fetches halt, so any cached
+  // block covering the old/new range must be recompiled.
+  jit_->ClearCache();
 }
 
 void DynarmicArmCore::SetCallOutHandler(CallOutHandler handler) {

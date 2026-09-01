@@ -36,3 +36,9 @@ endif()
 
 add_executable(zeebulator_jit_lockstep jit_lockstep.cpp)
 target_link_libraries(zeebulator_jit_lockstep PRIVATE zeebulator_core)
+
+add_executable(zeebulator_jit_bench jit_bench.cpp)
+target_link_libraries(zeebulator_jit_bench PRIVATE zeebulator_core)
+
+add_executable(zeebulator_jit_bench_loop jit_bench_loop.cpp)
+target_link_libraries(zeebulator_jit_bench_loop PRIVATE zeebulator_core)
