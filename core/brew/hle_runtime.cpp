@@ -1,5 +1,7 @@
 #include "core/brew/hle_runtime.h"
 
+#include "core/control/debug_sink.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -52,13 +54,18 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
     // vtable slot a title invokes, with its label and args. Complements
     // ZEEB_LOG_SLOT (which only fires for UNimplemented slots). Off by
     // default; stderr only; non-perturbing (logs, then runs the real handler).
-    if (std::getenv("ZEEB_LOG_BREW") != nullptr) {
+    if (std::getenv("ZEEB_LOG_BREW") != nullptr ||
+        ::zeebulator::DebugSink::Instance().Enabled()) {
       std::string label = LabelForAddress(address);
-      std::fprintf(stderr,
-                   "[brew] %s idx=%u r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
-                   label.empty() ? "(unlabeled)" : label.c_str(), index,
-                   core.GetRegister(kR0), core.GetRegister(kR1),
-                   core.GetRegister(kR2), core.GetRegister(kR3), core.GetRegister(kLR));
+      char buf[256];
+      std::snprintf(buf, sizeof(buf),
+                    "%s idx=%u r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
+                    label.empty() ? "(unlabeled)" : label.c_str(), index,
+                    core.GetRegister(kR0), core.GetRegister(kR1),
+                    core.GetRegister(kR2), core.GetRegister(kR3), core.GetRegister(kLR));
+      ::zeebulator::DebugLog(::zeebulator::DebugCat::kBrew, buf);
+      if (std::getenv("ZEEB_LOG_BREW") != nullptr)
+        std::fprintf(stderr, "[brew] %s\n", buf);
     }
     functions_[index](core);
   } else if (std::getenv("ZEEB_LOG_SLOT") != nullptr) {

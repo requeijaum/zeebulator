@@ -2757,13 +2757,30 @@ int main(int argc, char** argv) {
   // thread; the HTTP serving runs on the server's own thread. Off unless set.
   zeebulator::MirrorServer mirror_server;
   int mirror_every = 3;  // publish every N ticks (~10fps at ~31fps cadence)
+  // Debug UI: ON BY DEFAULT while the emulator is under development. The tabbed
+  // debug view (Screen / CPU / BREW API / GPU / Input / Media / Log) is served
+  // by the same loopback HTTP server at http://127.0.0.1:<port>/debug. It is a
+  // SECOND window/tab in the browser, next to the native SDL window a human
+  // watches on Wayland. Toggle off with ZEEB_DEBUG_UI=0. A human on a headless
+  // box, or anyone who wants a fixed port, can also set ZEEB_MIRROR_PORT.
+  const char* dbg_env = std::getenv("ZEEB_DEBUG_UI");
+  bool debug_ui_on = !(dbg_env && std::strcmp(dbg_env, "0") == 0);
+  int mirror_port = 0;
   if (const char* mport = std::getenv("ZEEB_MIRROR_PORT")) {
-    int port = std::atoi(mport);
-    if (port > 0) mirror_server.Start(port);
-    if (const char* mev = std::getenv("ZEEB_MIRROR_EVERY")) {
-      int e = std::atoi(mev);
-      if (e > 0) mirror_every = e;
-    }
+    mirror_port = std::atoi(mport);
+  } else if (debug_ui_on) {
+    mirror_port = 48750;  // default debug/mirror port
+  }
+  if (const char* mev = std::getenv("ZEEB_MIRROR_EVERY")) {
+    int e = std::atoi(mev);
+    if (e > 0) mirror_every = e;
+  }
+  if (debug_ui_on) zeebulator::DebugSink::Instance().Enable();
+  if (mirror_port > 0) {
+    mirror_server.Start(mirror_port);
+    if (debug_ui_on)
+      std::fprintf(stderr, "[debug] tabbed debug UI at http://127.0.0.1:%d/debug\n",
+                   mirror_port);
   }
   std::vector<uint8_t> mirror_rgba;  // reused capture buffer
   std::printf("Reached the event loop with no unhandled instruction! Window will stay open.\n");
@@ -3307,6 +3324,28 @@ int main(int argc, char** argv) {
       if (backend.CaptureFrameRgba(mirror_rgba, &mw, &mh) && !mirror_rgba.empty()) {
         mirror_server.PublishFrame(mirror_rgba.data(), mw, mh);
       }
+    }
+    // Feed the debug UI's CPU tab with a register/state snapshot (cheap; the
+    // sink is inert when the debug UI is off).
+    if (zeebulator::DebugSink::Instance().Enabled()) {
+      zeebulator::DebugState ds;
+      for (int i = 0; i < 16; ++i) ds.regs[i] = cpu.GetRegister(i);
+      ds.cpsr = cpu.GetCpsr();
+      ds.tick = tick_count;
+      ds.running = running;
+      // Real measured cadence (EMA over recent iterations), not the target.
+      {
+        static uint32_t last_ms = 0;
+        static double ema_fps = 0.0;
+        uint32_t now_ms = SDL_GetTicks();
+        if (last_ms != 0 && now_ms > last_ms) {
+          double inst = 1000.0 / static_cast<double>(now_ms - last_ms);
+          ema_fps = (ema_fps == 0.0) ? inst : (ema_fps * 0.9 + inst * 0.1);
+        }
+        last_ms = now_ms;
+        ds.fps = ema_fps;
+      }
+      zeebulator::DebugSink::Instance().SetState(ds);
     }
     // Fulfill a pending programmatic `step` once the guest has advanced the
     // requested number of ticks (or if the run stopped). Reports the tick

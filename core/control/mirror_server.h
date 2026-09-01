@@ -42,6 +42,8 @@
 #include <thread>
 #include <vector>
 
+#include "core/control/debug_sink.h"
+
 namespace zeebulator {
 
 // --- Minimal PNG encoder (RGBA8 in, PNG out; STORED DEFLATE) --------------
@@ -239,9 +241,140 @@ class MirrorServer {
                ",\"frames\":" + std::to_string(frames_) + "}";
       }
       SendText(fd, "200 OK", "application/json", body);
+    } else if (path == "/debug") {
+      SendText(fd, "200 OK", "text/html", DebugHtml());
+    } else if (path == "/api/state") {
+      SendText(fd, "200 OK", "application/json", StateJson());
+    } else if (path.rfind("/api/log", 0) == 0) {
+      // /api/log?cat=log|brew|gpu|input|media
+      std::string cat = "log";
+      auto q = path.find("cat=");
+      if (q != std::string::npos) cat = path.substr(q + 4);
+      SendText(fd, "200 OK", "application/json", LogJson(cat));
     } else {
       SendText(fd, "200 OK", "text/html", IndexHtml());
     }
+  }
+
+  static std::string JsonEscape(const std::string& s) {
+    std::string o;
+    o.reserve(s.size() + 8);
+    for (char c : s) {
+      switch (c) {
+        case '"': o += "\\\""; break;
+        case '\\': o += "\\\\"; break;
+        case '\n': o += "\\n"; break;
+        case '\r': break;
+        case '\t': o += "\\t"; break;
+        default:
+          if (static_cast<unsigned char>(c) < 0x20) {
+            char b[8];
+            std::snprintf(b, sizeof(b), "\\u%04x", c);
+            o += b;
+          } else {
+            o += c;
+          }
+      }
+    }
+    return o;
+  }
+
+  static DebugCat CatFromName(const std::string& name) {
+    if (name.rfind("brew", 0) == 0) return DebugCat::kBrew;
+    if (name.rfind("gpu", 0) == 0) return DebugCat::kGpu;
+    if (name.rfind("input", 0) == 0) return DebugCat::kInput;
+    if (name.rfind("media", 0) == 0) return DebugCat::kMedia;
+    return DebugCat::kLog;
+  }
+
+  static std::string LogJson(const std::string& cat) {
+    auto lines = DebugSink::Instance().Snapshot(CatFromName(cat));
+    std::string body = "{\"cat\":\"" + JsonEscape(cat) + "\",\"lines\":[";
+    bool first = true;
+    for (const auto& l : lines) {
+      if (!first) body += ",";
+      first = false;
+      body += "\"" + JsonEscape(l) + "\"";
+    }
+    body += "]}";
+    return body;
+  }
+
+  static std::string StateJson() {
+    DebugState s = DebugSink::Instance().State();
+    if (!s.valid) return "{\"valid\":false}";
+    char b[1024];
+    int off = std::snprintf(b, sizeof(b),
+                            "{\"valid\":true,\"tick\":%llu,\"fps\":%.1f,\"running\":%s,\"cpsr\":%u,\"regs\":[",
+                            static_cast<unsigned long long>(s.tick), s.fps,
+                            s.running ? "true" : "false", s.cpsr);
+    std::string body(b, off);
+    for (int i = 0; i < 16; ++i) {
+      if (i) body += ",";
+      body += std::to_string(s.regs[i]);
+    }
+    body += "]}";
+    return body;
+  }
+
+  // Tabbed debug UI. Tabs mirror what established emulator debuggers surface
+  // (Dolphin/PCSX2/mGBA): Screen, CPU registers, and per-subsystem logs.
+  static std::string DebugHtml() {
+    return
+        "<!doctype html><html><head><meta charset=utf-8><title>Zeebulator debug</title>"
+        "<style>"
+        "body{margin:0;font:13px monospace;background:#151515;color:#ddd}"
+        "#tabs{display:flex;background:#222;border-bottom:1px solid #000}"
+        "#tabs button{background:#222;color:#aaa;border:0;padding:8px 14px;cursor:pointer}"
+        "#tabs button.on{background:#151515;color:#fff;border-top:2px solid #6cf}"
+        "#panes>div{display:none;padding:10px}"
+        "#panes>div.on{display:block}"
+        "pre{margin:0;white-space:pre-wrap;word-break:break-all;max-height:82vh;overflow:auto}"
+        "img{image-rendering:pixelated;max-width:100%;background:#000}"
+        "table{border-collapse:collapse}td{padding:2px 10px;border:1px solid #333}"
+        ".k{color:#6cf}.hdr{color:#8f8}"
+        "</style></head><body>"
+        "<div id=tabs>"
+        "<button data-t=screen class=on>Screen</button>"
+        "<button data-t=cpu>CPU</button>"
+        "<button data-t=brew>BREW API</button>"
+        "<button data-t=gpu>GPU</button>"
+        "<button data-t=input>Input</button>"
+        "<button data-t=media>Media</button>"
+        "<button data-t=log>Log</button>"
+        "</div><div id=panes>"
+        "<div id=screen class=on><img id=v src=/frame.png><div id=sstat class=hdr></div></div>"
+        "<div id=cpu><div id=cpubox></div></div>"
+        "<div id=brew><pre id=pbrew></pre></div>"
+        "<div id=gpu><pre id=pgpu></pre></div>"
+        "<div id=input><pre id=pinput></pre></div>"
+        "<div id=media><pre id=pmedia></pre></div>"
+        "<div id=log><pre id=plog></pre></div>"
+        "</div>"
+        "<script>"
+        "let cur='screen';"
+        "document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{"
+        "cur=b.dataset.t;"
+        "document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x==b));"
+        "document.querySelectorAll('#panes>div').forEach(d=>d.classList.toggle('on',d.id==cur));"
+        "});"
+        "const RN=['r0','r1','r2','r3','r4','r5','r6','r7','r8','r9','r10','r11','r12','sp','lr','pc'];"
+        "function hx(n){return '0x'+(n>>>0).toString(16).padStart(8,'0')}"
+        "async function tickUI(){"
+        " if(cur=='screen'){document.getElementById('v').src='/frame.png?t='+Date.now();"
+        "  try{let s=await(await fetch('/status')).json();"
+        "   document.getElementById('sstat').textContent=s.w+'x'+s.h+'  frames='+s.frames;}catch(e){}}"
+        " else if(cur=='cpu'){try{let s=await(await fetch('/api/state')).json();"
+        "  if(!s.valid){document.getElementById('cpubox').textContent='(no state yet)';}"
+        "  else{let h='<div class=hdr>tick '+s.tick+'   fps '+s.fps+'   running '+s.running+'   cpsr '+hx(s.cpsr)+'</div><table>';"
+        "   for(let i=0;i<16;i+=4){h+='<tr>';for(let j=0;j<4;j++){let k=i+j;h+='<td><span class=k>'+RN[k]+'</span> '+hx(s.regs[k])+'</td>';}h+='</tr>';}"
+        "   h+='</table>';document.getElementById('cpubox').innerHTML=h;}}catch(e){}}"
+        " else{try{let r=await(await fetch('/api/log?cat='+cur)).json();"
+        "  let el=document.getElementById('p'+cur);let at=el.scrollTop+el.clientHeight>=el.scrollHeight-30;"
+        "  el.textContent=r.lines.join('\\n');if(at)el.scrollTop=el.scrollHeight;}catch(e){}}"
+        "}"
+        "setInterval(tickUI,250);tickUI();"
+        "</script></body></html>";
   }
 
   static std::string IndexHtml() {

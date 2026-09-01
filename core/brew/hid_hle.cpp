@@ -1,5 +1,7 @@
 #include "core/brew/hid_hle.h"
 
+#include "core/control/debug_sink.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstdarg>
@@ -13,13 +15,14 @@ namespace {
 // Env-gated controller/input trace (ZEEB_LOG_INPUT=1). Off by default.
 void InputLog(const char* fmt, ...) {
   static const bool on = std::getenv("ZEEB_LOG_INPUT") != nullptr;
-  if (!on) return;
+  char buf[512];
   std::va_list ap;
   va_start(ap, fmt);
-  std::fprintf(stderr, "[input] ");
-  std::vfprintf(stderr, fmt, ap);
-  std::fprintf(stderr, "\n");
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  ::zeebulator::DebugLog(::zeebulator::DebugCat::kInput, buf);
+  if (!on) return;
+  std::fprintf(stderr, "[input] %s\n", buf);
 }
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }

@@ -1,5 +1,7 @@
 #include "core/brew/gl_hle.h"
 
+#include "core/control/debug_sink.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -16,13 +18,14 @@ namespace {
 // Env-gated GPU/GLES trace (ZEEB_LOG_GPU=1). Off by default.
 void GpuLog(const char* fmt, ...) {
   static const bool on = std::getenv("ZEEB_LOG_GPU") != nullptr;
-  if (!on) return;
+  char buf[512];
   std::va_list ap;
   va_start(ap, fmt);
-  std::fprintf(stderr, "[gpu] ");
-  std::vfprintf(stderr, fmt, ap);
-  std::fprintf(stderr, "\n");
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  ::zeebulator::DebugLog(::zeebulator::DebugCat::kGpu, buf);
+  if (!on) return;
+  std::fprintf(stderr, "[gpu] %s\n", buf);
 }
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }

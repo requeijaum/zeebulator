@@ -1,5 +1,7 @@
 #include "core/brew/media_hle.h"
 
+#include "core/control/debug_sink.h"
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -20,13 +22,14 @@ namespace {
 // family (ZEEB_LOG_SLOT / ZEEB_LOG_CREATEINSTANCE / ZEEB_LOG_FILE).
 void MediaLog(const char* fmt, ...) {
   static const bool on = std::getenv("ZEEB_LOG_MEDIA") != nullptr;
-  if (!on) return;
+  char buf[512];
   std::va_list ap;
   va_start(ap, fmt);
-  std::fprintf(stderr, "[media] ");
-  std::vfprintf(stderr, fmt, ap);
-  std::fprintf(stderr, "\n");
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  ::zeebulator::DebugLog(::zeebulator::DebugCat::kMedia, buf);
+  if (!on) return;
+  std::fprintf(stderr, "[media] %s\n", buf);
 }
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
