@@ -25,6 +25,8 @@
 //   {"cmd":"state"}                      -> {"ok":true,"tick":N,"pc":..,"running":true}
 //   {"cmd":"reg","n":15}                 -> {"ok":true,"value":...}
 //   {"cmd":"read","addr":..,"len":..}    -> {"ok":true,"hex":"...."}
+//   {"cmd":"write","addr":..,"hex":"deadbeef"} -> {"ok":true,"addr":..,"len":N}
+//   {"cmd":"setreg","n":0,"value":..}    -> {"ok":true,"n":..,"value":..}
 //   {"cmd":"screenshot","path":"/tmp/x.ppm"} -> {"ok":true,"w":..,"h":..,"path":..}
 //   {"cmd":"quit"}                       -> {"ok":true}         (stops the loop)
 // Unknown / malformed -> {"ok":false,"error":"..."}.
@@ -63,10 +65,13 @@ struct ControlRequest {
   std::string cmd;
   std::string button;    // for press/down/up
   std::string str_path;  // for screenshot
+  std::string str_hex;   // for write (hex bytes payload)
   long i0 = 0;           // generic int arg (ticks / n / addr)
   long i1 = 0;           // generic int arg (len)
+  long val = 0;          // explicit "value" arg (for setreg)
   bool has_i0 = false;
   bool has_i1 = false;
+  bool has_val = false;
   std::promise<std::string> reply;  // main loop sets the JSON response line
 };
 
@@ -204,8 +209,9 @@ class ControlServer {
     if (req.cmd.empty()) return false;
     req.button = ExtractString(s, "button");
     req.str_path = ExtractString(s, "path");
+    req.str_hex = ExtractString(s, "hex");
     // Accept several int keys into i0 (first found wins) and len into i1.
-    for (const char* k : {"ticks", "n", "addr", "value", "port"}) {
+    for (const char* k : {"ticks", "n", "addr", "port"}) {
       long v;
       if (ExtractInt(s, k, &v)) {
         req.i0 = v;
@@ -217,6 +223,11 @@ class ControlServer {
     if (ExtractInt(s, "len", &len)) {
       req.i1 = len;
       req.has_i1 = true;
+    }
+    long value;
+    if (ExtractInt(s, "value", &value)) {
+      req.val = value;
+      req.has_val = true;
     }
     return true;
   }

@@ -2845,6 +2845,47 @@ int main(int argc, char** argv) {
                           ",\"hex\":\"" + hex + "\"}";
         req->reply.set_value(out);
       }
+    } else if (c == "write") {
+      // Hex payload -> bytes written at addr (max 256, mirrors read).
+      const std::string& hx = req->str_hex;
+      if (!req->has_i0 || hx.empty() || (hx.size() % 2) != 0 || hx.size() > 512) {
+        req->reply.set_value(
+            "{\"ok\":false,\"error\":\"write addr + hex(even, <=256 bytes)\"}");
+      } else {
+        auto nyb = [](char ch) -> int {
+          if (ch >= '0' && ch <= '9') return ch - '0';
+          if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+          if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+          return -1;
+        };
+        long n = 0;
+        bool bad = false;
+        for (size_t i = 0; i + 1 < hx.size(); i += 2) {
+          int hi = nyb(hx[i]), lo = nyb(hx[i + 1]);
+          if (hi < 0 || lo < 0) { bad = true; break; }
+          cpu.GetMemory().Write8(static_cast<uint32_t>(req->i0) + n,
+                                 static_cast<uint8_t>((hi << 4) | lo));
+          ++n;
+        }
+        if (bad) {
+          req->reply.set_value("{\"ok\":false,\"error\":\"non-hex digit\"}");
+        } else {
+          std::snprintf(buf, sizeof(buf),
+                        "{\"ok\":true,\"addr\":%ld,\"len\":%ld}", req->i0, n);
+          req->reply.set_value(buf);
+        }
+      }
+    } else if (c == "setreg") {
+      if (!req->has_i0 || req->i0 < 0 || req->i0 > 16 || !req->has_val) {
+        req->reply.set_value(
+            "{\"ok\":false,\"error\":\"setreg n 0..16 + value\"}");
+      } else {
+        cpu.SetRegister(static_cast<int>(req->i0),
+                        static_cast<uint32_t>(req->val));
+        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"n\":%ld,\"value\":%u}",
+                      req->i0, cpu.GetRegister(static_cast<int>(req->i0)));
+        req->reply.set_value(buf);
+      }
     } else if (c == "screenshot") {
       std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
       const auto& fb = display.LastPresentedFramebuffer();
