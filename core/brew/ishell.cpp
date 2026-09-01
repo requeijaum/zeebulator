@@ -1,5 +1,7 @@
 #include "core/brew/ishell.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <utility>
 
 #include "core/brew/interface_object.h"
@@ -43,17 +45,24 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
   // int CreateInstance(IShell *po, AEECLSID cls, void **ppo)
   uint32_t cls_id = core.GetRegister(kR1);
   uint32_t ppobj = core.GetRegister(kR2);
+  // Phase 9c unknown-interface logger (env-gated, non-perturbing: stderr only,
+  // no new HLE state / no traps registered). Set ZEEB_LOG_CREATEINSTANCE=1 to
+  // surface every clsid a title requests and whether it was satisfied.
+  const bool log_ci = std::getenv("ZEEB_LOG_CREATEINSTANCE") != nullptr;
   auto factory_it = factories_.find(cls_id);
   if (factory_it != factories_.end()) {
+    if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> factory OK\n", cls_id);
     memory_.Write32(ppobj, factory_it->second());
     core.SetRegister(kR0, 0);  // SUCCESS
     return;
   }
   auto it = instances_.find(cls_id);
   if (it == instances_.end()) {
+    if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> UNKNOWN (EFAILED)\n", cls_id);
     core.SetRegister(kR0, 1);  // EFAILED-ish: unknown/unimplemented class
     return;
   }
+  if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> instance OK\n", cls_id);
   memory_.Write32(ppobj, it->second);
   core.SetRegister(kR0, 0);  // SUCCESS
 }
