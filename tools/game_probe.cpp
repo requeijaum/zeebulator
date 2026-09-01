@@ -1412,6 +1412,33 @@ int main(int argc, char** argv) {
     stub_methods[33] = [bound_texture, refresh_descriptors](zeebulator::IArmCore& core) {
       refresh_descriptors(core);
       *bound_texture = core.GetRegister(zeebulator::kR2);
+      // Phase 9d producer-stall dump (env-gated ZEEB_WALL_DUMP, stderr-only,
+      // non-perturbing: reads memory, changes NO state/returns). Dumps the
+      // command-list node structure around the cursor so the successor-link
+      // offset can be located. Emits at most a few times per distinct cursor.
+      if (std::getenv("ZEEB_WALL_DUMP") != nullptr) {
+        static std::map<uint32_t, int> seen;
+        static uint32_t last_cur = 0xdeadbeef;
+        static int call_n = 0;
+        uint32_t cur = core.GetRegister(zeebulator::kR2);
+        if (cur != last_cur) {
+          std::fprintf(stderr, "[wallseq] call#%d slot33 cursor -> 0x%08x\n", call_n, cur);
+          last_cur = cur;
+        }
+        ++call_n;
+        if (cur != 0 && seen[cur]++ < 1) {
+          uint32_t desc = cur - 0x30;  // node = descriptor_base + 0x30
+          std::fprintf(stderr, "[walldump] slot33 cursor=0x%08x desc=0x%08x\n", cur, desc);
+          // Scan desc..desc+0x100 for words that equal any of the 3 known
+          // cycle cursors -> locates the successor-link field (node3->node1).
+          for (uint32_t o = 0; o < 0x100; o += 4) {
+            uint32_t w = core.GetMemory().Read32(desc + o);
+            if (w == 0x80324374 || w == 0x80364820 || w == 0x80310a7c) {
+              std::fprintf(stderr, "  LINK desc+0x%02x = 0x%08x\n", o, w);
+            }
+          }
+        }
+      }
       core.SetRegister(zeebulator::kR0, 0);
     };
     // Real slot 48 is this scaffold's own real "a new real screen is
