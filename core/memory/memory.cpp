@@ -55,13 +55,23 @@ void Memory::Write16(uint32_t address, uint16_t value) {
 }
 
 void Memory::Write32(uint32_t address, uint32_t value) {
-  // TEMPORARY experiment (fix candidate a): the game stores module+0x7b8
-  // (code) as its struct +0x28 media source → vtable[6] garbage → crash.
-  // Redirect to a valid MediaHle object (the one the game already holds
-  // at struct+8). REMOVE after the experiment.
-  if (address == 0x803001f0) {
-    std::fprintf(stderr, "[redirect+0x28] game wrote 0x%08x → 0x80200080\n", value);
-    value = 0x80200080;
+  // TEMPORARY experiment (generalized): the game stores module+0x7b8
+  // (code) as each per-sound struct's +0x28 media source → vtable[6]
+  // garbage → crash. Generalize: any write to a struct's +0x28 gets
+  // replaced by that struct's OWN +8 field (the valid MediaHle object
+  // the game holds per channel — the 0x11f540 loop has ~5 structs).
+  // Match: address is a +0x28 slot in the module's bss struct array
+  // (0x803001c0..0x80301000, 8-aligned) AND the game's value is the
+  // module-code pointer it wrongly stores (module range — NOT the
+  // zero-init writes, which must pass through). REMOVE after root fix.
+  if (address >= 0x803001e0 && address < 0x80301000 && (address & 7) == 0 &&
+      value >= 0x80300000 && value < 0x80380000) {
+    uint32_t self_media = Read32(address - 0x20);  // struct +8
+    if (self_media >= 0x80000000 && self_media < 0x90000000) {
+      std::fprintf(stderr, "[redirect+0x28] addr=0x%08x game wrote 0x%08x → 0x%08x\n",
+                   address, value, self_media);
+      value = self_media;
+    }
   }
   Write8(address, static_cast<uint8_t>(value));
   Write8(address + 1, static_cast<uint8_t>(value >> 8));
