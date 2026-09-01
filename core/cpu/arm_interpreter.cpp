@@ -4,6 +4,11 @@
 
 namespace zeebulator {
 
+// TEMPORARY debug: current PC exposed to Memory for write-watches.
+// Set by ArmInterpreter::Step(); read by Memory::Write8. REMOVE after
+// the +0x28 media-source write is identified.
+uint32_t g_watch_pc = 0;
+
 namespace {
 
 uint32_t RotateRight(uint32_t value, uint32_t amount) {
@@ -1004,6 +1009,7 @@ void ArmInterpreter::ExecuteThumb(uint16_t instr) {
 
 void ArmInterpreter::Step() {
   uint32_t fetch_addr = regs_[kPC];
+  g_watch_pc = fetch_addr;  // TEMPORARY watch support
   // TEMPORARY debug hook: when PC lands in the game_probe scratch
   // region (0x0009xxxx — where the AEEAppStart struct lives), print
   // the call site (LR) + instruction. REMOVE after root-causing.

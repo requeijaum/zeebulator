@@ -33,9 +33,19 @@ uint32_t Memory::Read32(uint32_t address) const {
          (static_cast<uint32_t>(Read8(address + 1)) << 8) |
          (static_cast<uint32_t>(Read8(address + 2)) << 16) |
          (static_cast<uint32_t>(Read8(address + 3)) << 24);
-}
+ }
+
+// TEMPORARY debug: set by ArmInterpreter::Step (arm_interpreter.cpp).
+extern uint32_t g_watch_pc;
 
 void Memory::Write8(uint32_t address, uint8_t value) {
+  // TEMPORARY debug watch: the game's per-sound struct (module+0x1c8,
+  // the crash object) — log every byte write with the interpreter PC.
+  // REMOVE after root-causing the +0x28 media-source write.
+  if (address >= 0x803001c8 && address < 0x80300200) {
+    std::fprintf(stderr, "[watch+0x%03x] pc=0x%08x addr=0x%08x val=0x%02x\n",
+                 address - 0x803001c8, zeebulator::g_watch_pc, address, value);
+  }
   MutablePage(address / kPageSize)[address & kPageMask] = value;
 }
 
