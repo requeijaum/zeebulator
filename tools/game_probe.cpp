@@ -809,8 +809,19 @@ int main(int argc, char** argv) {
   // scale-preset hotkeys below -- Sdl2UnifiedBackend letterboxes
   // whatever real size the window ends up at either way (see its own
   // PresentFrame doc comment), so nothing else needs to change for this.
+  // Window title shows the actual game (mod filename stem) instead of a
+  // generic "game probe", so multiple concurrent runs are tellable apart
+  // and screenshots are self-labeling. e.g. ".../274754/ddragonz.mod" ->
+  // "Zeebulator - ddragonz".
+  std::string window_title = "Zeebulator - game probe";
+  {
+    std::filesystem::path mp(argv[1]);
+    std::string stem = mp.stem().string();
+    if (!stem.empty()) window_title = "Zeebulator - " + stem;
+  }
+  std::fprintf(stderr, "[title] %s\n", window_title.c_str());
   SDL_Window* window = SDL_CreateWindow(
-      "Zeebulator - game probe", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kWidth, kHeight,
+      window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kWidth, kHeight,
       SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 
   zeebulator::ArmInterpreter cpu;
