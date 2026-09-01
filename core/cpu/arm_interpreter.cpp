@@ -1147,8 +1147,51 @@ void ArmInterpreter::Step() {
           int32_t rs_half = static_cast<int16_t>(y ? (rs_val >> 16) : (rs_val & 0xFFFF));
           regs_[rd] = static_cast<uint32_t>(rm_half * rs_half);
         } else {
-          throw UnimplementedInstruction(
-              "Miscellaneous instruction space (MRS/MSR/etc.)");
+          // MRS/MSR — the PSR access pair in this "miscellaneous" space:
+          //   MRS Rd, CPSR     cond 00010 0 001111 Rd 0000 0000 0000
+          //   MRS Rd, SPSR     cond 00010 1 001111 Rd 0000 0000 0000
+          //   MSR CPSR_reg,Rm  cond 00010 R 10 fm 1111 00000000 Rm
+          //   MSR CPSR_imm,#i  cond 00010 R 10 fm 1111 imm8 rot
+          // (fm = field mask, bits 19:16 — one bit per byte: 1=ctl,
+          //  2=ext, 4=status, 8=flags; R bit selects SPSR).
+          // Found live in Double Dragon's timer callback (the current
+          // media-notify/timer gap: "Miscellaneous instruction space
+          // (MRS/MSR/etc.)" at pc=0x00090024).
+          constexpr uint32_t kMrsMask = 0x0FBF0FFF;
+          constexpr uint32_t kMrsCpsr = 0x010F0000;
+          constexpr uint32_t kMrsSpsr = 0x014F0000;
+          constexpr uint32_t kMsrRegMask = 0x0FB0FFF0;
+          constexpr uint32_t kMsrCpsrReg = 0x0120F000;
+          constexpr uint32_t kMsrSpsrReg = 0x0160F000;
+          constexpr uint32_t kMsrImmMask = 0x0FB0F000;
+          constexpr uint32_t kMsrCpsrImm = 0x0320F000;
+          constexpr uint32_t kMsrSpsrImm = 0x0360F000;
+          if ((instr & kMrsMask) == kMrsCpsr || (instr & kMrsMask) == kMrsSpsr) {
+            // No SPSR model: return CPSR for both variants (user-mode
+            // guest code rarely reads SPSR; approximating beats throwing).
+            regs_[(instr >> 12) & 0xF] = GetCpsr();
+          } else if ((instr & kMsrRegMask) == kMsrCpsrReg ||
+                     (instr & kMsrRegMask) == kMsrSpsrReg ||
+                     (instr & kMsrImmMask) == kMsrCpsrImm ||
+                     (instr & kMsrImmMask) == kMsrSpsrImm) {
+            uint32_t field_mask = (instr >> 16) & 0xF;  // byte enables
+            uint32_t value;
+            if ((instr & kMsrRegMask) == kMsrCpsrReg ||
+                (instr & kMsrRegMask) == kMsrSpsrReg) {
+              value = ReadOperandRegister(instr & 0xF);
+            } else {
+              value = RotateRight(instr & 0xFF, 2 * ((instr >> 8) & 0xF));
+            }
+            uint32_t byte_mask = 0;
+            if (field_mask & 0x1) byte_mask |= 0x000000FF;
+            if (field_mask & 0x2) byte_mask |= 0x0000FF00;
+            if (field_mask & 0x4) byte_mask |= 0x00FF0000;
+            if (field_mask & 0x8) byte_mask |= 0xFF000000;
+            SetCpsr((GetCpsr() & ~byte_mask) | (value & byte_mask));
+          } else {
+            throw UnimplementedInstruction(
+                "Miscellaneous instruction space (MRS/MSR/etc.)");
+          }
         }
       } else {
         ExecuteDataProcessing(instr);

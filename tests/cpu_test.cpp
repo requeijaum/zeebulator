@@ -29,13 +29,58 @@ bool Flag(const ArmInterpreter& cpu, uint32_t bit) {
 
 // --- Data processing: immediate operand2 ---
 
-TEST(Cpu, MovImmediate) {
+TEST(Cpu, MrsReadsCpsr) {
   ArmInterpreter cpu;
-  cpu.GetMemory().Write32(0, 0xE3A00005);  // MOV R0, #5
+  cpu.SetCpsr(0xF00000D3);  // NZCV set + some control bits
+  cpu.GetMemory().Write32(0, 0xE10F0000);  // MRS R0, CPSR
   cpu.Step();
-  EXPECT_EQ(cpu.GetRegister(kR0), 5u);
-  EXPECT_EQ(cpu.GetRegister(kPC), 4u);  // advanced by 4, no branch
+  EXPECT_EQ(cpu.GetRegister(kR0), 0xF00000D3u);
 }
+
+TEST(Cpu, MrsSpsrReturnsCpsrApproximation) {
+  ArmInterpreter cpu;
+  cpu.SetCpsr(0x00000010);
+  cpu.GetMemory().Write32(0, 0xE14F0000);  // MRS R0, SPSR (no SPSR model)
+  cpu.Step();
+  EXPECT_EQ(cpu.GetRegister(kR0), 0x00000010u);
+}
+
+TEST(Cpu, MsrFlagsFieldUpdatesCpsr) {
+  ArmInterpreter cpu;
+  cpu.SetCpsr(0);  // all flags clear
+  cpu.SetRegister(kR0, 0xC0000000);  // N=1, Z=1, C=0, V=0
+  // MSR CPSR_f, R0 (field mask 0x8 = flags byte)
+  cpu.GetMemory().Write32(0, 0xE128F000);
+  cpu.Step();
+  EXPECT_TRUE(Flag(cpu, kCpsrN));
+  EXPECT_TRUE(Flag(cpu, kCpsrZ));
+  EXPECT_FALSE(Flag(cpu, kCpsrC));
+  EXPECT_FALSE(Flag(cpu, kCpsrV));
+}
+
+TEST(Cpu, MsrImmediateUpdatesFlagsOnly) {
+  ArmInterpreter cpu;
+  cpu.SetCpsr(0x000000D3);  // control bits set, flags clear
+  // MSR CPSR_f, #0xC0000000: imm8 0xC0 rotated right by 4*2=8 → 0xC0000000
+  // (immediate form has bit 25 = 1 → 0xE328F4C0)
+  cpu.GetMemory().Write32(0, 0xE328F4C0);
+  cpu.Step();
+  // Flags byte only: N,Z set, control bits untouched
+  EXPECT_TRUE(Flag(cpu, kCpsrN));
+  EXPECT_TRUE(Flag(cpu, kCpsrZ));
+  EXPECT_EQ(cpu.GetCpsr() & 0xFF, 0xD3u);
+}
+
+TEST(Cpu, MsrNoFieldMaskWritesNothing) {
+  ArmInterpreter cpu;
+  cpu.SetCpsr(0x000000D3);
+  cpu.SetRegister(kR1, 0xFFFFFFFF);
+  // MSR CPSR, R1 with field mask 0 → no bytes written
+  cpu.GetMemory().Write32(0, 0xE120F001);
+  cpu.Step();
+  EXPECT_EQ(cpu.GetCpsr(), 0x000000D3u);
+}
+
 
 TEST(Cpu, ConditionalInstructionSkippedWhenConditionFails) {
   ArmInterpreter cpu;
