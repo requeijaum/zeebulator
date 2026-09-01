@@ -37,6 +37,7 @@ add_executable(zeebulator_tests
   mod_runtime_test.cpp
   font5x7_test.cpp
   scaffold_object_test.cpp
+  title_quirks_test.cpp
   atitc_test.cpp
   png_test.cpp
   letterbox_test.cpp

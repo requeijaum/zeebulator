@@ -69,6 +69,8 @@ add_library(zeebulator_core STATIC
   brew/gl_hle.h
   brew/hid_hle.cpp
   brew/hid_hle.h
+  brew/compat/title_quirks.cpp
+  brew/compat/title_quirks.h
 )
 
 target_include_directories(zeebulator_core PUBLIC ${PROJECT_SOURCE_DIR})
