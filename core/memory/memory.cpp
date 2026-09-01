@@ -55,6 +55,14 @@ void Memory::Write16(uint32_t address, uint16_t value) {
 }
 
 void Memory::Write32(uint32_t address, uint32_t value) {
+  // TEMPORARY experiment (fix candidate a): the game stores module+0x7b8
+  // (code) as its struct +0x28 media source → vtable[6] garbage → crash.
+  // Redirect to a valid MediaHle object (the one the game already holds
+  // at struct+8). REMOVE after the experiment.
+  if (address == 0x803001f0) {
+    std::fprintf(stderr, "[redirect+0x28] game wrote 0x%08x → 0x80200080\n", value);
+    value = 0x80200080;
+  }
   Write8(address, static_cast<uint8_t>(value));
   Write8(address + 1, static_cast<uint8_t>(value >> 8));
   Write8(address + 2, static_cast<uint8_t>(value >> 16));
