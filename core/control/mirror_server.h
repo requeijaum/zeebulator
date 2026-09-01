@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -189,6 +190,15 @@ class MirrorServer {
 
   bool IsRunning() const { return running_.load(); }
 
+  // Optional guest-memory reader, set by the runner (game_probe). Given an
+  // address and length it returns a lowercase hex string of that many bytes.
+  // Called from the HTTP thread for the /api/mem route; the read is a
+  // best-effort live peek (Memory::Read8 is a const page lookup), matching
+  // the mirror's latest-wins, no-guest-state-mutation contract.
+  void SetMemReader(std::function<std::string(uint32_t, uint32_t)> fn) {
+    mem_reader_ = std::move(fn);
+  }
+
   // Called from the main (GL-owning) thread. Stashes the latest raw RGBA
   // frame (a cheap copy) and wakes the encoder thread. The expensive PNG
   // encode (CRC32/Adler32/DEFLATE over ~1.2 MB) runs OFF this thread so it
@@ -288,6 +298,19 @@ class MirrorServer {
       auto q = path.find("cat=");
       if (q != std::string::npos) cat = path.substr(q + 4);
       SendText(fd, "200 OK", "application/json", LogJson(cat));
+    } else if (path.rfind("/api/mem", 0) == 0) {
+      // /api/mem?addr=<hex-or-dec>&len=<n> -> {"addr":..,"len":..,"hex":".."}
+      uint32_t addr = 0, len = 64;
+      auto pa = path.find("addr=");
+      if (pa != std::string::npos) addr = static_cast<uint32_t>(std::strtoul(path.c_str() + pa + 5, nullptr, 0));
+      auto pl = path.find("len=");
+      if (pl != std::string::npos) len = static_cast<uint32_t>(std::strtoul(path.c_str() + pl + 4, nullptr, 0));
+      if (len == 0) len = 1;
+      if (len > 4096) len = 4096;  // cap one request
+      std::string hex = mem_reader_ ? mem_reader_(addr, len) : std::string();
+      char hb[64];
+      std::snprintf(hb, sizeof(hb), "{\"addr\":%u,\"len\":%u,\"hex\":\"", addr, len);
+      SendText(fd, "200 OK", "application/json", std::string(hb) + hex + "\"}");
     } else {
       SendText(fd, "200 OK", "text/html", IndexHtml());
     }
@@ -378,6 +401,7 @@ class MirrorServer {
         "<button data-t=gpu>GPU</button>"
         "<button data-t=input>Input</button>"
         "<button data-t=media>Media</button>"
+        "<button data-t=mem>Memory</button>"
         "<button data-t=log>Log</button>"
         "</div><div id=panes>"
         "<div id=screen class=on><img id=v src=/frame.png><div id=sstat class=hdr></div></div>"
@@ -386,6 +410,10 @@ class MirrorServer {
         "<div id=gpu><pre id=pgpu></pre></div>"
         "<div id=input><pre id=pinput></pre></div>"
         "<div id=media><pre id=pmedia></pre></div>"
+        "<div id=mem><div class=hdr>addr <input id=maddr value=0x80200000 size=12> "
+        "len <input id=mlen value=256 size=5> <button id=mgo>read</button> "
+        "<label><input type=checkbox id=mauto> auto</label></div>"
+        "<pre id=pmem></pre></div>"
         "<div id=log><pre id=plog></pre></div>"
         "</div>"
         "<script>"
@@ -397,6 +425,16 @@ class MirrorServer {
         "});"
         "const RN=['r0','r1','r2','r3','r4','r5','r6','r7','r8','r9','r10','r11','r12','sp','lr','pc'];"
         "function hx(n){return '0x'+(n>>>0).toString(16).padStart(8,'0')}"
+        "function memDump(base,hex){let o='';for(let i=0;i<hex.length/2;i+=16){"
+        "let a=(base+i)>>>0;o+=a.toString(16).padStart(8,'0')+'  ';let asc='';"
+        "for(let j=0;j<16;j++){if(i+j<hex.length/2){let b=parseInt(hex.substr((i+j)*2,2),16);"
+        "o+=hex.substr((i+j)*2,2)+' ';asc+=(b>=32&&b<127)?String.fromCharCode(b):'.';}else{o+='   ';}}"
+        "o+=' '+asc+'\\n';}return o;}"
+        "async function readMem(){let a=parseInt(document.getElementById('maddr').value)>>>0;"
+        "let l=parseInt(document.getElementById('mlen').value)||256;"
+        "try{let r=await(await fetch('/api/mem?addr='+a+'&len='+l)).json();"
+        "document.getElementById('pmem').textContent=memDump(r.addr,r.hex);}catch(e){}}"
+        "document.getElementById('mgo').onclick=readMem;"
         "async function tickUI(){"
         " if(cur=='screen'){document.getElementById('v').src='/frame.png?t='+Date.now();"
         "  try{let s=await(await fetch('/status')).json();"
@@ -406,6 +444,7 @@ class MirrorServer {
         "  else{let h='<div class=hdr>tick '+s.tick+'   fps '+s.fps+'   running '+s.running+'   cpsr '+hx(s.cpsr)+'</div><table>';"
         "   for(let i=0;i<16;i+=4){h+='<tr>';for(let j=0;j<4;j++){let k=i+j;h+='<td><span class=k>'+RN[k]+'</span> '+hx(s.regs[k])+'</td>';}h+='</tr>';}"
         "   h+='</table>';document.getElementById('cpubox').innerHTML=h;}}catch(e){}}"
+        " else if(cur=='mem'){if(document.getElementById('mauto').checked)readMem();}"
         " else{try{let r=await(await fetch('/api/log?cat='+cur)).json();"
         "  let el=document.getElementById('p'+cur);let at=el.scrollTop+el.clientHeight>=el.scrollHeight-30;"
         "  el.textContent=r.lines.join('\\n');if(at)el.scrollTop=el.scrollHeight;}catch(e){}}"
@@ -465,6 +504,9 @@ class MirrorServer {
   std::vector<uint8_t> pending_raw_;
   int pending_w_ = 0, pending_h_ = 0;
   bool pending_ready_ = false;
+
+  // Optional live guest-memory reader (set by the runner); see SetMemReader.
+  std::function<std::string(uint32_t, uint32_t)> mem_reader_;
 };
 
 }  // namespace zeebulator

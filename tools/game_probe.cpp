@@ -2780,6 +2780,21 @@ int main(int argc, char** argv) {
   if (debug_ui_on) zeebulator::DebugSink::Instance().Enable();
   if (mirror_port > 0) {
     mirror_server.Start(mirror_port);
+    // Live guest-memory peek for the debug UI's Memory tab (/api/mem).
+    // Read-only best-effort snapshot via Memory::Read8 (a const page
+    // lookup) -- never mutates guest state, matching the mirror contract.
+    mirror_server.SetMemReader([&cpu](uint32_t addr, uint32_t len) {
+      static const char* kHex = "0123456789abcdef";
+      std::string out;
+      out.reserve(static_cast<size_t>(len) * 2);
+      auto& mem = cpu.GetMemory();
+      for (uint32_t i = 0; i < len; ++i) {
+        uint8_t b = mem.Read8(addr + i);
+        out.push_back(kHex[b >> 4]);
+        out.push_back(kHex[b & 0xF]);
+      }
+      return out;
+    });
     if (debug_ui_on)
       std::fprintf(stderr, "[debug] tabbed debug UI at http://127.0.0.1:%d/debug\n",
                    mirror_port);
