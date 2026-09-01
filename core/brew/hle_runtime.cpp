@@ -16,12 +16,28 @@ HleRuntime::HleRuntime(IArmCore& core, uint32_t trap_base, uint32_t trap_size)
   core.SetCallOutHandler(
       [this](IArmCore& c, uint32_t addr) { Dispatch(c, addr); });
   functions_.push_back(nullptr);  // slot 0: reserved return sentinel
+  labels_.emplace_back();         // keep labels_ parallel to functions_
 }
 
 uint32_t HleRuntime::Register(HleFunction fn) {
   uint32_t index = static_cast<uint32_t>(functions_.size());
   functions_.push_back(std::move(fn));
+  labels_.emplace_back();  // keep labels_ parallel to functions_
   return trap_base_ + index * 4;
+}
+
+uint32_t HleRuntime::RegisterLabeled(HleFunction fn, std::string label) {
+  uint32_t index = static_cast<uint32_t>(functions_.size());
+  functions_.push_back(std::move(fn));
+  labels_.push_back(std::move(label));
+  return trap_base_ + index * 4;
+}
+
+std::string HleRuntime::LabelForAddress(uint32_t sentinel_address) const {
+  if (sentinel_address < trap_base_) return {};
+  uint32_t index = (sentinel_address - trap_base_) / 4;
+  if (index < labels_.size()) return labels_[index];
+  return {};
 }
 
 void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
@@ -40,9 +56,11 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
     // implement next from real demand. Emits once per (slot) to avoid floods.
     static std::set<uint32_t> seen;
     if (seen.insert(index).second) {
+      std::string label = LabelForAddress(address);
       std::fprintf(stderr,
-                   "[slot] unimplemented trap idx=%u addr=0x%08x "
+                   "[slot] unimplemented %s trap idx=%u addr=0x%08x "
                    "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
+                   label.empty() ? "(unlabeled)" : label.c_str(),
                    index, address, core.GetRegister(kR0), core.GetRegister(kR1),
                    core.GetRegister(kR2), core.GetRegister(kR3),
                    core.GetRegister(kLR));

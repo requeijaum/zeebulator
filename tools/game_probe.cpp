@@ -49,6 +49,26 @@
 
 namespace {
 
+// Phase 9b/9d: per-slot NID labels for the ABD 200-slot rendering-engine
+// scaffold (clsid family 0x0103d8ec, the object the tick-9 wall cycles
+// on). Only the slots this project has evidence for are named; the rest
+// fall through to the generic "ABD_RENDER_SCAFFOLD::slotN" form. These
+// names come straight from tools/game_probe.cpp's own live-traced slot
+// handlers and research/sources/2026-09-01_abd-bringup.md -- they are
+// OBSERVED roles, not guesses.
+inline std::vector<const char*> abd_scaffold_slot_names() {
+  std::vector<const char*> names(200, nullptr);
+  names[2] = "QueryInterface";           // mints child scaffolds
+  names[33] = "SelectTexture/consume-cmdlist";  // wall consumer, cursor r2
+  names[40] = "SetFillColor";
+  names[48] = "BeginScreen";
+  names[64] = "RegisterDescriptor/producer";    // wall producer candidate
+  names[54] = "wall-cycle-slot54";       // in the 4-trap tick-9 cycle
+  names[100] = "wall-cycle-slot100";     // in the 4-trap tick-9 cycle
+  names[107] = "DrawGeometry";
+  return names;
+}
+
 std::vector<uint8_t> ReadFile(const char* path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -343,12 +363,68 @@ CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap
   // window never re-presented.
   uint64_t steps_since_liveness_check = 0;
   auto last_liveness_present = std::chrono::steady_clock::now();
+  // Env-gated spin profiler (ZEEB_SPIN_PROFILE=1): samples the guest PC into
+  // a histogram and, on budget-exceed, prints the hottest PCs plus the
+  // min/max PC of the last window -- names WHERE a non-terminating guest
+  // loop spins, without perturbing execution (pure observation).
+  const bool spin_profile = std::getenv("ZEEB_SPIN_PROFILE") != nullptr;
+  std::map<uint32_t, uint64_t> pc_hist;
+  uint32_t win_lo = 0xffffffffu, win_hi = 0;
+  uint32_t last_call_addr = 0;  // most recent BL target (in-module) before spin
   for (uint64_t steps = 0; cpu.GetRegister(zeebulator::kPC) != trap_base; ++steps) {
     if (steps >= kMaxSteps) {
       std::printf("warning: exceeded %llu steps without returning -- aborting this call\n",
                   static_cast<unsigned long long>(kMaxSteps));
       result.exceeded_step_budget = true;
+      if (spin_profile) {
+        std::vector<std::pair<uint32_t, uint64_t>> top(pc_hist.begin(), pc_hist.end());
+        std::sort(top.begin(), top.end(),
+                  [](auto& a, auto& b) { return a.second > b.second; });
+        std::printf("  [spin] hottest guest PCs over last window (pc: hits, off=pc-modbase):\n");
+        for (size_t i = 0; i < top.size() && i < 16; ++i) {
+          std::printf("  [spin]   pc=0x%08x off=0x%08x hits=%llu\n", top[i].first,
+                      top[i].first - mod_base,
+                      static_cast<unsigned long long>(top[i].second));
+        }
+        std::printf("  [spin] loop PC span: 0x%08x-0x%08x (off 0x%08x-0x%08x), distinct=%zu\n",
+                    win_lo, win_hi, win_lo - mod_base, win_hi - mod_base, pc_hist.size());
+        std::printf("  [spin] last in-module BL target before spin: 0x%08x (off 0x%08x)\n",
+                    last_call_addr, last_call_addr - mod_base);
+      }
       break;
+    }
+    if (spin_profile) {
+      uint32_t spc = cpu.GetRegister(zeebulator::kPC);
+      // Env-gated entry watch: log the node struct + walker cursor at each
+      // entry of the two wall functions (+0x5ba0 walker, +0x5ddc node loop),
+      // first N times, to name why the traversal never terminates.
+      static int watch_n = 0;
+      if ((spc == mod_base + 0x5ba0 || spc == mod_base + 0x5ddc) &&
+          steps + 400000 >= kMaxSteps && watch_n < 80) {
+        ++watch_n;
+        uint32_t r0v = cpu.GetRegister(zeebulator::kR0);
+        uint32_t spv = cpu.GetRegister(zeebulator::kSP);
+        uint32_t cnt = (r0v >= 0x80000000u) ? cpu.GetMemory().Read32(r0v + 8) : 0;
+        auto& M = cpu.GetMemory();
+        std::printf("  [wall] fn=+0x%05x r0=%08x [r0]=%08x [r0+4]=%08x [r0+8]=%08x [r0+c]=%08x [r0+10]=%08x [r0+14]=%08x sp=%08x lr=%08x\n",
+                    spc - mod_base, r0v, M.Read32(r0v), M.Read32(r0v + 4), cnt,
+                    M.Read32(r0v + 0xc), M.Read32(r0v + 0x10), M.Read32(r0v + 0x14),
+                    spv, cpu.GetRegister(zeebulator::kLR));
+      }
+      // Only profile the tail of the run (the actual spin), keep it bounded.
+      if (steps + 200000 >= kMaxSteps) {
+        pc_hist[spc]++;
+        if (spc < win_lo) win_lo = spc;
+        if (spc > win_hi) win_hi = spc;
+      }
+      if (spc >= mod_base && spc < mod_base + mod_size) {
+        uint32_t instr = cpu.GetMemory().Read32(spc);
+        if ((instr & 0x0f000000u) == 0x0b000000u) {  // BL
+          int32_t off = (instr & 0x00ffffffu);
+          if (off & 0x00800000) off |= 0xff000000;
+          last_call_addr = spc + 8 + (off << 2);
+        }
+      }
     }
     if (display_for_liveness != nullptr &&
         (backend_for_liveness == nullptr || !backend_for_liveness->HasRealGlActivity()) &&
@@ -1803,8 +1879,9 @@ int main(int argc, char** argv) {
       hle.CallArmFunction(draw_rect_trap, kDisplayObj, kRectAddr, 0, 0x00FFFFFF);
       core.SetRegister(zeebulator::kLR, saved_lr);
     };
-    uint32_t obj = zeebulator::BuildInterfaceObject(cpu.GetMemory(), hle, stub_vtable, stub_object,
-                                                     stub_methods);
+    uint32_t obj = zeebulator::BuildInterfaceObjectLabeled(
+        cpu.GetMemory(), hle, stub_vtable, stub_object, stub_methods,
+        "ABD_RENDER_SCAFFOLD", abd_scaffold_slot_names());
     uint32_t out_ptr = core.GetRegister(zeebulator::kR2);
     if (out_ptr != 0) {
       cpu.GetMemory().Write32(out_ptr, obj);

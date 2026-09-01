@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "core/cpu/arm_core.h"
@@ -32,6 +33,19 @@ class HleRuntime {
   // should point at.
   uint32_t Register(HleFunction fn);
 
+  // Same, but attaches a human-readable label to the slot (e.g.
+  // "AEECLSID_DISPLAY::slot18 SetClipRect" or
+  // "ABD_RENDER_SCAFFOLD::slot33"). Purely diagnostic metadata: it does
+  // NOT change dispatch, it only lets the unimplemented-slot logger name
+  // what a title actually called instead of printing a bare trap index.
+  // This is the Phase 9b/9c per-slot NID labeling that Phase 9d uses to
+  // name the ABD wall.
+  uint32_t RegisterLabeled(HleFunction fn, std::string label);
+
+  // Returns the label attached to the trap at `sentinel_address` (the
+  // value a vtable slot points at), or empty string if none/unknown.
+  std::string LabelForAddress(uint32_t sentinel_address) const;
+
   // Calls into the app's own ARM code at `target` with up to 4 register
   // arguments, and runs the interpreter until that call returns. Returns
   // R0, the call's return value. Any UnimplementedInstruction the app
@@ -52,6 +66,9 @@ class HleRuntime {
   // Index 0 is reserved as CallArmFunction's return sentinel and is
   // never dispatched to a real HLE function -- see Dispatch().
   std::vector<HleFunction> functions_;
+  // Parallel to functions_: optional diagnostic label per slot (empty if
+  // unlabeled). Never read by Dispatch's control flow -- logger only.
+  std::vector<std::string> labels_;
 };
 
 }  // namespace zeebulator

@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "core/brew/interface_object.h"
+#include "core/brew/nid_table.h"
 
 namespace zeebulator {
 
@@ -51,18 +52,18 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
   const bool log_ci = std::getenv("ZEEB_LOG_CREATEINSTANCE") != nullptr;
   auto factory_it = factories_.find(cls_id);
   if (factory_it != factories_.end()) {
-    if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> factory OK\n", cls_id);
+    if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> factory OK\n", DescribeClsid(cls_id).c_str());
     memory_.Write32(ppobj, factory_it->second());
     core.SetRegister(kR0, 0);  // SUCCESS
     return;
   }
   auto it = instances_.find(cls_id);
   if (it == instances_.end()) {
-    if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> UNKNOWN (EFAILED)\n", cls_id);
+    if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> UNKNOWN (EFAILED)\n", DescribeClsid(cls_id).c_str());
     core.SetRegister(kR0, 1);  // EFAILED-ish: unknown/unimplemented class
     return;
   }
-  if (log_ci) std::fprintf(stderr, "[createinstance] cls=0x%08x -> instance OK\n", cls_id);
+  if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> instance OK\n", DescribeClsid(cls_id).c_str());
   memory_.Write32(ppobj, it->second);
   core.SetRegister(kR0, 0);  // SUCCESS
 }

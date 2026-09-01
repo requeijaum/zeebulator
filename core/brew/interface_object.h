@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "core/brew/hle_runtime.h"
@@ -19,5 +20,17 @@ namespace zeebulator {
 uint32_t BuildInterfaceObject(Memory& memory, HleRuntime& hle,
                                uint32_t vtable_address, uint32_t object_address,
                                const std::vector<HleRuntime::HleFunction>& methods);
+
+// Same, but labels each slot for the per-slot NID logger (Phase 9b/9c):
+// slot i is registered as "<interface_name>::slot<i>[ <method_names[i]>]".
+// `method_names` may be shorter than `methods` (or empty) -- missing
+// entries just omit the trailing method name. Purely diagnostic: dispatch
+// behavior is identical to the unlabeled overload.
+uint32_t BuildInterfaceObjectLabeled(
+    Memory& memory, HleRuntime& hle, uint32_t vtable_address,
+    uint32_t object_address,
+    const std::vector<HleRuntime::HleFunction>& methods,
+    const std::string& interface_name,
+    const std::vector<const char*>& method_names = {});
 
 }  // namespace zeebulator

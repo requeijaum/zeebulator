@@ -47,6 +47,8 @@ add_library(zeebulator_core STATIC
   audio/soundfont_synth.h
   brew/hle_runtime.cpp
   brew/hle_runtime.h
+  brew/nid_table.cpp
+  brew/nid_table.h
   brew/interface_object.cpp
   brew/interface_object.h
   brew/scaffold_object.cpp
