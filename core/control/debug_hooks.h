@@ -69,6 +69,33 @@ class DebugHooks {
     hit_.store(false, std::memory_order_relaxed);
   }
 
+  // --- Fase 5: linear execution trace logger (env-gated, off by default) --
+  // When PC enters [lo, hi) the interpreter's per-instruction OnExec logs
+  // PC + opcode + regs to `path`, linearly, up to `limit` records. Unlike
+  // the SPIN_PROFILE histogram (which aggregates the hottest PCs), this is
+  // an ordered instruction stream -- the tool you want when reconstructing
+  // what a callback actually did. Observation-only: it never alters the
+  // instruction stream or timing semantics. Enabled once at startup from
+  // ZEEB_TRACE=lo-hi (see game_probe). Reads a single relaxed atomic on the
+  // hot path when disarmed.
+  void EnableTrace(uint32_t lo, uint32_t hi, uint64_t limit,
+                   const std::string& path) {
+    std::lock_guard<std::mutex> lk(mu_);
+    trace_lo_ = lo;
+    trace_hi_ = hi ? hi : lo + 4;
+    trace_limit_ = limit ? limit : 100000;
+    trace_count_ = 0;
+    if (trace_file_) { std::fclose(trace_file_); trace_file_ = nullptr; }
+    trace_file_ = std::fopen(path.c_str(), "w");
+    if (trace_file_) {
+      std::fprintf(trace_file_,
+                   "# zeebulator exec trace  range=[0x%08x,0x%08x) limit=%llu\n",
+                   trace_lo_, trace_hi_,
+                   static_cast<unsigned long long>(trace_limit_));
+      trace_armed_.store(true, std::memory_order_relaxed);
+    }
+  }
+
   // --- hit state (read/cleared by the game_probe loop) ------------------
   bool Hit() const { return hit_.load(std::memory_order_relaxed); }
   std::string HitInfo() {
@@ -82,6 +109,7 @@ class DebugHooks {
   // instruction about to execute. Declared here, defined out-of-line in
   // debug_hooks.cpp so this header needn't know IArmCore's full layout.
   inline void OnExec(uint32_t pc, const IArmCore& cpu) {
+    if (trace_armed_.load(std::memory_order_relaxed)) OnTraceSlow(pc, cpu);
     if (!armed_.load(std::memory_order_relaxed)) return;
     OnExecSlow(pc, cpu);
   }
@@ -116,6 +144,7 @@ class DebugHooks {
   }
 
   void OnExecSlow(uint32_t pc, const IArmCore& cpu);  // in .cpp
+  void OnTraceSlow(uint32_t pc, const IArmCore& cpu);  // in .cpp (Fase 5)
 
   void OnMemSlow(uint32_t addr, uint32_t len, WatchMode kind) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -144,6 +173,14 @@ class DebugHooks {
   std::set<uint32_t> bps_;
   std::vector<Watch> wps_;
   std::string hit_info_;
+
+  // Fase 5 trace-logger state (guarded by mu_ in the slow path).
+  std::atomic<bool> trace_armed_{false};
+  uint32_t trace_lo_ = 0;
+  uint32_t trace_hi_ = 0;
+  uint64_t trace_limit_ = 0;
+  uint64_t trace_count_ = 0;
+  std::FILE* trace_file_ = nullptr;
 };
 
 }  // namespace zeebulator

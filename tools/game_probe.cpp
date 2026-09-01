@@ -2823,6 +2823,30 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "[debug] tabbed debug UI at http://127.0.0.1:%d/debug\n",
                    mirror_port);
   }
+  // Fase 5: linear execution trace logger (ZEEB_TRACE=lo-hi[,limit][,path]).
+  // Env-gated, off by default. When the guest PC enters [lo,hi) the
+  // interpreter's OnExec hook appends PC+opcode+regs to the trace file --
+  // an ordered instruction stream (complements ZEEB_SPIN_PROFILE's PC
+  // histogram). Enabled once here; observation-only.
+  if (const char* tr = std::getenv("ZEEB_TRACE")) {
+    uint32_t lo = 0, hi = 0;
+    uint64_t limit = 100000;
+    std::string path = "zeeb_trace.log";
+    // Format: lo-hi[,limit][,path]  (lo/hi hex or dec via strtoul base 0)
+    const char* p = tr;
+    lo = static_cast<uint32_t>(std::strtoul(p, const_cast<char**>(&p), 0));
+    if (*p == '-') hi = static_cast<uint32_t>(std::strtoul(p + 1, const_cast<char**>(&p), 0));
+    if (*p == ',') { limit = std::strtoull(p + 1, const_cast<char**>(&p), 0); }
+    if (*p == ',') { path = p + 1; }
+    if (hi > lo) {
+      zeebulator::DebugHooks::Instance().EnableTrace(lo, hi, limit, path);
+      std::fprintf(stderr,
+                   "[trace] logging PC in [0x%08x,0x%08x) limit=%llu -> %s\n",
+                   lo, hi, static_cast<unsigned long long>(limit), path.c_str());
+    } else {
+      std::fprintf(stderr, "[trace] bad ZEEB_TRACE=\"%s\" (want lo-hi[,limit][,path])\n", tr);
+    }
+  }
   std::vector<uint8_t> mirror_rgba;  // reused capture buffer
   std::printf("Reached the event loop with no unhandled instruction! Window will stay open.\n");
   bool running = true;

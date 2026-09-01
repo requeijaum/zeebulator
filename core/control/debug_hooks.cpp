@@ -25,4 +25,31 @@ void DebugHooks::OnExecSlow(uint32_t pc, const IArmCore& cpu) {
   std::fprintf(stderr, "[dbg] %s\n", buf);
 }
 
+void DebugHooks::OnTraceSlow(uint32_t pc, const IArmCore& cpu) {
+  if (pc < trace_lo_ || pc >= trace_hi_) return;
+  std::lock_guard<std::mutex> lk(mu_);
+  if (!trace_file_) return;
+  if (trace_count_ >= trace_limit_) {
+    // Reached the cap: flush/close once and disarm so the hot path goes
+    // cold again. Observation-only -- execution is unaffected.
+    std::fprintf(trace_file_, "# trace limit %llu reached\n",
+                 static_cast<unsigned long long>(trace_limit_));
+    std::fclose(trace_file_);
+    trace_file_ = nullptr;
+    trace_armed_.store(false, std::memory_order_relaxed);
+    return;
+  }
+  // Fetch the opcode word at PC (const_cast: GetMemory() is non-const but
+  // Read32 is a pure lookup; we never write).
+  uint32_t opcode = const_cast<IArmCore&>(cpu).GetMemory().Read32(pc);
+  std::fprintf(trace_file_,
+               "%08x %08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x "
+               "sp=%08x lr=%08x cpsr=%08x\n",
+               pc, opcode, cpu.GetRegister(kR0), cpu.GetRegister(kR1),
+               cpu.GetRegister(kR2), cpu.GetRegister(kR3), cpu.GetRegister(kR4),
+               cpu.GetRegister(kR5), cpu.GetRegister(kSP), cpu.GetRegister(kLR),
+               cpu.GetCpsr());
+  ++trace_count_;
+}
+
 }  // namespace zeebulator
