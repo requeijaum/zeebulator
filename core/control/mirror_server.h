@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -167,6 +168,7 @@ class MirrorServer {
       return false;
     }
     running_.store(true);
+    encoder_thread_ = std::thread([this] { EncodeLoop(); });
     thread_ = std::thread([this] { ServeLoop(); });
     std::fprintf(stderr, "[mirror] serving on http://127.0.0.1:%d/\n", port);
     return true;
@@ -174,6 +176,9 @@ class MirrorServer {
 
   void Stop() {
     if (!running_.exchange(false)) return;
+    // Wake the encoder thread so it can observe running_==false and exit.
+    raw_cv_.notify_all();
+    if (encoder_thread_.joinable()) encoder_thread_.join();
     if (listen_fd_ >= 0) {
       ::shutdown(listen_fd_, SHUT_RDWR);
       ::close(listen_fd_);
@@ -184,18 +189,50 @@ class MirrorServer {
 
   bool IsRunning() const { return running_.load(); }
 
-  // Called from the main (GL-owning) thread. Encodes and stores the latest
-  // frame; the HTTP thread just serves whatever is stored.
+  // Called from the main (GL-owning) thread. Stashes the latest raw RGBA
+  // frame (a cheap copy) and wakes the encoder thread. The expensive PNG
+  // encode (CRC32/Adler32/DEFLATE over ~1.2 MB) runs OFF this thread so it
+  // never steals wall-clock from the emulation loop -- that PNG encode inline
+  // here was measured to drop Double Dragon from 62 to ~55 fps. Stale frames
+  // are dropped: if the encoder is still busy, the previous pending frame is
+  // simply overwritten (mirror is best-effort, latest-wins).
   void PublishFrame(const uint8_t* rgba, int width, int height) {
-    std::vector<uint8_t> png = EncodePng(rgba, width, height);
-    std::lock_guard<std::mutex> lk(mu_);
-    latest_png_ = std::move(png);
-    w_ = width;
-    h_ = height;
-    ++frames_;
+    size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    {
+      std::lock_guard<std::mutex> lk(raw_mu_);
+      pending_raw_.assign(rgba, rgba + bytes);
+      pending_w_ = width;
+      pending_h_ = height;
+      pending_ready_ = true;
+    }
+    raw_cv_.notify_one();
   }
 
  private:
+  // Dedicated encoder thread: waits for a raw frame, encodes PNG, publishes.
+  void EncodeLoop() {
+    std::vector<uint8_t> raw;
+    int w = 0, h = 0;
+    while (running_.load()) {
+      {
+        std::unique_lock<std::mutex> lk(raw_mu_);
+        raw_cv_.wait(lk, [this] { return pending_ready_ || !running_.load(); });
+        if (!running_.load()) break;
+        raw.swap(pending_raw_);
+        w = pending_w_;
+        h = pending_h_;
+        pending_ready_ = false;
+      }
+      if (raw.empty() || w <= 0 || h <= 0) continue;
+      std::vector<uint8_t> png = EncodePng(raw.data(), w, h);
+      std::lock_guard<std::mutex> lk(mu_);
+      latest_png_ = std::move(png);
+      w_ = w;
+      h_ = h;
+      ++frames_;
+    }
+  }
+
   void ServeLoop() {
     while (running_.load()) {
       int fd = ::accept(listen_fd_, nullptr, nullptr);
@@ -416,10 +453,18 @@ class MirrorServer {
   int listen_fd_ = -1;
   std::atomic<bool> running_{false};
   std::thread thread_;
+  std::thread encoder_thread_;
   std::mutex mu_;
   std::vector<uint8_t> latest_png_;
   int w_ = 0, h_ = 0;
   uint64_t frames_ = 0;
+
+  // Raw-frame handoff to the encoder thread (latest-wins, stale dropped).
+  std::mutex raw_mu_;
+  std::condition_variable raw_cv_;
+  std::vector<uint8_t> pending_raw_;
+  int pending_w_ = 0, pending_h_ = 0;
+  bool pending_ready_ = false;
 };
 
 }  // namespace zeebulator
