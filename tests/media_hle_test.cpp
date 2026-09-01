@@ -214,6 +214,27 @@ enum Slots {
   kGetState = 13,
 };
 
+TEST(MediaHle, GuestObjectLayoutExposesGameReadFields) {
+  // Real BREW IMedia objects expose system fields the game reads
+  // directly (ddragonz.mod notify chain decode): vtable at +0,
+  // media source at +8 (self-reference so the Play fallback's
+  // vtable[6] resolves), priority stamp +0x1c, flags +0x24/+0x25,
+  // source cache +0x28. The ready byte (+0x25) must be 0 until a
+  // successful Play() sets it.
+  Fixture f;
+  uint32_t obj = f.media_hle.CreateMediaObject();
+  auto& mem = f.cpu.GetMemory();
+  EXPECT_EQ(mem.Read32(obj), kVtable);
+  EXPECT_EQ(mem.Read32(obj + 8), obj) << "+8 = media source (self)";
+  EXPECT_EQ(mem.Read32(obj + 0x1c), 0u) << "priority stamp zeroed";
+  EXPECT_EQ(mem.Read8(obj + 0x25), 0u) << "ready byte clear before Play";
+
+  uint32_t md = f.WriteMediaData("tone.wav");
+  ASSERT_EQ(f.hle.CallArmFunction(f.Slot(kSetMediaParm), obj, kParmMediaData, md, 0), 0u);
+  ASSERT_EQ(f.hle.CallArmFunction(f.Slot(kPlay), obj), 0u);
+  EXPECT_EQ(mem.Read8(obj + 0x25), 1u) << "ready byte set on successful Play";
+}
+
 TEST(MediaHle, VtableHasAllFourteenRealSlots) {
   Fixture f;
   for (uint32_t slot = 0; slot < 14; ++slot) {

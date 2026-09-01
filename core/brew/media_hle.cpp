@@ -152,9 +152,28 @@ MediaHle::MediaHle(Memory& memory, HleRuntime& hle, const VirtualFilesystem& vfs
       notify_scratch_address_(object_region_start + kNotifyScratchOffset) {}
 
 uint32_t MediaHle::AllocateMediaObject() {
+  // Real BREW IMedia objects expose system fields the game reads
+  // directly from guest memory — found decoding ddragonz.mod's notify
+  // chain (see research/sources/zeebulator-notify-chain-decoded.md):
+  //   +0x00 vtable
+  //   +0x08 media source (dispatcher 0x11f4dc NULL-checks it; Play
+  //         helper 0x11d04c falls back to it when +0x28 is zero)
+  //   +0x1c u32 priority stamp (dispatcher resets to -1)
+  //   +0x24 byte (dispatcher clears)
+  //   +0x25 byte — the "ready" flag Play() success sets (dispatcher
+  //         requires it nonzero for the vtable[11] priority-reset path)
+  //   +0x28 media source cache (Play helper uses it if nonzero)
+  // The old vtable-only 4-byte object made every one of those reads
+  // land on adjacent garbage → BX NULL wander. Allocate a proper
+  // 0x40-byte guest object: vtable at +0, +8 self-references so the
+  // Play fallback's vtable[6] resolves to our Play trap, rest zeroed.
   uint32_t obj_addr = next_object_address_;
-  next_object_address_ += 4;
+  next_object_address_ += 0x40;
   memory_.Write32(obj_addr, vtable_address_);
+  memory_.Write32(obj_addr + 8, obj_addr);  // media source = self
+  for (uint32_t off = 0x0c; off < 0x40; off += 4) {
+    memory_.Write32(obj_addr + off, 0);
+  }
   media_by_object_[obj_addr] = Media{};
   return obj_addr;
 }
@@ -319,6 +338,11 @@ void MediaHle::PlayImpl(IArmCore& core) {
       mixer_.Play(media.samples, media.channels, media.sample_rate, media.loop, media.volume);
   media.has_voice = true;
   media.state = kStatePlay;
+  // Real BREW sets the "ready" flag at obj+0x25 on successful Play();
+  // the game's notify dispatcher (ddragonz.mod 0x11f4dc) requires it
+  // nonzero to take the priority-reset path — without it the channel
+  // priority stamp never comes down and the channel stays poisoned.
+  memory_.Write8(it->first + 0x25, 1);
   core.SetRegister(kR0, 0);
 }
 
