@@ -1,5 +1,9 @@
 #include "core/brew/hle_runtime.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <set>
+
 namespace zeebulator {
 
 namespace {
@@ -29,6 +33,20 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
   }
   if (index < functions_.size() && functions_[index]) {
     functions_[index](core);
+  } else if (std::getenv("ZEEB_LOG_SLOT") != nullptr) {
+    // Phase 9c per-slot logger (env-gated, non-perturbing: stderr only, no new
+    // traps / no functions_ mutation). Surfaces every unimplemented vtable slot
+    // a title actually calls, with args and caller, to drive which handler to
+    // implement next from real demand. Emits once per (slot) to avoid floods.
+    static std::set<uint32_t> seen;
+    if (seen.insert(index).second) {
+      std::fprintf(stderr,
+                   "[slot] unimplemented trap idx=%u addr=0x%08x "
+                   "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
+                   index, address, core.GetRegister(kR0), core.GetRegister(kR1),
+                   core.GetRegister(kR2), core.GetRegister(kR3),
+                   core.GetRegister(kLR));
+    }
   }
   core.SetRegister(kPC, core.GetRegister(kLR));  // simulate BX LR
 }
