@@ -896,9 +896,21 @@ int main(int argc, char** argv) {
     // pattern already confirmed for `sound.ggz`.
     std::string base = BaseName(bar_path.c_str());
     vfs.AddFile(base, bar_bytes);
-    shell_hle.RegisterResourceFile(base, std::move(bar_bytes));
-    std::printf("loaded resource archive %s (registered as %s)\n", bar_path.c_str(),
-                base.c_str());
+    // A folder may ship several `.bar` files where only some are real BREW
+    // resource archives; the rest are the title's own data in another format.
+    // The batch harness passes them all via `--bar`, so a non-BAR file must
+    // NOT abort the whole run: register-as-resource can throw from the BAR
+    // parser (bad magic / inconsistent header). Skip those gracefully -- the
+    // raw bytes are still exposed in the VFS above for direct opening.
+    try {
+      shell_hle.RegisterResourceFile(base, std::move(bar_bytes));
+      std::printf("loaded resource archive %s (registered as %s)\n", bar_path.c_str(),
+                  base.c_str());
+    } catch (const std::exception& e) {
+      std::printf("skipped %s: not a parseable BAR resource archive (%s); "
+                  "raw bytes still in VFS as %s\n",
+                  bar_path.c_str(), e.what(), base.c_str());
+    }
   }
   shell_hle.RegisterInstance(/*AEECLSID_DISPLAY=*/0x01001001, display_obj);
   // ClsId 0x01002001: a real BREW class Double Dragon's own graphics-init
