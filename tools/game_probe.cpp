@@ -1600,6 +1600,16 @@ int main(int argc, char** argv) {
     // a real desktop over several real minutes with no flicker and no
     // lost content.
     bool cleared_at_transition = false;
+    // Env-gated generic render bridge (ZEEB_GENERIC_RENDER, default OFF so ABD
+    // and ctest are untouched): routes non-ABD titles' own real slot-107 draw
+    // callers through the existing texture-decode/blit path. Confirmed live for
+    // torkandkral (folder 280463): its real callers 0x104eb4 (full-screen ATITC
+    // background), 0x104c94 (PNG logo/title art), and 0x105150 (cmdlist text
+    // cells) pass the exact same real texture signatures (0xccc40002 ATITC /
+    // 0x474e5089 PNG) and the same real 16.16 {x0,y0,x1,y1@+8,height@+20}
+    // top-down geometry the ABD background caller already handles -- the only
+    // reason nothing rasterized was the ABD-specific caller-PC gate below.
+    bool generic_render = std::getenv("ZEEB_GENERIC_RENDER") != nullptr;
     stub_methods[48] = [&display, &cleared_at_transition](zeebulator::IArmCore& core) {
       if (!cleared_at_transition) {
         cleared_at_transition = true;
@@ -1623,13 +1633,50 @@ int main(int argc, char** argv) {
     // (only ever set for this one real title's own real `data.bar`) so
     // every other title stays untouched.
     stub_methods[107] = [&hle, &display, &backend, &abd_font_atlas, &abd_text_state, kHeight,
-                          bound_texture, pending_fill_color,
+                          bound_texture, pending_fill_color, generic_render,
                           decoded_texture_cache](zeebulator::IArmCore& core) {
       core.SetRegister(zeebulator::kR0, 0);
+      // Env-gated geometry probe (ZEEB_GEOM_DUMP): stderr-only, reads memory
+      // only, changes NO state -- fires BEFORE the ABD font-atlas gate so it
+      // can characterize non-ABD titles (e.g. torkandkral) that reach this
+      // slot. Dumps the caller PC, the {x0,y0,x1,y1} geometry struct, and the
+      // currently bound texture's signature, deduped by caller PC.
+      if (std::getenv("ZEEB_GEOM_DUMP") != nullptr) {
+        static std::map<uint32_t, int> seen_caller;
+        uint32_t caller = zeebulator::HleRuntime::ReadStackArg(core, 1);
+        uint32_t sa = zeebulator::HleRuntime::ReadStackArg(core, 0);
+        if (seen_caller[caller]++ < 3) {
+          uint32_t tex = *bound_texture;
+          uint32_t sig = (tex != 0) ? core.GetMemory().Read32(tex) : 0;
+          std::fprintf(stderr,
+              "[geom] caller=0x%08x struct=0x%08x x0=%d y0=%d x1=%d y1=%d "
+              "far20=%d tex=0x%08x sig=0x%08x fill=%d\n",
+              caller, sa,
+              sa ? static_cast<int32_t>(core.GetMemory().Read32(sa + 0)) / 65536 : 0,
+              sa ? static_cast<int32_t>(core.GetMemory().Read32(sa + 4)) / 65536 : 0,
+              sa ? static_cast<int32_t>(core.GetMemory().Read32(sa + 8)) / 65536 : 0,
+              sa ? static_cast<int32_t>(core.GetMemory().Read32(sa + 12)) / 65536 : 0,
+              sa ? static_cast<int32_t>(core.GetMemory().Read32(sa + 20)) / 65536 : 0,
+              tex, sig, pending_fill_color->has_value() ? 1 : 0);
+        }
+      }
       if (!abd_font_atlas.has_value()) return;
       uint32_t struct_addr = zeebulator::HleRuntime::ReadStackArg(core, 0);
       if (struct_addr == 0) return;
       uint32_t real_caller = zeebulator::HleRuntime::ReadStackArg(core, 1);
+      // Generic render bridge: a non-ABD title's own real draw callers aren't
+      // any of the three ABD-specific caller PCs the texture path below gates
+      // on, so map them onto the plainest one (0x104f84 = full-texture,
+      // top-down, no crop, no Y-flip) -- confirmed live to match torkandkral's
+      // own real {x0,y0,x1@+8,height@+20} background/logo geometry. Its own real
+      // 0xccc40002 ATITC / 0x474e5089 PNG textures then decode through the exact
+      // same real path ABD backgrounds already use. Any draw whose bound "texture"
+      // is really a cmdlist node (text cells) fails the width/height sanity guard
+      // below and safely falls through to the shape path, unchanged.
+      if (generic_render && real_caller != 0x104f84 && real_caller != 0x1054bc &&
+          real_caller != 0x105744) {
+        real_caller = 0x104f84;
+      }
       int32_t raw_x0 = static_cast<int32_t>(core.GetMemory().Read32(struct_addr + 0));
       int32_t raw_y0 = static_cast<int32_t>(core.GetMemory().Read32(struct_addr + 4));
       int dst_x = raw_x0 / 65536;
