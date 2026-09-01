@@ -33,3 +33,6 @@ if(ZEEBULATOR_BUILD_STANDALONE)
   target_link_libraries(zeebulator_game_probe PRIVATE zeebulator_core SDL2::SDL2 SDL2::SDL2main
                                                        OpenGL::GL)
 endif()
+
+add_executable(zeebulator_jit_lockstep jit_lockstep.cpp)
+target_link_libraries(zeebulator_jit_lockstep PRIVATE zeebulator_core)

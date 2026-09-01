@@ -194,3 +194,68 @@ TEST(JitDifferentialFuzz, ArmMultiplyFamilyMatchesInterpreter) {
   }
   EXPECT_GT(compared, 2000) << "compared=" << compared << " skipped=" << skipped;
 }
+
+TEST(JitDifferentialFuzz, ThumbT16MatchesInterpreter) {
+  // Thumb (T16) coverage. The real-module lockstep (Phase 3) exercised only
+  // ARM-state code, so Thumb correctness is pinned here instead: enter Thumb
+  // (T-bit set), run one real T16 instruction on both cores from identical
+  // seed state, compare R0..R7 + NZCV. Encodings the interpreter rejects are
+  // skipped (out of scope), same rule as the ARM fuzz above.
+  std::mt19937 rng(0x7B00);
+  auto rnd = [&]() { return rng(); };
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  int compared = 0, skipped = 0;
+
+  auto run_thumb = [&](IArmCore& core, uint16_t instr, const std::array<uint32_t, 8>& seed,
+                       uint32_t cpsr, bool& threw) -> StepResult {
+    core.Reset();
+    for (int r = 0; r < 8; ++r) core.SetRegister(r, seed[r]);
+    core.SetRegister(13, 0x2000);
+    core.SetRegister(kPC, kCodeBase);
+    // T-bit set, plus random NZCV; ARM state bits otherwise clear.
+    core.SetCpsr((cpsr & 0xF0000000u) | (1u << 5));
+    core.GetMemory().Write16(kCodeBase, instr);
+    core.NotifyCodeChanged(kCodeBase, 2);
+    StepResult out;
+    try {
+      core.Step();
+    } catch (const zeebulator::UnimplementedInstruction&) {
+      threw = true;
+      return out;
+    }
+    for (int r = 0; r <= 15; ++r) out.regs[r] = core.GetRegister(r);
+    out.flags = FlagsOnly(core.GetCpsr());
+    return out;
+  };
+
+  auto do_case = [&](uint16_t instr) {
+    std::array<uint32_t, 8> seed{};
+    for (auto& v : seed) v = rnd();
+    uint32_t cpsr = rnd();
+    bool it = false, jt = false;
+    StepResult ri = run_thumb(interp, instr, seed, cpsr, it);
+    StepResult rj = run_thumb(jit, instr, seed, cpsr, jt);
+    if (it) { ++skipped; return; }
+    ++compared;
+    for (int r = 0; r <= 7; ++r)
+      ASSERT_EQ(ri.regs[r], rj.regs[r])
+          << "thumb=0x" << std::hex << instr << " R" << std::dec << r;
+    ASSERT_EQ(ri.flags, rj.flags) << "thumb=0x" << std::hex << instr << " NZCV";
+  };
+
+  for (int iter = 0; iter < 4000; ++iter) {
+    uint32_t rd = rnd() & 7, rs = rnd() & 7, rn = rnd() & 7;
+    uint32_t imm3 = rnd() & 7, imm5 = rnd() & 0x1F, imm8 = rnd() & 0xFF;
+    // Format 1: LSL/LSR/ASR Rd, Rs, #imm5  (opc bits12-11: 00/01/10)
+    do_case(uint16_t((0x0 << 13) | ((rnd() % 3) << 11) | (imm5 << 6) | (rs << 3) | rd));
+    // Format 2: ADD/SUB Rd, Rs, Rn / #imm3
+    do_case(uint16_t(0x1800 | ((rnd() & 1) << 9) | (rn << 6) | (rs << 3) | rd));  // reg
+    do_case(uint16_t(0x1C00 | ((rnd() & 1) << 9) | (imm3 << 6) | (rs << 3) | rd));  // imm3
+    // Format 3: MOV/CMP/ADD/SUB Rd, #imm8
+    do_case(uint16_t(0x2000 | ((rnd() % 4) << 11) | (rd << 8) | imm8));
+    // Format 4: ALU ops Rd, Rs (opcode bits9-6)
+    do_case(uint16_t(0x4000 | ((rnd() & 0xF) << 6) | (rs << 3) | rd));
+  }
+  EXPECT_GT(compared, 3000) << "compared=" << compared << " skipped=" << skipped;
+}
