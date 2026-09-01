@@ -17,6 +17,8 @@ add_library(zeebulator_core STATIC
   cpu/arm_core.h
   cpu/arm_interpreter.cpp
   cpu/arm_interpreter.h
+  cpu/dynarmic_arm_core.cpp
+  cpu/dynarmic_arm_core.h
   loader/bar.cpp
   loader/bar.h
   loader/ggz.cpp

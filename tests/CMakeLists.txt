@@ -13,6 +13,7 @@ add_executable(zeebulator_tests
   core_test.cpp
   memory_test.cpp
   cpu_test.cpp
+  dynarmic_arm_core_test.cpp
   thumb_test.cpp
   bar_test.cpp
   ggz_test.cpp
