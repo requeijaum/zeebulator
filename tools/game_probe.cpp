@@ -2504,6 +2504,26 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "[trace] bad ZEEB_TRACE=\"%s\" (want lo-hi[,limit][,path])\n", tr);
     }
   }
+  // Write-watch-with-writer-PC (ZEEB_WWATCH=addr[,len][,path]). Armed here,
+  // before AEEMod_Load, so it captures boot-time writers (CreateInstance /
+  // EVT_APP_START). Logs each distinct (addr,writer_pc) once. Off by default.
+  if (const char* ww = std::getenv("ZEEB_WWATCH")) {
+    uint32_t addr = 0;
+    uint32_t len = 4;
+    std::string path = "zeeb_wwatch.log";
+    const char* p = ww;
+    addr = static_cast<uint32_t>(std::strtoul(p, const_cast<char**>(&p), 0));
+    if (*p == ',') { len = static_cast<uint32_t>(std::strtoul(p + 1, const_cast<char**>(&p), 0)); }
+    if (*p == ',') { path = p + 1; }
+    if (addr != 0) {
+      zeebulator::DebugHooks::Instance().EnableWriteWatchLog(addr, len, path);
+      std::fprintf(stderr,
+                   "[wwatch] logging writers of [0x%08x,0x%08x) -> %s\n",
+                   addr, addr + len, path.c_str());
+    } else {
+      std::fprintf(stderr, "[wwatch] bad ZEEB_WWATCH=\"%s\" (want addr[,len][,path])\n", ww);
+    }
+  }
   try {
     std::printf("Calling AEEMod_Load...\n");
     constexpr uint32_t kPpModAddr = 0x00090000;

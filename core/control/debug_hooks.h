@@ -69,6 +69,31 @@ class DebugHooks {
     hit_.store(false, std::memory_order_relaxed);
   }
 
+  // --- write-watch logger with WRITER PC (env-gated, off by default) ------
+  // The plain watchpoint records WHICH address was written; for RE back-
+  // traces we also need WHO wrote it. EnableWriteWatchLog arms PC tracking
+  // (OnExec caches the current guest PC) and, on every guest write that
+  // overlaps [addr, addr+len), logs `addr <- value @ pc=<writer>` once per
+  // distinct (addr,pc) pair to `path`. Armed from ZEEB_WWATCH before
+  // AEEMod_Load so it covers boot-time walls (CreateInstance/EVT_APP_START).
+  // Observation-only: never alters execution. The value is read by the
+  // caller after the write via the memory hook's own len.
+  void EnableWriteWatchLog(uint32_t addr, uint32_t len, const std::string& path) {
+    std::lock_guard<std::mutex> lk(mu_);
+    wwatch_lo_ = addr;
+    wwatch_hi_ = addr + (len ? len : 4);
+    if (wwatch_file_) { std::fclose(wwatch_file_); wwatch_file_ = nullptr; }
+    wwatch_file_ = std::fopen(path.c_str(), "w");
+    if (wwatch_file_) {
+      std::fprintf(wwatch_file_,
+                   "# zeebulator write-watch  range=[0x%08x,0x%08x)\n",
+                   wwatch_lo_, wwatch_hi_);
+      wwatch_armed_.store(true, std::memory_order_relaxed);
+      pc_track_armed_.store(true, std::memory_order_relaxed);
+      write_armed_.store(true, std::memory_order_relaxed);
+    }
+  }
+
   // --- Fase 5: linear execution trace logger (env-gated, off by default) --
   // When PC enters [lo, hi) the interpreter's per-instruction OnExec logs
   // PC + opcode + regs to `path`, linearly, up to `limit` records. Unlike
@@ -109,11 +134,16 @@ class DebugHooks {
   // instruction about to execute. Declared here, defined out-of-line in
   // debug_hooks.cpp so this header needn't know IArmCore's full layout.
   inline void OnExec(uint32_t pc, const IArmCore& cpu) {
+    if (pc_track_armed_.load(std::memory_order_relaxed))
+      last_pc_.store(pc, std::memory_order_relaxed);
     if (trace_armed_.load(std::memory_order_relaxed)) OnTraceSlow(pc, cpu);
     if (!armed_.load(std::memory_order_relaxed)) return;
     OnExecSlow(pc, cpu);
   }
   inline void OnMemWrite(uint32_t addr, uint32_t len) {
+    if (wwatch_armed_.load(std::memory_order_relaxed) &&
+        addr < wwatch_hi_ && wwatch_lo_ < addr + len)
+      OnWriteWatchSlow(addr, len);
     if (!write_armed_.load(std::memory_order_relaxed)) return;
     OnMemSlow(addr, len, kW);
   }
@@ -145,6 +175,7 @@ class DebugHooks {
 
   void OnExecSlow(uint32_t pc, const IArmCore& cpu);  // in .cpp
   void OnTraceSlow(uint32_t pc, const IArmCore& cpu);  // in .cpp (Fase 5)
+  void OnWriteWatchSlow(uint32_t addr, uint32_t len);  // in .cpp (write-watch)
 
   void OnMemSlow(uint32_t addr, uint32_t len, WatchMode kind) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -181,6 +212,17 @@ class DebugHooks {
   uint64_t trace_limit_ = 0;
   uint64_t trace_count_ = 0;
   std::FILE* trace_file_ = nullptr;
+
+  // Write-watch-with-PC state (guarded by mu_ in the slow path). last_pc_ is
+  // updated lock-free by OnExec when pc_track_armed_; the slow path reads it
+  // to attribute each write to its writer instruction.
+  std::atomic<bool> pc_track_armed_{false};
+  std::atomic<uint32_t> last_pc_{0};
+  std::atomic<bool> wwatch_armed_{false};
+  uint32_t wwatch_lo_ = 0;
+  uint32_t wwatch_hi_ = 0;
+  std::FILE* wwatch_file_ = nullptr;
+  std::set<uint64_t> wwatch_seen_;  // dedupe (addr<<32 | pc)
 };
 
 }  // namespace zeebulator

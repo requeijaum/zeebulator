@@ -52,4 +52,15 @@ void DebugHooks::OnTraceSlow(uint32_t pc, const IArmCore& cpu) {
   ++trace_count_;
 }
 
+void DebugHooks::OnWriteWatchSlow(uint32_t addr, uint32_t len) {
+  uint32_t pc = last_pc_.load(std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lk(mu_);
+  if (!wwatch_file_) return;
+  uint64_t key = (static_cast<uint64_t>(addr) << 32) | pc;
+  if (!wwatch_seen_.insert(key).second) return;  // dedupe (addr,pc)
+  std::fprintf(wwatch_file_, "write addr=0x%08x len=%u  writer_pc=0x%08x\n",
+               addr, len, pc);
+  std::fflush(wwatch_file_);
+}
+
 }  // namespace zeebulator
