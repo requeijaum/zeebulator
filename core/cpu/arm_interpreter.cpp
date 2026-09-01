@@ -1004,6 +1004,14 @@ void ArmInterpreter::ExecuteThumb(uint16_t instr) {
 
 void ArmInterpreter::Step() {
   uint32_t fetch_addr = regs_[kPC];
+  // TEMPORARY debug hook: when PC lands in the game_probe scratch
+  // region (0x0009xxxx — where the AEEAppStart struct lives), print
+  // the call site (LR) + instruction. REMOVE after root-causing.
+  if (fetch_addr >= 0x00090000 && fetch_addr < 0x0009F000) {
+    std::fprintf(stderr,
+                 "[scratch-exec] pc=0x%08x lr=0x%08x instr=0x%08x sp=0x%08x\n",
+                 fetch_addr, regs_[kLR], memory_.Read32(fetch_addr), regs_[kSP]);
+  }
   if (call_out_size_ != 0 && fetch_addr >= call_out_base_ &&
       fetch_addr < call_out_base_ + call_out_size_) {
     if (call_out_handler_) {
