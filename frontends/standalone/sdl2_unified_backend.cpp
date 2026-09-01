@@ -81,6 +81,26 @@ Sdl2UnifiedBackend::Sdl2UnifiedBackend(SDL_Window* window, int width, int height
       std::fprintf(stderr, "SDL_GL_SetSwapInterval(1) failed: %s\n", SDL_GetError());
     }
 
+    // One-time GL device report: makes it obvious whether we're on the AMD
+    // hardware driver (radeonsi) or fell back to software (llvmpipe). Fetched
+    // via SDL_GL_GetProcAddress so we don't need to link libGL directly.
+    {
+      using GetStringFn = const unsigned char* (*)(unsigned int);
+      auto glGetStringFn =
+          reinterpret_cast<GetStringFn>(SDL_GL_GetProcAddress("glGetString"));
+      if (glGetStringFn) {
+        const unsigned int kVendor = 0x1F00, kRenderer = 0x1F01, kVersion = 0x1F02;
+        const unsigned char* vend = glGetStringFn(kVendor);
+        const unsigned char* rend = glGetStringFn(kRenderer);
+        const unsigned char* vers = glGetStringFn(kVersion);
+        std::fprintf(stderr, "[gl] driver=%s | renderer=%s | version=%s | sdl_video=%s\n",
+                     vend ? reinterpret_cast<const char*>(vend) : "?",
+                     rend ? reinterpret_cast<const char*>(rend) : "?",
+                     vers ? reinterpret_cast<const char*>(vers) : "?",
+                     SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "?");
+      }
+    }
+
     // Created here, eagerly, rather than lazily on the first
     // PushVideoFrame call as before -- real width/height there are
     // always width_/height_ anyway (the guest's own IDisplay always
