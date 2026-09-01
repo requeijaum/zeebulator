@@ -1157,6 +1157,21 @@ int main(int argc, char** argv) {
   uint32_t unknown_0x01005511_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, /*vtable_address=*/0x80060000, /*object_address=*/0x80061000,
       unknown_0x01005511_methods);
+  // Give this object the media-style guest layout the notify callback
+  // expects (decoded from ddragonz.mod's notify chain): +8 = media
+  // source (self-reference) and the rest zeroed. The callback's
+  // dispatcher NULL-checks +8 (passes with self) and requires the
+  // +0x25 ready byte nonzero to take the vtable[11] path (0 → clean
+  // reset path), and the Play helper's vtable[6] call resolves to
+  // this object's own stub (success) instead of reading garbage →
+  // this eliminates the pc=0x00000000 BX NULL wander.
+  {
+    auto& iface_mem = cpu.GetMemory();
+    iface_mem.Write32(0x80061000 + 8, 0x80061000);
+    for (uint32_t off = 0x0c; off < 0x40; off += 4) {
+      iface_mem.Write32(0x80061000 + off, 0);
+    }
+  }
   shell_hle.RegisterInstance(0x01005511, unknown_0x01005511_obj);
   // Two more real, unidentified classes found investigating why
   // Peggle's tick loop settles into a fixed, non-progressing steady
