@@ -1755,6 +1755,11 @@ int main(int argc, char** argv) {
             // misread as geometry) -- keep within a generous display bound.
             if (pw <= 4096 && ph <= 4096 && px >= -2048 && py >= -2048) {
               const auto& color = **pending_fill_color;
+              if (std::getenv("ZEEB_FILL_DEBUG") != nullptr) {
+                std::fprintf(stderr,
+                    "[fill] x=%d y=%d w=%d h=%d rgb=%02x%02x%02x\n",
+                    px, py, pw, ph, color[0], color[1], color[2]);
+              }
               std::vector<uint8_t> fill(static_cast<size_t>(pw) * ph * 4);
               for (size_t i = 0; i < fill.size(); i += 4) {
                 fill[i + 0] = color[0];
