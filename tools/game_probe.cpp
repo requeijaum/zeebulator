@@ -406,6 +406,22 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
   // min/max PC of the last window -- names WHERE a non-terminating guest
   // loop spins, without perturbing execution (pure observation).
   const bool spin_profile = std::getenv("ZEEB_SPIN_PROFILE") != nullptr;
+  // ZEEB_SEED_63C=guardpc:objoff:objreg:sentreg (hex/dec), e.g. 0x1034f8:0x14c:7:5
+  // for cninja (guard reads obj=[r7,#0x14c], sentinel in r5). Diagnostic only.
+  bool seed63c_active = false;
+  uint32_t seed63c_guardpc = 0, seed63c_objoff = 0;
+  int seed63c_objreg = 7, seed63c_sentreg = 5;
+  bool seed63c_done = false;
+  if (const char* sc = std::getenv("ZEEB_SEED_63C")) {
+    unsigned gp = 0, off = 0, orr = 7, sr = 5;
+    if (std::sscanf(sc, "%x:%x:%u:%u", &gp, &off, &orr, &sr) >= 2) {
+      seed63c_active = true;
+      seed63c_guardpc = gp;
+      seed63c_objoff = off;
+      seed63c_objreg = static_cast<int>(orr);
+      seed63c_sentreg = static_cast<int>(sr);
+    }
+  }
   std::map<uint32_t, uint64_t> pc_hist;
   uint32_t win_lo = 0xffffffffu, win_hi = 0;
   uint32_t last_call_addr = 0;  // most recent BL target (in-module) before spin
@@ -489,6 +505,30 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
     }
     if (abd_text_state != nullptr && pc == 0x00106508) {
       abd_text_state->last_draw_descriptor_addr = cpu.GetRegister(zeebulator::kR0);
+    }
+    // EXPERIMENT (ZEEB_SEED_63C=guardpc:objreg:sentinelreg): at the +0x63c
+    // guard, if the object's +0x63c callback slot reads back as 0 (impossible
+    // on real hardware -- the guard tests !=sentinel, not !=0, so 0 means our
+    // register-step never ran), seed the SENTINEL there so the guard's beq is
+    // taken and the (evidently optional) callback is skipped instead of
+    // executing blx 0. Purely diagnostic: answers "is this callback optional
+    // (game proceeds) or required (stalls elsewhere)?". Gated + logged; NOT a
+    // shipped fix. cninja: 0x1034f8:0x14c:5 (obj=[r7,#0x14c], sentinel=r5).
+    if (seed63c_active && pc == seed63c_guardpc) {
+      uint32_t base = cpu.GetRegister(seed63c_objreg);
+      uint32_t real_obj = cpu.GetMemory().Read32(base + seed63c_objoff);
+      if (real_obj >= 0x1000) {
+        uint32_t slot = cpu.GetMemory().Read32(real_obj + 0x63c);
+        if (slot == 0) {
+          uint32_t sentinel = cpu.GetRegister(seed63c_sentreg);
+          cpu.GetMemory().Write32(real_obj + 0x63c, sentinel);
+          if (!seed63c_done) {
+            std::printf("[seed63c] obj=0x%08x +0x63c was 0 -> seeded sentinel 0x%08x\n",
+                        real_obj, sentinel);
+            seed63c_done = true;
+          }
+        }
+      }
     }
     bool in_module = pc >= mod_base && pc < mod_base + mod_size;
     bool in_trap_range = pc >= trap_base;
