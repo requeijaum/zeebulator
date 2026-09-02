@@ -695,7 +695,46 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x14c_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x150_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0x64_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t unknown_0x64_fn = hle_.Register([this](IArmCore& core) {
+    // Disney All Star Cards: BMP decode. Convention pinned down via
+    // capstone disassembly of allstarcards.mod 0x10ee18-0x10ee48 (see
+    // research/sources/2026-09-02_allstarcards-winbmp-re.md):
+    //   r0 = clsid (AEECLSID_WinBMP 0x01004001)
+    //   r1 = BMP data pointer
+    //   r2 = out buffer: u16 width @ r2, u16 height @ r2+2
+    //   r3 = out buffer (info; unwritten for now)
+    //   return r0 = pointer to decoded pixel data (caller memcpy's it)
+    uint32_t data = core.GetRegister(kR1);
+    uint32_t dims = core.GetRegister(kR2);
+    auto& mem = core.GetMemory();
+    auto fail = [&]() { core.SetRegister(kR0, 0); };
+    if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
+      std::fprintf(stderr, "[bmp] ENTER r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+                   "byte0=%02x byte1=%02x\n",
+                   core.GetRegister(kR0), data, dims, core.GetRegister(kR3),
+                   data ? mem.Read8(data) : 0, data ? mem.Read8(data + 1) : 0);
+    }
+    if (data == 0 || dims == 0) { fail(); return; }
+    if (mem.Read8(data) != 'B' || mem.Read8(data + 1) != 'M') { fail(); return; }
+    uint32_t data_off = mem.Read32(data + 10);
+    int32_t width = static_cast<int32_t>(mem.Read32(data + 18));
+    int32_t height = static_cast<int32_t>(mem.Read32(data + 22));
+    uint16_t bpp = mem.Read16(data + 28);
+    uint32_t compression = mem.Read32(data + 30);
+    uint32_t h = height >= 0 ? static_cast<uint32_t>(height)
+                             : static_cast<uint32_t>(-height);
+    if (width <= 0 || h == 0 || h > 4096 || width > 4096) { fail(); return; }
+    mem.Write16(dims, static_cast<uint16_t>(width));
+    mem.Write16(dims + 2, static_cast<uint16_t>(h));
+    if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
+      std::fprintf(stderr, "[bmp] clsid=0x%08x %dx%d bpp=%u comp=%u off=0x%x\n",
+                   core.GetRegister(kR0), width, h, bpp, compression, data_off);
+    }
+    // First cut: hand back the raw pixel-data pointer in guest memory.
+    // Pixel-format conversion (BGR -> RGB565 etc.) follows after
+    // observing what the caller does with the returned chunk.
+    core.SetRegister(kR0, data + data_off);
+  });
   uint32_t unknown_0xcc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x90_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x10_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
