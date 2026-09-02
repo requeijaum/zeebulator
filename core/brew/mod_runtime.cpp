@@ -693,9 +693,11 @@ void ModRuntime::SleepImpl(IArmCore& core) {
   // Returning from this HLE trap first leaves PC at the guest instruction after
   // the call; CallArmFunctionChecked then observes this edge and suspends the
   // containing callback without modifying any architectural state.
-  yield_requested_ = true;
+  RequestYield();
   core.SetRegister(kR0, 0);
 }
+
+void ModRuntime::RequestYield() { yield_requested_ = true; }
 
 bool ModRuntime::ConsumeYieldRequest() {
   bool requested = yield_requested_;

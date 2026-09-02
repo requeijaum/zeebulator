@@ -199,6 +199,25 @@ void MergeGgzInto(zeebulator::VirtualFilesystem& vfs, const char* path) {
   std::printf("loaded %zu entries from %s\n", archive.Entries().size(), path);
 }
 
+void MergeGamePkgInto(zeebulator::VirtualFilesystem& vfs, const char* path) {
+  namespace fs = std::filesystem;
+  std::vector<uint8_t> raw = ReadFile(path);
+  auto archive = zeebulator::PkgArchive::Parse(raw);
+  const std::string stem = fs::path(path).stem().string();
+  const std::string pkg_name = stem + ".pkg";
+  const std::vector<std::string> roots = {
+      ".\\" + stem, "roms\\" + stem, "roms\\neogeo\\" + stem};
+  vfs.AddFile(".\\" + pkg_name, raw);
+  vfs.AddFile("roms\\" + pkg_name, raw);
+  vfs.AddFile("roms\\neogeo\\" + pkg_name, raw);
+  for (const auto& entry : archive.Entries()) {
+    std::vector<uint8_t> bytes = archive.Extract(entry);
+    for (const auto& root : roots) vfs.AddFile(root + "\\" + entry.name, bytes);
+  }
+  std::printf("loaded game pkg %s (%zu entries), stem=%s\n", path,
+              archive.Entries().size(), stem.c_str());
+}
+
 // Super BurgerTime's real code (PHASE8_LOG.md) searches six real,
 // literal candidate paths -- ".\boot.pkg", ".\boot\boot.rom",
 // "roms\boot.pkg", "roms\boot\boot.rom", "roms\neogeo\boot.pkg",
@@ -663,6 +682,7 @@ int main(int argc, char** argv) {
   // out from under it.
   bool persistent_log = false;
   std::vector<std::string> bar_paths;  // ABD-style titles ship a data.bar, no ggz
+  std::vector<std::string> pkg_paths;  // arcade ports ship per-game compressed ROM sets
   {
     int write_i = 1;
     for (int read_i = 1; read_i < argc; ++read_i) {
@@ -685,6 +705,14 @@ int main(int argc, char** argv) {
           return 1;
         }
         bar_paths.emplace_back(argv[++read_i]);
+        continue;
+      }
+      if (std::string(argv[read_i]) == "--pkg") {
+        if (read_i + 1 >= argc) {
+          std::fprintf(stderr, "--pkg needs a file path\n");
+          return 1;
+        }
+        pkg_paths.emplace_back(argv[++read_i]);
         continue;
       }
       argv[write_i++] = argv[read_i];
@@ -755,6 +783,7 @@ int main(int argc, char** argv) {
   if (std::string(argv[2]) != "-") MergeGgzInto(vfs, argv[2]);
   if (std::string(argv[3]) != "-") MergeGgzInto(vfs, argv[3]);
   if (argc >= 6) MergeBootPkgInto(vfs, argv[5]);
+  for (const auto& pkg_path : pkg_paths) MergeGamePkgInto(vfs, pkg_path.c_str());
   // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
   // cluster, RE'd 2026-09-02) do NOT ship the shared arcade bootstrap in
   // their own download: they busy-wait forever at tick 0 until they can open
@@ -2146,8 +2175,9 @@ int main(int argc, char** argv) {
     shell_hle.ScheduleTimer(kInferredTickMs, callback, user_data, r1_at_registration);
     core.SetRegister(zeebulator::kR0, 0);  // SUCCESS
   };
-  sbt_methods[10] = [](zeebulator::IArmCore& core) {
+  sbt_methods[10] = [&mod_runtime](zeebulator::IArmCore& core) {
     core.GetMemory().Write32(kSbtTaskListHeadAddress, 0);
+    mod_runtime.RequestYield();
     core.SetRegister(zeebulator::kR0, 0);
   };
   uint32_t unknown_0x01001017_obj = zeebulator::BuildInterfaceObject(

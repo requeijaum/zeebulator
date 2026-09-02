@@ -620,6 +620,7 @@ class ModRuntime {
   // interpreter has restored the guest LR. The caller consumes the edge once;
   // all guest registers/memory remain in the interpreter for exact resume.
   bool ConsumeYieldRequest();
+  void RequestYield();
 
   // Writes `table_address` at `module_base - 4` and populates the
   // table's known slots. Must be called after the module itself has
