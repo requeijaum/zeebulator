@@ -886,7 +886,7 @@ int main(int argc, char** argv) {
         if (!e.is_regular_file()) continue;
         std::string ext = e.path().extension().string();
         for (auto& c : ext) c = static_cast<char>(std::tolower(c));
-        if (ext == ".bar" || ext == ".pakz") found.push_back(e.path());
+        if (ext == ".bar" || ext == ".pakz" || ext == ".zip") found.push_back(e.path());
       }
       std::sort(found.begin(), found.end());
       for (const auto& p : found) {

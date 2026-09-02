@@ -39,6 +39,19 @@ TEST(VirtualFilesystem, FindNormalizesLeadingDotAndDoubledSlashes) {
   EXPECT_TRUE(vfs.Exists("fs:/pak0.pakz"));
 }
 
+TEST(VirtualFilesystem, FindNormalizesWindowsBackslashes) {
+  // Real MAME/arcade ports (Data East baddudes/hbarrel/...) open their ROM zip
+  // with Windows-style backslash paths like ".\\baddudes.zip".
+  VirtualFilesystem vfs;
+  std::vector<uint8_t> data = {9, 9, 9};
+  vfs.AddFile("baddudes.zip", data);
+
+  EXPECT_TRUE(vfs.Exists(".\\baddudes.zip"));
+  ASSERT_NE(vfs.Find(".\\baddudes.zip"), nullptr);
+  EXPECT_EQ(*vfs.Find(".\\baddudes.zip"), data);
+  EXPECT_TRUE(vfs.Exists("roms\\baddudes.zip"));
+}
+
 TEST(VirtualFilesystem, FindFallsBackToBasename) {
   // A game may prepend a directory prefix to a flat resource name.
   VirtualFilesystem vfs;

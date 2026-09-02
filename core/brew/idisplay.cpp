@@ -1,6 +1,8 @@
 #include "core/brew/idisplay.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 
 #include "core/brew/font5x7.h"
 #include "core/brew/interface_object.h"
@@ -107,6 +109,10 @@ void IDisplayHle::DrawRect(IArmCore& core) {
   }
 
   uint16_t color = ToRgb565(clr_fill);
+  if (std::getenv("ZEEB_LOG_DRAW")) {
+    std::fprintf(stderr, "[draw] DrawRect rect=(%d,%d)-(%d,%d) fill=0x%06x\n",
+                 x0, y0, x1, y1, clr_fill & 0xffffff);
+  }
   for (int y = std::max(y0, 0); y < std::min(y1, height_); ++y) {
     for (int x = std::max(x0, 0); x < std::min(x1, width_); ++x) {
       framebuffer_[static_cast<size_t>(y) * width_ + x] = color;
@@ -168,8 +174,16 @@ void IDisplayHle::BitBlt(IArmCore& core) {
   uint32_t rop = HleRuntime::ReadStackArg(core, 4);
 
   if (src_ptr == 0 || cx_dest <= 0 || cy_dest <= 0) {
+    if (std::getenv("ZEEB_LOG_DRAW")) {
+      std::fprintf(stderr, "[draw] BitBlt SKIP dest=(%d,%d) size=%dx%d src=0x%x\n",
+                   x_dest, y_dest, cx_dest, cy_dest, src_ptr);
+    }
     core.SetRegister(kR0, 0);
     return;
+  }
+  if (std::getenv("ZEEB_LOG_DRAW")) {
+    std::fprintf(stderr, "[draw] BitBlt dest=(%d,%d) size=%dx%d src=0x%x\n",
+                 x_dest, y_dest, cx_dest, cy_dest, src_ptr);
   }
 
   auto& mem = core.GetMemory();
@@ -377,6 +391,9 @@ void IDisplayHle::CreateDIBitmapEx(IArmCore& core) {
 }
 
 void IDisplayHle::Update(IArmCore&) {
+  if (std::getenv("ZEEB_LOG_DRAW")) {
+    std::fprintf(stderr, "[draw] Update (present frame)\n");
+  }
   last_presented_ = framebuffer_;
   has_presented_ = true;
   backend_.PushVideoFrame(framebuffer_.data(), width_, height_,

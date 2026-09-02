@@ -106,6 +106,10 @@ void IShellHle::ScheduleTimer(uint32_t ms, uint32_t callback, uint32_t user_data
     }
   }
   timers_.push_back(PendingTimer{ms, callback, user_data, r0_override});
+  if (std::getenv("ZEEB_LOG_TIMER")) {
+    std::fprintf(stderr, "[timer] schedule ms=%u cb=0x%08x data=0x%08x (total=%zu)\n",
+                 ms, callback, user_data, timers_.size());
+  }
 }
 
 void IShellHle::SetTimerImpl(IArmCore& core) {

@@ -27,6 +27,9 @@ const std::vector<uint8_t>* VirtualFilesystem::Find(const std::string& name) con
   // segment after the last '/'), which resolves any remaining directory prefix
   // a game prepends to a flat resource name.
   auto canon = [](std::string s) {
+    // normalize Windows-style backslashes to '/' first (real MAME/arcade ports
+    // like the Data East titles open ".\\baddudes.zip" / "roms\\baddudes.zip")
+    for (auto& ch : s) if (ch == '\\') ch = '/';
     // strip a leading fs:/ scheme
     if (s.rfind("fs:/", 0) == 0) s.erase(0, 4);
     // collapse "./" segments and doubled slashes
