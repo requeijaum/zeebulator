@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <iosfwd>
 
 #include "core/memory/memory.h"
 
@@ -81,6 +82,14 @@ class IArmCore {
   // interpreter decodes every fetch fresh, so its default is a no-op.
   // Passing size 0 means "the whole address space" (full cache clear).
   virtual void NotifyCodeChanged(uint32_t /*base*/, uint32_t /*size*/) {}
+
+  // Save-state support routed through the core interface so harnesses can
+  // snapshot/restore regardless of the concrete backend. Cores that do not
+  // implement a serialization format return false (no state written/read).
+  // The interpreter overrides these with its real register+CPSR+memory image
+  // format (see arm_interpreter.cpp). A JIT backend can override later.
+  virtual bool Serialize(std::ostream& /*out*/) const { return false; }
+  virtual bool Deserialize(std::istream& /*in*/) { return false; }
 };
 
 }  // namespace zeebulator

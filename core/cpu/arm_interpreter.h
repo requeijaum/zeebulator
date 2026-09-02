@@ -71,8 +71,8 @@ class ArmInterpreter : public IArmCore {
   // locals) couldn't be meaningfully serialized anyway. A loaded state
   // is only valid to apply to a core the harness has already finished
   // setting up the same way.
-  bool Serialize(std::ostream& out) const;
-  bool Deserialize(std::istream& in);
+  bool Serialize(std::ostream& out) const override;
+  bool Deserialize(std::istream& in) override;
 
  private:
   struct Operand2Result {

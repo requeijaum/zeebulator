@@ -3,7 +3,7 @@
 #include <istream>
 #include <ostream>
 
-#include "core/cpu/arm_interpreter.h"
+#include "core/cpu/arm_core.h"
 
 namespace zeebulator {
 
@@ -22,7 +22,7 @@ namespace zeebulator {
 // The magic/version header exists so a stage-2 format extension can
 // still recognize (and refuse, rather than corrupt-read) an
 // older stage-1-only file, or vice versa.
-bool SaveState(const ArmInterpreter& cpu, std::ostream& out);
-bool LoadState(ArmInterpreter& cpu, std::istream& in);
+bool SaveState(const IArmCore& cpu, std::ostream& out);
+bool LoadState(IArmCore& cpu, std::istream& in);
 
 }  // namespace zeebulator

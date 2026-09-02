@@ -18,14 +18,14 @@ constexpr uint32_t kVersion = 1;
 
 }  // namespace
 
-bool SaveState(const ArmInterpreter& cpu, std::ostream& out) {
+bool SaveState(const IArmCore& cpu, std::ostream& out) {
   out.write(reinterpret_cast<const char*>(&kMagic), sizeof(kMagic));
   out.write(reinterpret_cast<const char*>(&kVersion), sizeof(kVersion));
   if (!out.good()) return false;
   return cpu.Serialize(out);
 }
 
-bool LoadState(ArmInterpreter& cpu, std::istream& in) {
+bool LoadState(IArmCore& cpu, std::istream& in) {
   uint32_t magic = 0;
   uint32_t version = 0;
   in.read(reinterpret_cast<char*>(&magic), sizeof(magic));
