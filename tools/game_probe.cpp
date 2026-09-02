@@ -826,6 +826,37 @@ int main(int argc, char** argv) {
   std::vector<std::string> all_bar_paths = bar_paths;
   if (argc >= 7) all_bar_paths.emplace_back(argv[6]);
 
+  // Sibling-asset auto-discovery (2026-09-02): a title's own resource archive
+  // (.bar / .pakz) ships next to its .mod, and running WITHOUT it leaves the
+  // game's asset parser reading empty data -- the confirmed root cause of the
+  // "class-C" boot stalls (e.g. peggle sits in a fill-loop with no resources.bar
+  // but reaches a real EVT_APP_RESUME once resources.bar is registered; Rolimaz
+  // ships pak0.pakz; ridgeracer ships ridgeracer.bar). When the caller passed no
+  // explicit --bar and no positional resources.bar, scan the .mod's own folder
+  // for *.bar / *.pakz siblings and register them the same way. Opt-out with
+  // ZEEB_NO_ASSET_AUTODISCOVER=1. Non-BAR files register-as-resource gracefully
+  // (the loop below already tolerates parser throws, keeping raw bytes in VFS).
+  if (all_bar_paths.empty() && std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
+    namespace fs = std::filesystem;
+    try {
+      fs::path own_dir = fs::absolute(argv[1]).parent_path();
+      std::vector<fs::path> found;
+      for (const auto& e : fs::directory_iterator(own_dir)) {
+        if (!e.is_regular_file()) continue;
+        std::string ext = e.path().extension().string();
+        for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+        if (ext == ".bar" || ext == ".pakz") found.push_back(e.path());
+      }
+      std::sort(found.begin(), found.end());
+      for (const auto& p : found) {
+        all_bar_paths.emplace_back(p.string());
+        std::printf("auto-discovered sibling asset archive %s\n", p.string().c_str());
+      }
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "asset auto-discovery skipped: %s\n", e.what());
+    }
+  }
+
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
     std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
     return 1;
