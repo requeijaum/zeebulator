@@ -110,6 +110,12 @@ void IDisplayHle::DrawRect(IArmCore& core) {
 
   uint16_t color = ToRgb565(clr_fill);
   if (std::getenv("ZEEB_LOG_DRAW")) {
+    if (rect_addr != 0 && std::getenv("ZEEB_RECT_RAW")) {
+      auto& mem = core.GetMemory();
+      std::fprintf(stderr, "[rectraw] @0x%08x: +0=%d +2=%d +4=%d +6=%d\n", rect_addr,
+                   (int)(int16_t)mem.Read16(rect_addr+0),(int)(int16_t)mem.Read16(rect_addr+2),
+                   (int)(int16_t)mem.Read16(rect_addr+4),(int)(int16_t)mem.Read16(rect_addr+6));
+    }
     std::fprintf(stderr, "[draw] DrawRect rect=(%d,%d)-(%d,%d) fill=0x%06x\n",
                  x0, y0, x1, y1, clr_fill & 0xffffff);
   }
