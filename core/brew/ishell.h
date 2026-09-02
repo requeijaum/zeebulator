@@ -162,6 +162,10 @@ class IShellHle {
   // originally registered.
   std::vector<ExpiredTimer> Tick(uint32_t elapsed_ms);
 
+  // Number of timers currently pending (diagnostics for the frame-timer
+  // preempt path in game_probe.cpp).
+  size_t PendingTimerCount() const { return timers_.size(); }
+
  private:
   struct PendingTimer {
     uint32_t remaining_ms;

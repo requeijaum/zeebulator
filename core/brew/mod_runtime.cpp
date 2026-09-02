@@ -745,7 +745,7 @@ void ModRuntime::GetUpTimeMsImpl(IArmCore& core) {
   // hardware given enough real wall-clock time. The 1ms-per-read rate
   // is an inferred, not measured, choice -- plausible for a real
   // "checked once per real hardware poll iteration" loop.
-  uptime_ms_ += 1;
+  uptime_ms_ += uptime_advance_per_read_;
 }
 
 void ModRuntime::Tick(uint32_t elapsed_ms) { uptime_ms_ += elapsed_ms; }

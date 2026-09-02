@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 
 #include "core/brew/hle_runtime.h"
 #include "core/memory/memory.h"
@@ -669,6 +670,18 @@ class ModRuntime {
   uint32_t fifth_context_object_ = 0;
   uint32_t sixth_context_object_ = 0;
   uint32_t uptime_ms_ = 0;
+  // GetUpTimeMS self-advance rate per read (see GetUpTimeMsImpl doc). Default 1;
+  // ZEEB_UPTIME_ADVANCE=N overrides. Grounded in the BREW frame-deadline
+  // busy-wait model (brew-sim-recon/notes): a title's per-frame loop that waits
+  // for uptime to cross a target set frames ahead needs the clock to advance
+  // fast enough per poll to actually cross it within our step budget.
+  uint32_t uptime_advance_per_read_ = [] {
+    if (const char* e = std::getenv("ZEEB_UPTIME_ADVANCE")) {
+      unsigned long v = std::strtoul(e, nullptr, 10);
+      if (v != 0) return static_cast<uint32_t>(v);
+    }
+    return static_cast<uint32_t>(1);
+  }();
   bool yield_requested_ = false;
 
   // GetAppContextImpl only re-writes a field into the context struct

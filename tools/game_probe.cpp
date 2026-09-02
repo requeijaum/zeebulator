@@ -3799,6 +3799,64 @@ int main(int argc, char** argv) {
     // Driving these is what actually runs the game's per-frame logic;
     // nothing calls into the module otherwise from here on.
     if (!dbg_paused) mod_runtime.Tick(kTickMs);
+    // ZEEB_TIMER_PREEMPT=1 — BREW event-loop fidelity fix (grounded in the
+    // public BREW SDK contract: AEEShell/AEECallback — a scheduled ISHELL_
+    // SetTimer callback is serviced by the shell's own loop, it does NOT wait
+    // for the app's current callback to return; the app's per-frame loop lives
+    // in the shell's timer queue, re-armed each frame). Some titles (Data East
+    // cluster — cninja et al.) schedule a 16ms frame timer at EVT_APP_START
+    // then enter a GetUpTimeMS busy-wait that never returns, so with our old
+    // "only tick timers when no continuation is active" rule the frame timer
+    // was starved forever (ROADMAP UPDATE 12/13; recon: brew-sim-recon/notes).
+    // Here, when a continuation is live but timers are due, we save the guest
+    // context, run the due timer callback(s) (the real frame loop) exactly as
+    // the shell would, then restore the continuation's context and let it
+    // resume where it yielded. Opt-in; default behavior unchanged.
+    if (!dbg_paused && callback_continuation_active &&
+        std::getenv("ZEEB_TIMER_PREEMPT") != nullptr) {
+      auto due = shell_hle.Tick(kTickMs);
+      if (std::getenv("ZEEB_PREEMPT_DIAG")) {
+        std::fprintf(stderr, "[preemptdiag] kTickMs=%u pending=%zu due=%zu\n",
+                     (unsigned)kTickMs, shell_hle.PendingTimerCount(), due.size());
+      }
+      if (!due.empty()) {
+        // Save the yielded continuation's full architectural context.
+        std::array<uint32_t, 16> saved_regs{};
+        for (int i = 0; i < 16; ++i) saved_regs[i] = cpu.GetRegister(i);
+        uint32_t saved_cpsr = cpu.GetCpsr();
+        for (const auto& timer : due) {
+          uint32_t call_r0 = timer.r0_override.value_or(timer.user_data);
+          uint32_t call_r1 = timer.r0_override.has_value() ? timer.user_data : 0;
+          mod_runtime.ConsumeYieldRequest();
+          try {
+            auto tr = CallArmFunctionChecked(
+                cpu, kTrapBase, kBase, mod_size, timer.callback, call_r0,
+                call_r1, 0, 0, /*trace=*/false, /*hle_trace=*/false, &display,
+                &backend, &abd_text_state, /*resume=*/false,
+                [&mod_runtime]() { return mod_runtime.ConsumeYieldRequest(); });
+            if (tr.wandered_outside_module || tr.exceeded_step_budget) {
+              std::printf("preempting frame timer did not complete trustworthily -- stopping.\n");
+              running = false;
+              break;
+            }
+          } catch (const std::exception& e) {
+            std::printf("preempting frame timer threw: %s (pc=0x%08x)\n", e.what(),
+                        cpu.GetRegister(zeebulator::kPC));
+            running = false;
+            break;
+          }
+          ++tick_count;
+          if (std::getenv("ZEEB_TICK_DIAG") && (tick_count % 60 == 0)) {
+            std::fprintf(stderr, "[tickdiag/preempt] tick=%llu cb=0x%08x\n",
+                         static_cast<unsigned long long>(tick_count), timer.callback);
+          }
+        }
+        // Restore the continuation's context so its resume picks up exactly
+        // where it yielded (the busy-wait sees the clock advanced by the frame).
+        for (int i = 0; i < 16; ++i) cpu.SetRegister(i, saved_regs[i]);
+        cpu.SetCpsr(saved_cpsr);
+      }
+    }
     if (!dbg_paused && callback_continuation_active) {
       try {
         auto resumed = CallArmFunctionChecked(
