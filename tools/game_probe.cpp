@@ -1014,6 +1014,15 @@ int main(int argc, char** argv) {
     }
   }
   shell_hle.RegisterInstance(/*AEECLSID_DISPLAY=*/0x01001001, display_obj);
+  // AEECLSID_DISPLAY1 (0x010127d4): a second display-interface class some
+  // titles (prey3d 276154, pbc 280238) request via ISHELL_CreateInstance
+  // right after AEECLSID_DISPLAY. Empirically (ZEEB_LOG_CREATEINSTANCE) these
+  // titles abort EVT_APP_START when it comes back EFAILED. It is ABI-
+  // compatible enough with IDisplay for the early boot path (the game derefs
+  // the returned object's IDisplay-shaped vtable), so hand back the same real
+  // IDisplay object; extend with a dedicated vtable if a title is later shown
+  // to call a DISPLAY1-only slot.
+  shell_hle.RegisterInstance(/*AEECLSID_DISPLAY1=*/0x010127d4, display_obj);
   // ClsId 0x01002001: a real BREW class Double Dragon's own graphics-init
   // routine requires (ISHELL_CreateInstance failing for it is the
   // confirmed root cause of the "memory insufficient" dead end -- see
