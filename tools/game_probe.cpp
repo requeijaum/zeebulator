@@ -866,6 +866,50 @@ int main(int argc, char** argv) {
     }
   }
   for (const auto& pkg_path : pkg_paths) MergeGamePkgInto(vfs, pkg_path.c_str());
+  // Loose sibling-asset auto-discovery (2026-09-02): several arcade-core ports
+  // (cninja/... — the Data East cluster) open small framework/menu assets that
+  // ship as LOOSE files next to the .mod (not packed in <name>.pkg): e.g.
+  // `ding.wav`, `menusmall.fnz`, `menu.fnz`, `font.FNZ`, `*.tex`. Their own
+  // fopen-style wrapper (RE'd at cninja 0x11b754) opens them by BARE name via
+  // IFileMgr_OpenFile; with the file absent our OpenFile returns handle 0 and
+  // the game dereferences the null FILE*, wandering to pc=0 after asset load
+  // (previously mis-attributed to a "null vtable[3]" gap — it is a missing
+  // loose asset, confirmed by ZEEB_LOG_FILE: `OpenFile('ding.wav') -> 0x0`).
+  // Register every loose sibling (excluding the .mod/.pkg/.sig we already
+  // handle) under its bare name plus the same `.\\`/`roms\\` path roots the
+  // pkg entries use, so a bare-name or prefixed open both resolve. Opt-out via
+  // the same ZEEB_NO_ASSET_AUTODISCOVER=1.
+  if (std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
+    namespace fs = std::filesystem;
+    try {
+      fs::path own_dir = fs::absolute(argv[1]).parent_path();
+      const std::string stem = fs::path(argv[1]).stem().string();
+      for (const auto& e : fs::directory_iterator(own_dir)) {
+        if (!e.is_regular_file()) continue;
+        std::string ext = e.path().extension().string();
+        std::string lext = ext;
+        for (auto& c : lext) c = static_cast<char>(std::tolower(c));
+        if (lext == ".mod" || lext == ".pkg" || lext == ".sig") continue;
+        const std::string fname = e.path().filename().string();
+        std::vector<uint8_t> bytes;
+        try {
+          bytes = ReadFile(e.path().string().c_str());
+        } catch (const std::exception&) {
+          continue;
+        }
+        // Bare name (how cninja's fopen wrapper opens ding.wav/menusmall.fnz),
+        // plus the conventional path roots used elsewhere for pkg entries.
+        vfs.AddFile(fname, bytes);
+        vfs.AddFile(".\\" + fname, bytes);
+        vfs.AddFile(".\\" + stem + "\\" + fname, bytes);
+        vfs.AddFile("roms\\" + fname, bytes);
+        std::printf("registered loose sibling asset %s (%zu bytes)\n",
+                    fname.c_str(), bytes.size());
+      }
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "loose-asset auto-discovery skipped: %s\n", e.what());
+    }
+  }
   // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
   // cluster, RE'd 2026-09-02) do NOT ship the shared arcade bootstrap in
   // their own download: they busy-wait forever at tick 0 until they can open
