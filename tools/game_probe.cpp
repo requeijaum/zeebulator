@@ -2980,6 +2980,22 @@ int main(int argc, char** argv) {
                           ",\"hex\":\"" + hex + "\"}";
         req->reply.set_value(out);
       }
+    } else if (c == "dump") {
+      // Full sparse RAM dump to a host file (allocated pages only, via
+      // Memory::Serialize's page-index + 4KB format). Raw, deterministic,
+      // read-only re: guest state -- the micro-hackathon's RAM-capture
+      // primitive (compressible downstream; raw kept for analysis). Opt-in:
+      // only reachable when ZEEB_CONTROL_PORT is set (loopback-only).
+      std::string path = req->str_path.empty() ? "/tmp/zeeb_ram.bin" : req->str_path;
+      std::ofstream ofs(path, std::ios::binary);
+      if (!ofs) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"cannot open path\"}");
+      } else if (!cpu.GetMemory().Serialize(ofs)) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"serialize failed\"}");
+      } else {
+        ofs.close();
+        req->reply.set_value("{\"ok\":true,\"path\":\"" + path + "\"}");
+      }
     } else if (c == "write") {
       // Hex payload -> bytes written at addr (max 256, mirrors read).
       const std::string& hx = req->str_hex;
