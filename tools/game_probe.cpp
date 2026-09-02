@@ -3169,6 +3169,19 @@ int main(int argc, char** argv) {
   }
   std::vector<uint8_t> mirror_rgba;  // reused capture buffer
   std::printf("Reached the event loop with no unhandled instruction! Window will stay open.\n");
+  // One-time absolute seed (ZEEB_SEED_ABS=addr:value, hex), applied here so it
+  // works under BOTH interp and JIT (unlike the PC-hook ZEEB_SEED_63C which is
+  // interp-only). Used to plant the +0x63c optional-callback sentinel into the
+  // already-constructed (BSS-deterministic) engine object so the guard's beq is
+  // taken instead of blx 0. Diagnostic; the address is title-specific.
+  if (const char* sa = std::getenv("ZEEB_SEED_ABS")) {
+    unsigned addr = 0, val = 0;
+    if (std::sscanf(sa, "%x:%x", &addr, &val) == 2 && addr >= 0x1000) {
+      uint32_t before = cpu.GetMemory().Read32(addr);
+      cpu.GetMemory().Write32(addr, val);
+      std::printf("[seedabs] [0x%08x] 0x%08x -> 0x%08x\n", addr, before, val);
+    }
+  }
   bool running = true;
   zeebulator::ZPadState previous_pad_state;
   SDL_Event event;
