@@ -41,6 +41,7 @@
 #include "core/control/mirror_server.h"
 #include "core/brew/virtual_filesystem.h"
 #include "core/cpu/arm_interpreter.h"
+#include "core/cpu/dynarmic_arm_core.h"
 #include "core/gl_texture_log.h"
 #include "core/loader/atitc.h"
 #include "core/loader/png.h"
@@ -934,7 +935,13 @@ int main(int argc, char** argv) {
       window_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, kWidth, kHeight,
       SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 
-  zeebulator::ArmInterpreter cpu;
+  // CPU backend selectable via ZEEB_CPU (default: interpreter). The probe's
+  // per-instruction hooks (DebugHooks trace/wwatch, ABD-PC state, spin/liveness)
+  // live only on the interpreter path, so the JIT is opt-in for hot-drain
+  // acceleration where no instrumentation is armed. See ROADMAP "JIT DE BLOCO".
+  std::unique_ptr<zeebulator::IArmCore> cpu_owner =
+      zeebulator::MakeArmCore(zeebulator::SelectCpuBackendFromEnv());
+  zeebulator::IArmCore& cpu = *cpu_owner;
   constexpr uint32_t kTrapBase = 0xF0000000;
   zeebulator::HleRuntime hle(cpu, kTrapBase, 0x10000);
   // See Sdl2UnifiedBackend's own doc comment: a real host GL context
