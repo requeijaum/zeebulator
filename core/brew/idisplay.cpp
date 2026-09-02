@@ -250,6 +250,32 @@ void IDisplayHle::GetDeviceBitmap(IArmCore& core) {
   core.SetRegister(kR0, 0);  // AEE_SUCCESS
 }
 
+void IDisplayHle::SetDestination(IArmCore& core) {
+  // int SetDestination(IDisplay *pIDisplay, IBitmap *pbmDst)
+  // R1 = requested destination bitmap. NULL means "reset to device bitmap".
+  // Real BREW accepts app-provided IBitmap implementations, not only DIBs
+  // created by IDisplay, so keep whatever non-null object is handed in as
+  // the active destination (matching zeemu BrewDisplay). This lets offscreen
+  // composition targets route correctly instead of always drawing to the
+  // device framebuffer.
+  uint32_t requested = core.GetRegister(kR1);
+  destination_ptr_ = (requested == 0) ? device_bitmap_ptr_ : requested;
+  core.SetRegister(kR0, 0);  // AEE_SUCCESS
+}
+
+void IDisplayHle::GetDestination(IArmCore& core) {
+  // IBitmap* GetDestination(IDisplay *pIDisplay)
+  // Returns the current destination bitmap; falls back to device bitmap.
+  uint32_t dst = destination_ptr_ ? destination_ptr_ : device_bitmap_ptr_;
+  core.SetRegister(kR0, dst);
+}
+
+void IDisplayHle::IsEnabled(IArmCore& core) {
+  // boolean IsEnabled(IDisplay *pIDisplay)
+  // The device display is always enabled on Zeebo hardware.
+  core.SetRegister(kR0, 1);
+}
+
 void IDisplayHle::Update(IArmCore&) {
   last_presented_ = framebuffer_;
   has_presented_ = true;
@@ -284,15 +310,15 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
       Stub,                                    // 11 GetSymbol
       Stub,                                    // 12 DrawFrame
       Stub,                                    // 13 CreateDIBitmap
-      Stub,                                    // 14 SetDestination
-      Stub,                                    // 15 GetDestination
+      [this](IArmCore& c) { SetDestination(c); },  // 14 SetDestination
+      [this](IArmCore& c) { GetDestination(c); },  // 15 GetDestination
       [this](IArmCore& c) { GetDeviceBitmap(c); },  // 16 GetDeviceBitmap
       Stub,                                    // 17 SetFont
       [this](IArmCore& c) { SetClipRect(c); },  // 18 SetClipRect
       [this](IArmCore& c) { GetClipRect(c); },  // 19 GetClipRect
       Stub,                                    // 20 Clone
       Stub,                                    // 21 MakeDefault
-      Stub,                                    // 22 IsEnabled
+      [this](IArmCore& c) { IsEnabled(c); },    // 22 IsEnabled
       Stub,                                    // 23 NotifyEnable
       Stub,                                    // 24 CreateDIBitmapEx
       Stub,                                    // 25 SetPrefs

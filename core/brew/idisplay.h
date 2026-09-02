@@ -186,6 +186,9 @@ class IDisplayHle {
   void GetClipRect(IArmCore& core);
   void Update(IArmCore& core);
   void BitBlt(IArmCore& core);
+  void SetDestination(IArmCore& core);
+  void GetDestination(IArmCore& core);
+  void IsEnabled(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
 
   Backend& backend_;
@@ -200,6 +203,7 @@ class IDisplayHle {
   int16_t clip_dx_ = 0;
   int16_t clip_dy_ = 0;
   uint32_t device_bitmap_ptr_ = 0;
+  uint32_t destination_ptr_ = 0;
 };
 
 }  // namespace zeebulator

@@ -750,6 +750,35 @@ TEST(IDisplayHle, GetDeviceBitmapWritesTheRegisteredInstanceAndReturnsSuccess) {
   EXPECT_EQ(cpu.GetMemory().Read32(kPpBitmapAddr), kBitmapObj);
 }
 
+TEST(IDisplayHle, SetDestinationAndGetDestinationRouteCorrectly) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  TestBackend backend;
+  IDisplayHle display(backend, 64, 48);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+  constexpr uint32_t kDeviceBmp = 0x8000F000;
+  display.SetDeviceBitmapInstance(kDeviceBmp);
+
+  uint32_t set_dst = cpu.GetMemory().Read32(kVtableAddr + 14 * 4);
+  uint32_t get_dst = cpu.GetMemory().Read32(kVtableAddr + 15 * 4);
+
+  // Default: GetDestination returns device bitmap when none set.
+  EXPECT_EQ(hle.CallArmFunction(get_dst, display_obj), kDeviceBmp);
+
+  // SetDestination to an offscreen bitmap keeps that object active.
+  constexpr uint32_t kOffscreen = 0x80020000;
+  EXPECT_EQ(hle.CallArmFunction(set_dst, display_obj, kOffscreen), 0u);
+  EXPECT_EQ(hle.CallArmFunction(get_dst, display_obj), kOffscreen);
+
+  // SetDestination(NULL) resets to the device bitmap.
+  EXPECT_EQ(hle.CallArmFunction(set_dst, display_obj, 0u), 0u);
+  EXPECT_EQ(hle.CallArmFunction(get_dst, display_obj), kDeviceBmp);
+
+  // IsEnabled (slot 22) always reports the display is enabled.
+  uint32_t is_enabled = cpu.GetMemory().Read32(kVtableAddr + 22 * 4);
+  EXPECT_EQ(hle.CallArmFunction(is_enabled, display_obj), 1u);
+}
+
 TEST(IDisplayHle, SetClipRectAndGetClipRectWorkCorrectly) {
   TestBackend backend;
   ArmInterpreter cpu;
