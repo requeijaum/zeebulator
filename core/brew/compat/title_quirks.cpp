@@ -156,6 +156,83 @@ const std::vector<TitleQuirk>& KnownTitles() {
           "Reaches event loop and tick execution.",
           /*evidence=*/"research/sources/scripts/hackathon_clsid.json",
       },
+      TitleQuirk{
+          /*real_clsid=*/0x0108EFF9u,  // 17362937 -- Zeebo Sports Tennis
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"277717",
+          /*display_name=*/"Zeebo Sports Tennis",
+          /*mod_filename=*/"zeebotennis.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Sports title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF15u,  // 17366805 -- Zeebo Sports Volley
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"278212",
+          /*display_name=*/"Zeebo Sports Volei",
+          /*mod_filename=*/"zeebovolley.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Sports title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF1Au,  // 17366810 -- Zeeboids
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"279382",
+          /*display_name=*/"Zeeboids",
+          /*mod_filename=*/"zeeboids.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF06u,  // 17366790 -- Zeebo Extreme Air Race
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"277285",
+          /*display_name=*/"Zeebo Extreme Air Race",
+          /*mod_filename=*/"AirRacez.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Extreme title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF07u,  // 17366791 -- Zeebo Extreme Baja
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"277727",
+          /*display_name=*/"Zeebo Extreme Baja",
+          /*mod_filename=*/"Bajaz.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Extreme title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF13u,  // 17366803 -- Zeebo Extreme Bóia Cross
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"278285",
+          /*display_name=*/"Zeebo Extreme Boia Cross",
+          /*mod_filename=*/"Boiaz.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Extreme title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF14u,  // 17366804 -- Zeebo Extreme Jetboard
+          /*mif_clsid=*/0x01060000u,
+          /*folder=*/"278283",
+          /*display_name=*/"Zeebo Extreme Jetboard",
+          /*mod_filename=*/"JetBoardz.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"First-party Zeebo Extreme title. Reaches event loop.",
+          /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
   };
   return kTitles;
 }
