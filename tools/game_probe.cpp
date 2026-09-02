@@ -3913,7 +3913,12 @@ int main(int argc, char** argv) {
         break;
       }
       ++tick_count;
-      // Periodic maintenance, not just right before an F1 save: a long
+      if (std::getenv("ZEEB_TICK_DIAG") && (tick_count % 60 == 0)) {
+        std::fprintf(stderr, "[tickdiag] tick=%llu cb=0x%08x pc=0x%08x\n",
+                     static_cast<unsigned long long>(tick_count),
+                     *captured_button_callback,
+                     cpu.GetRegister(zeebulator::kPC));
+      }
       // real play session's own GL texture log otherwise grows without
       // bound for the rest of the process's lifetime (see
       // CompactGlTextureLog's own doc comment), which matters for a
