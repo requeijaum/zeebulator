@@ -817,6 +817,21 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x1c, unknown_0x1c_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x20, unknown_0x20_fn);
   memory_.Write32(table_address + kCheckObjectFlagSlotOffset0xa8, check_object_flag_0xa8_fn);
+  // Auto-stub ladder (env ZEEB_AUTOSTUB, debug harness only): fill every
+  // still-unmapped static-base offset with a shared logging no-op, so a title
+  // that calls an as-yet-unidentified slot resolves + logs (via Dispatch's
+  // per-slot logger, with the caller in LR) instead of wandering into
+  // unwritten zero memory. OFF by default -- ABD/ctest behavior unchanged.
+  if (std::getenv("ZEEB_AUTOSTUB") != nullptr) {
+    uint32_t autostub_fn = hle_.Register([](IArmCore& core) {
+      core.SetRegister(kR0, 0);  // safe no-op, matches the established precedent
+    });
+    for (uint32_t off = 0; off <= 0x400; off += 4) {
+      if (memory_.Read32(table_address + off) == 0) {
+        memory_.Write32(table_address + off, autostub_fn);
+      }
+    }
+  }
   memory_.Write32(module_base - 4, table_address);
 }
 
