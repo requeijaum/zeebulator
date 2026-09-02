@@ -1022,6 +1022,13 @@ int main(int argc, char** argv) {
   shell_hle.RegisterInstance(/*unidentified, real ClsId from disassembly=*/0x01002001,
                               unknown_graphics_obj);
   uint32_t shell = shell_hle.Build(/*vtable=*/0x80000000, /*object=*/0x80001000);
+  // Quake's EVT_APP_START calls ISHELL_LoadResObject (slot 19) with a
+  // `fs:/...id1/splash_title.png` path and treats the return value as an
+  // object whose vtable[10] it immediately calls. Inject a safe scaffold so
+  // slot 10 resolves instead of bx 0; real decode stays out of scope.
+  uint32_t load_res_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8006A000, /*object=*/0x8006B000, /*slot_count=*/12);
+  shell_hle.SetLoadResObjectReturn(load_res_obj);
   // Same real init routine also calls IDisplay::GetDeviceBitmap and
   // immediately dereferences the result's vtable -- another generic
   // scaffold, since the real IBitmap-shaped interface isn't identified

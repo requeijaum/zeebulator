@@ -128,6 +128,22 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
   core.SetRegister(kR0, 1);  // EFAILED-ish: no matching timer
 }
 
+void IShellHle::SetLoadResObjectReturn(uint32_t object_ptr) {
+  load_res_object_obj_ = object_ptr;
+}
+
+void IShellHle::LoadResObjectImpl(IArmCore& core) {
+  // ISHELL_LoadResObject: only the injected return-object is honored by
+  // default (no real resource decode here). Quake's EVT_APP_START calls slot
+  // 19 with r1 = a `fs:/...` path string and immediately treats the RETURN
+  // value as an object whose vtable[10] it calls; the stub's prior r0=0 made
+  // it bx 0. Returning the harness-injected object keeps that dereference
+  // valid (slot 10 = safe no-op) while real resource loading stays out of
+  // scope for this fix. Any future decode belongs in game_probe.cpp-style
+  // OpenFile plumbing, not here.
+  core.SetRegister(kR0, load_res_object_obj_);
+}
+
 void IShellHle::LoadResDataExImpl(IArmCore& core) {
   // AEEResult LoadResDataEx(IShell *pIShell, const char *pszResFile,
   //   uint16 wResID, AEERESTYPE resType, void *pBuffer, uint32 *pnLen)
@@ -233,7 +249,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       Stub,  // 16 EndDialog
       Stub,  // 17 LoadResString
       Stub,  // 18 LoadResData
-      Stub,  // 19 LoadResObject
+      [this](IArmCore& c) { LoadResObjectImpl(c); },  // 19 LoadResObject
       Stub,  // 20 FreeResData
       Stub,  // 21 SendEvent
       Stub,  // 22 Beep

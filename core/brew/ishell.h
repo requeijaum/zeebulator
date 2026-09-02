@@ -114,6 +114,11 @@ class IShellHle {
 
   uint32_t Build(uint32_t vtable_address, uint32_t object_address);
 
+  // Sets the object ISHELL_LoadResObject (slot 19) returns. Some ports
+  // (Quake, EVT_APP_START) dereference this return value as an object
+  // immediately; the default zero dereferenced a null vtable.
+  void SetLoadResObjectReturn(uint32_t object_ptr);
+
   // Schedules `callback`/`user_data` exactly the way a real
   // ISHELL_SetTimer(ms, callback, user_data) call would (same re-arm-
   // by-re-registering-the-same-identity semantics as SetTimerImpl),
@@ -169,11 +174,13 @@ class IShellHle {
   void GetDeviceInfoImpl(IArmCore& core);
   void SetTimerImpl(IArmCore& core);
   void CancelTimerImpl(IArmCore& core);
+  void LoadResObjectImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
   void GetHandlerImpl(IArmCore& core);
 
   Memory& memory_;
   HleRuntime& hle_;
+  uint32_t load_res_object_obj_ = 0;
   int screen_width_;
   int screen_height_;
   std::unordered_map<uint32_t, uint32_t> instances_;
