@@ -356,7 +356,7 @@ struct AbdTextState {
   uint32_t last_draw_descriptor_addr = 0;
 };
 
-CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap_base,
+CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
                                    uint32_t mod_base, uint32_t mod_size, uint32_t entry,
                                    uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3,
                                    bool trace = false, bool hle_trace = false,
