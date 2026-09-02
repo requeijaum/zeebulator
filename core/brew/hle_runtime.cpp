@@ -1,5 +1,6 @@
 #include "core/brew/hle_runtime.h"
 
+#include "core/control/call_stack_tracer.h"
 #include "core/control/debug_sink.h"
 
 #include <cstdio>
@@ -31,8 +32,12 @@ uint32_t HleRuntime::Register(HleFunction fn) {
 uint32_t HleRuntime::RegisterLabeled(HleFunction fn, std::string label) {
   uint32_t index = static_cast<uint32_t>(functions_.size());
   functions_.push_back(std::move(fn));
-  labels_.push_back(std::move(label));
-  return trap_base_ + index * 4;
+  labels_.push_back(label);
+  uint32_t addr = trap_base_ + index * 4;
+  if (!label.empty()) {
+    CallStackTracer::Instance().RegisterSymbol(addr, label);
+  }
+  return addr;
 }
 
 std::string HleRuntime::LabelForAddress(uint32_t sentinel_address) const {
@@ -50,13 +55,14 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
     return;
   }
   if (index < functions_.size() && functions_[index]) {
+    std::string label = LabelForAddress(address);
+    CallStackTracer::Instance().OnCall(core.GetRegister(kPC), address, core.GetRegister(kLR), core.GetRegister(kSP));
     // Env-gated full BREW-API trace (ZEEB_LOG_BREW=1): every IMPLEMENTED
     // vtable slot a title invokes, with its label and args. Complements
     // ZEEB_LOG_SLOT (which only fires for UNimplemented slots). Off by
     // default; stderr only; non-perturbing (logs, then runs the real handler).
     if (std::getenv("ZEEB_LOG_BREW") != nullptr ||
         ::zeebulator::DebugSink::Instance().Enabled()) {
-      std::string label = LabelForAddress(address);
       char buf[256];
       std::snprintf(buf, sizeof(buf),
                     "%s idx=%u r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x",
@@ -68,6 +74,7 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
         std::fprintf(stderr, "[brew] %s\n", buf);
     }
     functions_[index](core);
+    CallStackTracer::Instance().OnReturn(address, core.GetRegister(kLR), core.GetRegister(kSP));
   } else if (std::getenv("ZEEB_LOG_SLOT") != nullptr) {
     // Phase 9c per-slot logger (env-gated, non-perturbing: stderr only, no new
     // traps / no functions_ mutation). Surfaces every unimplemented vtable slot

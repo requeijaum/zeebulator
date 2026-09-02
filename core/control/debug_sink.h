@@ -31,7 +31,7 @@
 namespace zeebulator {
 
 // Category tags for the ring buffers the UI shows as separate tabs.
-enum class DebugCat { kLog, kBrew, kGpu, kInput, kMedia };
+enum class DebugCat { kLog, kBrew, kGpu, kInput, kMedia, kCallTrace };
 
 // A snapshot of live CPU/loop state the UI's "CPU" tab renders.
 struct DebugState {
@@ -100,6 +100,7 @@ class DebugSink {
       case DebugCat::kGpu: return gpu_;
       case DebugCat::kInput: return input_;
       case DebugCat::kMedia: return media_;
+      case DebugCat::kCallTrace: return call_trace_;
       case DebugCat::kLog:
       default: return log_;
     }
@@ -108,7 +109,7 @@ class DebugSink {
   static constexpr size_t kMaxLines = 500;
   bool enabled_ = false;
   std::mutex mu_;
-  std::deque<std::string> log_, brew_, gpu_, input_, media_;
+  std::deque<std::string> log_, brew_, gpu_, input_, media_, call_trace_;
   std::mutex state_mu_;
   DebugState state_;
   uint64_t seq_ = 0;

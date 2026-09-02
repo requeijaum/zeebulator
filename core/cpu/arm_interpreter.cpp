@@ -1,5 +1,6 @@
 #include "core/cpu/arm_interpreter.h"
 
+#include "core/control/call_stack_tracer.h"
 #include "core/control/debug_hooks.h"
 
 #include <bit>
@@ -273,10 +274,12 @@ void ArmInterpreter::ExecuteBranch(uint32_t instr) {
   bool link = (instr >> 24) & 1;
   int32_t offset = static_cast<int32_t>(instr << 8) >> 6;
   uint32_t fetch_addr = regs_[kPC];
+  uint32_t target = static_cast<uint32_t>(static_cast<int32_t>(fetch_addr) + 8 + offset);
   if (link) {
     regs_[kLR] = fetch_addr + 4;
+    CallStackTracer::Instance().OnCall(fetch_addr, target, regs_[kLR], regs_[kSP]);
   }
-  regs_[kPC] = static_cast<uint32_t>(static_cast<int32_t>(fetch_addr) + 8 + offset);
+  regs_[kPC] = target;
   pc_updated_by_instruction_ = true;
 }
 
@@ -365,6 +368,7 @@ void ArmInterpreter::ExecuteBlockDataTransfer(uint32_t instr) {
       if (i == kPC) {
         // LDM/POP with pc in the register list interworks, same real
         // rule and rationale as ExecuteSingleDataTransfer's LDR pc.
+        CallStackTracer::Instance().OnReturn(value, regs_[kLR], regs_[kSP]);
         SetPcInterworking(value);
       } else {
         regs_[i] = value;
@@ -386,8 +390,12 @@ void ArmInterpreter::ExecuteBranchExchange(uint32_t instr) {
   bool link = (instr >> 5) & 1;
   uint32_t rm = instr & 0xF;
   uint32_t target = ReadOperandRegister(rm);
+  uint32_t fetch_addr = regs_[kPC];
   if (link) {
-    regs_[kLR] = regs_[kPC] + 4;
+    regs_[kLR] = fetch_addr + 4;
+    CallStackTracer::Instance().OnCall(fetch_addr, target, regs_[kLR], regs_[kSP]);
+  } else if (rm == kLR) {
+    CallStackTracer::Instance().OnReturn(fetch_addr, regs_[kLR], regs_[kSP]);
   }
   SetPcInterworking(target);
 }
@@ -686,8 +694,12 @@ void ArmInterpreter::ExecuteThumbHiRegisterOperation(uint16_t instr) {
 
   if (op == 0x3) {  // BX/BLX
     uint32_t target = ReadThumbOperandRegister(rs);
+    uint32_t fetch_addr = regs_[kPC];
     if (h1) {  // BLX: real ARMv6 ISA -- H1 selects BLX(1) vs BX(0) here.
-      regs_[kLR] = (regs_[kPC] + 2) | 1;
+      regs_[kLR] = (fetch_addr + 2) | 1;
+      CallStackTracer::Instance().OnCall(fetch_addr, target, regs_[kLR], regs_[kSP]);
+    } else if (rs == kLR) {
+      CallStackTracer::Instance().OnReturn(fetch_addr, regs_[kLR], regs_[kSP]);
     }
     SetPcInterworking(target);
     return;
@@ -853,6 +865,7 @@ void ArmInterpreter::ExecuteThumbPushPop(uint16_t instr) {
       uint32_t value = memory_.Read32(addr);
       addr += 4;
       regs_[kSP] = addr;
+      CallStackTracer::Instance().OnReturn(value, regs_[kLR], regs_[kSP]);
       SetPcInterworking(value);
       return;
     }
@@ -949,15 +962,19 @@ void ArmInterpreter::ExecuteThumbLongBranchWithLink(uint16_t instr) {
 
   uint32_t target = regs_[kLR] + (offset11 << 1);
   uint32_t return_addr = (regs_[kPC] + 2) | 1;  // next instr; bit0 set for a later interworking return
+  uint32_t caller_pc = regs_[kPC];
   if (h == 0x1) {  // BLX(1): unconditional switch to ARM, word-aligned target.
     regs_[kLR] = return_addr;
+    CallStackTracer::Instance().OnCall(caller_pc, target & ~3u, return_addr, regs_[kSP]);
     SetFlag(kCpsrT, false);
-    regs_[kPC] = target & ~3u;
-  } else {  // BL (h == 0x3): stays in Thumb.
+    regs_[kPC] = target & ~3u;  // forced word alignment per ARMv5T+ BLX(1) spec
+    pc_updated_by_instruction_ = true;
+  } else if (h == 0x3) {  // BL: stays in Thumb mode.
     regs_[kLR] = return_addr;
-    regs_[kPC] = target & ~1u;
+    CallStackTracer::Instance().OnCall(caller_pc, target, return_addr, regs_[kSP]);
+    regs_[kPC] = target;
+    pc_updated_by_instruction_ = true;
   }
-  pc_updated_by_instruction_ = true;
 }
 
 void ArmInterpreter::ExecuteThumb(uint16_t instr) {

@@ -28,6 +28,7 @@ constexpr uint32_t kDbgPrintfSlotOffset = 0x9c;
 constexpr uint32_t kMemcpyAliasSlotOffset = 0x44;
 constexpr uint32_t kReallocSlotOffset = 0x74;
 constexpr uint32_t kUnknownSlotOffset0x40 = 0x40;
+constexpr uint32_t kUnknownSlotOffset0x50 = 0x50;
 constexpr uint32_t kUnknownSlotOffset0xc = 0xc;
 constexpr uint32_t kStricmpSlotOffset = 0xd0;
 constexpr uint32_t kUnknownSlotOffset0xdc = 0xdc;
@@ -730,6 +731,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t dbgprintf_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
   uint32_t unknown_0x40_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0xc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
   uint32_t unknown_0xdc_fn =
@@ -847,6 +849,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kDbgPrintfSlotOffset, dbgprintf_fn);
   memory_.Write32(table_address + kReallocSlotOffset, realloc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x40, unknown_0x40_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xdc, unknown_0xdc_fn);

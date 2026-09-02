@@ -49,6 +49,8 @@ add_library(zeebulator_core STATIC
   brew/hle_runtime.h
   brew/nid_table.cpp
   control/debug_hooks.cpp
+  control/call_stack_tracer.cpp
+  control/call_stack_tracer.h
   brew/nid_table.h
   brew/interface_object.cpp
   brew/interface_object.h

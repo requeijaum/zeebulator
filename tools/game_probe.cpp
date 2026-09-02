@@ -2577,6 +2577,7 @@ int main(int argc, char** argv) {
   uint32_t entry = kBase;
 
   const char* stage = "AEEMod_Load";
+  zeebulator::CallStackTracer::Instance().RegisterSymbol(kBase, "AEEMod_Load");
   uint32_t applet_ptr = 0;
   uint32_t handle_event_fn = 0;
   bool injected_simulated_download_complete = false;
@@ -3114,6 +3115,26 @@ int main(int argc, char** argv) {
                       req->i0, cpu.GetRegister(static_cast<int>(req->i0)));
         req->reply.set_value(buf);
       }
+    } else if (c == "stacktrace") {
+      std::string trace = zeebulator::CallStackTracer::Instance().FormatStackTrace(cpu);
+      std::string esc;
+      for (char ch : trace) {
+        if (ch == '"') esc += "\\\"";
+        else if (ch == '\\') esc += "\\\\";
+        else if (ch == '\n') esc += "\\n";
+        else esc += ch;
+      }
+      req->reply.set_value("{\"ok\":true,\"trace\":\"" + esc + "\"}");
+    } else if (c == "calltree") {
+      std::string tree = zeebulator::CallStackTracer::Instance().FormatCallTree();
+      std::string esc;
+      for (char ch : tree) {
+        if (ch == '"') esc += "\\\"";
+        else if (ch == '\\') esc += "\\\\";
+        else if (ch == '\n') esc += "\\n";
+        else esc += ch;
+      }
+      req->reply.set_value("{\"ok\":true,\"tree\":\"" + esc + "\"}");
     } else if (c == "bp") {
       if (!req->has_i0) {
         req->reply.set_value("{\"ok\":false,\"error\":\"bp addr\"}");

@@ -45,6 +45,7 @@
 #include <vector>
 
 #include "core/control/debug_sink.h"
+#include "core/control/call_stack_tracer.h"
 
 namespace zeebulator {
 
@@ -292,6 +293,23 @@ class MirrorServer {
       SendText(fd, "200 OK", "text/html", DebugHtml());
     } else if (path == "/api/state") {
       SendText(fd, "200 OK", "application/json", StateJson());
+    } else if (path == "/api/calltree") {
+      std::string tree = CallStackTracer::Instance().FormatCallTree();
+      std::string body = "{\"tree\":\"" + JsonEscape(tree) + "\"}";
+      SendText(fd, "200 OK", "application/json", body);
+    } else if (path == "/api/stacktrace") {
+      std::string body = "{\"stack\":[";
+      auto frames = CallStackTracer::Instance().GetShadowStack();
+      for (size_t i = 0; i < frames.size(); ++i) {
+        if (i) body += ",";
+        const auto& f = frames[frames.size() - 1 - i];
+        char fb[256];
+        std::snprintf(fb, sizeof(fb), "{\"pc\":%u,\"lr\":%u,\"sp\":%u,\"target\":%u,\"name\":\"%s\"}",
+                      f.pc, f.lr, f.sp, f.target, JsonEscape(f.name).c_str());
+        body += fb;
+      }
+      body += "]}";
+      SendText(fd, "200 OK", "application/json", body);
     } else if (path.rfind("/api/log", 0) == 0) {
       // /api/log?cat=log|brew|gpu|input|media
       std::string cat = "log";
@@ -340,6 +358,7 @@ class MirrorServer {
   }
 
   static DebugCat CatFromName(const std::string& name) {
+    if (name.rfind("calltrace", 0) == 0 || name.rfind("trace", 0) == 0) return DebugCat::kCallTrace;
     if (name.rfind("brew", 0) == 0) return DebugCat::kBrew;
     if (name.rfind("gpu", 0) == 0) return DebugCat::kGpu;
     if (name.rfind("input", 0) == 0) return DebugCat::kInput;
@@ -384,19 +403,22 @@ class MirrorServer {
         "<!doctype html><html><head><meta charset=utf-8><title>Zeebulator debug</title>"
         "<style>"
         "body{margin:0;font:13px monospace;background:#151515;color:#ddd}"
-        "#tabs{display:flex;background:#222;border-bottom:1px solid #000}"
-        "#tabs button{background:#222;color:#aaa;border:0;padding:8px 14px;cursor:pointer}"
+        "#tabs{display:flex;background:#222;border-bottom:1px solid #000;overflow-x:auto}"
+        "#tabs button{background:#222;color:#aaa;border:0;padding:8px 14px;cursor:pointer;white-space:nowrap}"
         "#tabs button.on{background:#151515;color:#fff;border-top:2px solid #6cf}"
         "#panes>div{display:none;padding:10px}"
         "#panes>div.on{display:block}"
         "pre{margin:0;white-space:pre-wrap;word-break:break-all;max-height:82vh;overflow:auto}"
         "img{image-rendering:pixelated;max-width:100%;background:#000}"
         "table{border-collapse:collapse}td{padding:2px 10px;border:1px solid #333}"
-        ".k{color:#6cf}.hdr{color:#8f8}"
+        ".k{color:#6cf}.hdr{color:#8f8}.tree{color:#ffb86c;font-family:monospace}"
         "</style></head><body>"
         "<div id=tabs>"
         "<button data-t=screen class=on>Screen</button>"
         "<button data-t=cpu>CPU</button>"
+        "<button data-t=stack>Stack Trace</button>"
+        "<button data-t=calltree>Call Tree</button>"
+        "<button data-t=calltrace>Call Log</button>"
         "<button data-t=brew>BREW API</button>"
         "<button data-t=gpu>GPU</button>"
         "<button data-t=input>Input</button>"
@@ -406,6 +428,9 @@ class MirrorServer {
         "</div><div id=panes>"
         "<div id=screen class=on><img id=v src=/frame.png><div id=sstat class=hdr></div></div>"
         "<div id=cpu><div id=cpubox></div></div>"
+        "<div id=stack><div class=hdr>Shadow Call Stack (Recent Frames):</div><pre id=pstack></pre></div>"
+        "<div id=calltree><div class=hdr>Hierarchical Call Trace (Tree View):</div><pre id=ptree class=tree></pre></div>"
+        "<div id=calltrace><pre id=pcalltrace></pre></div>"
         "<div id=brew><pre id=pbrew></pre></div>"
         "<div id=gpu><pre id=pgpu></pre></div>"
         "<div id=input><pre id=pinput></pre></div>"
@@ -444,6 +469,10 @@ class MirrorServer {
         "  else{let h='<div class=hdr>tick '+s.tick+'   fps '+s.fps+'   running '+s.running+'   cpsr '+hx(s.cpsr)+'</div><table>';"
         "   for(let i=0;i<16;i+=4){h+='<tr>';for(let j=0;j<4;j++){let k=i+j;h+='<td><span class=k>'+RN[k]+'</span> '+hx(s.regs[k])+'</td>';}h+='</tr>';}"
         "   h+='</table>';document.getElementById('cpubox').innerHTML=h;}}catch(e){}}"
+        " else if(cur=='calltree'){try{let r=await(await fetch('/api/calltree')).json();document.getElementById('ptree').textContent=r.tree;}catch(e){}}"
+        " else if(cur=='stack'){try{let r=await(await fetch('/api/stacktrace')).json();"
+        "  let h='';r.stack.forEach((f,idx)=>{h+='#'+idx.toString().padEnd(2,' ')+' [PC='+hx(f.pc)+'] Target: '+f.name+' ('+hx(f.target)+') [LR='+hx(f.lr)+' SP='+hx(f.sp)+']\\n';});"
+        "  document.getElementById('pstack').textContent=h||'(empty stack)';}catch(e){}}"
         " else if(cur=='mem'){if(document.getElementById('mauto').checked)readMem();}"
         " else{try{let r=await(await fetch('/api/log?cat='+cur)).json();"
         "  let el=document.getElementById('p'+cur);let at=el.scrollTop+el.clientHeight>=el.scrollHeight-30;"

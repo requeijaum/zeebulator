@@ -27,6 +27,8 @@
 //   {"cmd":"read","addr":..,"len":..}    -> {"ok":true,"hex":"...."}
 //   {"cmd":"write","addr":..,"hex":"deadbeef"} -> {"ok":true,"addr":..,"len":N}
 //   {"cmd":"setreg","n":0,"value":..}    -> {"ok":true,"n":..,"value":..}
+//   {"cmd":"stacktrace"}                  -> {"ok":true,"trace":"..."}
+//   {"cmd":"calltree"}                    -> {"ok":true,"tree":"..."}
 //   {"cmd":"screenshot","path":"/tmp/x.ppm"} -> {"ok":true,"w":..,"h":..,"path":..}
 //   {"cmd":"quit"}                       -> {"ok":true}         (stops the loop)
 // Unknown / malformed -> {"ok":false,"error":"..."}.

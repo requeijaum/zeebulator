@@ -62,6 +62,20 @@ const std::vector<TitleQuirk>& KnownTitles() {
           /*evidence=*/"research/sources/2026-09-01_clsid-recovery-breadth.md",
       },
       TitleQuirk{
+          /*real_clsid=*/0x01087B72u,  // 17333106 -- Pac-Mania
+          /*mif_clsid=*/0x01087B72u,
+          /*folder=*/"276212",
+          /*display_name=*/"Pac-Mania",
+          /*mod_filename=*/"pacmania.mod",
+          /*assets=*/AssetKind::kBar,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Namco Bandai port. Real clsid 0x01087b72 boots to event loop with "
+          "mod_runtime static-base slot 0x50 wired. Calls ABD render scaffold "
+          "0x800b1800 extensively each tick.",
+          /*evidence=*/"research/sources/2026-09-02_clsid-static-recovery.md",
+      },
+      TitleQuirk{
           /*real_clsid=*/0x0108FF19u,  // 17366809 -- sits between peteca and ids
           /*mif_clsid=*/0x01060000u,   // MIF value is a decoy
           /*folder=*/"279380",
