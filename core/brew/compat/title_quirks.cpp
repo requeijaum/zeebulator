@@ -130,6 +130,32 @@ const std::vector<TitleQuirk>& KnownTitles() {
           "(reaches tick=1). MIF id 0x01060000 is a decoy.",
           /*evidence=*/"research/sources/2026-09-01_clsid-recovery-breadth.md",
       },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF16u,  // 17366806 -- Dodgeball
+          /*mif_clsid=*/0x010C0C0Cu,   // MIF value is a decoy
+          /*folder=*/"278738",
+          /*display_name=*/"Zeebo Sports Queimada / Dodgeball",
+          /*mod_filename=*/"dodgeball.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "First-party Zeebo Sports title. Real clsid 0x0108ff16 in the 0x0108ffxx band. "
+          "Reaches event loop and tick execution.",
+          /*evidence=*/"research/sources/scripts/hackathon_clsid.json",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108FF17u,  // 17366807 -- Fun Soccer
+          /*mif_clsid=*/0x010C0C0Cu,   // MIF value is a decoy
+          /*folder=*/"280647",
+          /*display_name=*/"Fun Soccer",
+          /*mod_filename=*/"funsoccer.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "First-party Zeebo title. Real clsid 0x0108ff17 in the 0x0108ffxx band. "
+          "Reaches event loop and tick execution.",
+          /*evidence=*/"research/sources/scripts/hackathon_clsid.json",
+      },
   };
   return kTitles;
 }
