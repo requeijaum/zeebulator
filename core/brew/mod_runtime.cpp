@@ -55,6 +55,7 @@ constexpr uint32_t kAppContextDisplayOffset = 20;
 constexpr uint32_t kAppContextThirdObjectOffset = 0x2c;
 constexpr uint32_t kAppContextFourthObjectOffset = 0x24;
 constexpr uint32_t kAppContextFifthObjectOffset = 0x28;
+constexpr uint32_t kAppContextSixthObjectOffset = 0x68;
 }  // namespace
 
 ModRuntime::ModRuntime(Memory& memory, HleRuntime& hle, uint32_t heap_region, uint32_t heap_size,
@@ -88,6 +89,11 @@ void ModRuntime::SetFourthContextObject(uint32_t object_ptr) {
 void ModRuntime::SetFifthContextObject(uint32_t object_ptr) {
   fifth_context_object_ = object_ptr;
   fifth_pending_ = true;
+}
+
+void ModRuntime::SetSixthContextObject(uint32_t object_ptr) {
+  sixth_context_object_ = object_ptr;
+  sixth_pending_ = true;
 }
 
 void ModRuntime::SetContextAddress(uint32_t context_address) {
@@ -660,6 +666,10 @@ void ModRuntime::GetAppContextImpl(IArmCore& core) {
   if (fifth_pending_) {
     memory_.Write32(context_address_ + kAppContextFifthObjectOffset, fifth_context_object_);
     fifth_pending_ = false;
+  }
+  if (sixth_pending_) {
+    memory_.Write32(context_address_ + kAppContextSixthObjectOffset, sixth_context_object_);
+    sixth_pending_ = false;
   }
   core.SetRegister(kR0, context_address_);
 }

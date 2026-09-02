@@ -48,6 +48,7 @@ constexpr uint32_t kAppContextShellOffset = 12;
 constexpr uint32_t kAppContextDisplayOffset = 20;
 constexpr uint32_t kAppContextThirdObjectOffset = 0x2c;
 constexpr uint32_t kAppContextFourthObjectOffset = 0x24;
+constexpr uint32_t kAppContextSixthObjectOffset = 0x68;
 constexpr uint32_t kTableAddress = 0x80280000;
 constexpr uint32_t kContextAddress = 0x80280200;
 constexpr uint32_t kHeapRegion = 0x80300000;
@@ -375,6 +376,19 @@ TEST(ModRuntime, GetAppContextSlotReturnsThirdObjectAtConfirmedOffset) {
   uint32_t get_app_context_fn = cpu.GetMemory().Read32(kTableAddress + kGetAppContextSlotOffset);
   uint32_t context = hle.CallArmFunction(get_app_context_fn);
   EXPECT_EQ(cpu.GetMemory().Read32(context + kAppContextThirdObjectOffset), kThirdObjectPtr);
+}
+
+TEST(ModRuntime, GetAppContextSlotReturnsSixthObjectAtConfirmedOffset) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  constexpr uint32_t kSixthObjectPtr = 0x80069000;
+  mod_runtime.SetSixthContextObject(kSixthObjectPtr);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+
+  uint32_t get_app_context_fn = cpu.GetMemory().Read32(kTableAddress + kGetAppContextSlotOffset);
+  uint32_t context = hle.CallArmFunction(get_app_context_fn);
+  EXPECT_EQ(cpu.GetMemory().Read32(context + kAppContextSixthObjectOffset), kSixthObjectPtr);
 }
 
 TEST(ModRuntime, GetAppContextSlotReturnsFourthObjectAtConfirmedOffset) {

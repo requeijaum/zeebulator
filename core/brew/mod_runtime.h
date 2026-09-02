@@ -582,6 +582,10 @@ class ModRuntime {
   // before or after Install().
   void SetFifthContextObject(uint32_t object_ptr);
 
+  // Quake/Pac-Mania/Chessbots constructors read +0x68 and call slot 2
+  // unconditionally before the applet context replaces the initial context.
+  void SetSixthContextObject(uint32_t object_ptr);
+
   // Redirects the offset-0xc0 "get app context" slot to return a
   // different address than the one passed to the constructor. Found
   // necessary tracing Peggle (TASKS.md Phase 8): `IModule::CreateInstance`
@@ -663,6 +667,7 @@ class ModRuntime {
   uint32_t third_context_object_ = 0;
   uint32_t fourth_context_object_ = 0;
   uint32_t fifth_context_object_ = 0;
+  uint32_t sixth_context_object_ = 0;
   uint32_t uptime_ms_ = 0;
   bool yield_requested_ = false;
 
@@ -684,6 +689,7 @@ class ModRuntime {
   bool third_pending_ = false;
   bool fourth_pending_ = false;
   bool fifth_pending_ = false;
+  bool sixth_pending_ = false;
 };
 
 }  // namespace zeebulator

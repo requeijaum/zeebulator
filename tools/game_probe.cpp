@@ -948,6 +948,16 @@ int main(int argc, char** argv) {
                                       /*heap_size=*/0x04000000, /*context_address=*/0x80280200);
   mod_runtime.Install(kBase, /*table_address=*/0x80280000);
 
+  // Three independently confirmed applet constructors (quake/pacmania/
+  // chessbots) read GetAppContext()+0x68 during IModule::CreateInstance and
+  // call slot 2 without a null check. The slot's returned pointer is checked
+  // and zero is a valid "service has no object" result. Supply only that
+  // evidenced empty service object; all methods remain non-mutating stubs.
+  uint32_t context_service_0x68 = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80068000, /*object=*/0x80069000,
+      /*slot_count=*/8);
+  mod_runtime.SetSixthContextObject(context_service_0x68);
+
   uint32_t display_obj =
       display.Build(cpu.GetMemory(), hle, /*vtable=*/0x80002000, /*object=*/0x80003000);
   // Real compiled app code obtains IDisplay through
