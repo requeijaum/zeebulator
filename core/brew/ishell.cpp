@@ -128,6 +128,25 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
   core.SetRegister(kR0, 1);  // EFAILED-ish: no matching timer
 }
 
+void IShellHle::ResumeImpl(IArmCore& core) {
+  // int ISHELL_Resume(IShell *ps, AEECallback *pCallback)
+  // Invokes or queues callback immediately (ms=0).
+  uint32_t pcb = core.GetRegister(kR1);
+  if (pcb != 0) {
+    // AEECallback layout: pfnNotify at +16, pNotifyData at +20 (or +4/+8 depending on struct variant)
+    // If it's a direct callback function pointer:
+    uint32_t pfn = memory_.Read32(pcb + 16);
+    uint32_t data = memory_.Read32(pcb + 20);
+    if (pfn != 0) {
+      ScheduleTimer(0, pfn, data);
+    } else {
+      // Direct notification callback or alternative layout
+      ScheduleTimer(0, pcb, 0);
+    }
+  }
+  core.SetRegister(kR0, 0);  // SUCCESS
+}
+
 void IShellHle::SetLoadResObjectReturn(uint32_t object_ptr) {
   load_res_object_obj_ = object_ptr;
 }
@@ -265,9 +284,9 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       [this](IArmCore& c) { GetHandlerImpl(c); },  // 32 GetHandler
       Stub,  // 33 RegisterHandler
       Stub,  // 34 RegisterNotify
-      Stub,  // 35 Notify
-      Stub,  // 36 Resume
-      Stub,  // 37 ForceExit
+      Stub,                                           // 35 Notify
+      [this](IArmCore& c) { ResumeImpl(c); },         // 36 Resume
+      Stub,                                           // 37 ForceExit
       Stub,  // 38 GetPosition
       Stub,  // 39 CheckPrivLevel
       Stub,  // 40 IsValidResource

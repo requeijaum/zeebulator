@@ -350,6 +350,31 @@ TEST(IShellHle, Slot43WritesTheSmallRealThirdArgOutParamValue) {
   EXPECT_EQ(cpu.GetMemory().Read32(kOutAddr), 1u);
 }
 
+TEST(IShellHle, ResumeQueuesCallbackTimerImmediately) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  IShellHle shell_hle(cpu.GetMemory(), hle);
+  uint32_t shell = shell_hle.Build(kVtableAddr, kObjectAddr);
+
+  constexpr uint32_t kCallbackStructAddr = 0x80002500;
+  constexpr uint32_t kNotifyFnAddr = 0x00105000;
+  constexpr uint32_t kNotifyData = 0x80009999;
+
+  // AEECallback struct: +16 = pfnNotify, +20 = pNotifyData
+  cpu.GetMemory().Write32(kCallbackStructAddr + 16, kNotifyFnAddr);
+  cpu.GetMemory().Write32(kCallbackStructAddr + 20, kNotifyData);
+
+  // Call IShell::Resume(shell, pCallback) (slot 36)
+  uint32_t resume_fn = cpu.GetMemory().Read32(kVtableAddr + 36 * 4);
+  EXPECT_EQ(hle.CallArmFunction(resume_fn, shell, kCallbackStructAddr), 0u);
+
+  // Tick(0) should immediately return the expired timer
+  auto expired = shell_hle.Tick(0);
+  ASSERT_EQ(expired.size(), 1u);
+  EXPECT_EQ(expired[0].callback, kNotifyFnAddr);
+  EXPECT_EQ(expired[0].user_data, kNotifyData);
+}
+
 TEST(IShellHle, SetTimerThenTickFiresAfterElapsedTimeReachesDeadline) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);

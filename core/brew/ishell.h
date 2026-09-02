@@ -174,6 +174,7 @@ class IShellHle {
   void GetDeviceInfoImpl(IArmCore& core);
   void SetTimerImpl(IArmCore& core);
   void CancelTimerImpl(IArmCore& core);
+  void ResumeImpl(IArmCore& core);
   void LoadResObjectImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
   void GetHandlerImpl(IArmCore& core);
