@@ -24,7 +24,11 @@ IDisplayHle::IDisplayHle(Backend& backend, int width, int height)
     : backend_(backend),
       width_(width),
       height_(height),
-      framebuffer_(static_cast<size_t>(width) * height, 0) {}
+      framebuffer_(static_cast<size_t>(width) * height, 0),
+      clip_x_(0),
+      clip_y_(0),
+      clip_dx_(static_cast<int16_t>(width)),
+      clip_dy_(static_cast<int16_t>(height)) {}
 
 void IDisplayHle::DrawText(IArmCore& core) {
   // int DrawText(iname* po, AEEFont nFont, const AECHAR* pcText,
@@ -120,6 +124,35 @@ void IDisplayHle::SetColor(IArmCore& core) {
   core.SetRegister(kR0, previous);
 }
 
+void IDisplayHle::SetClipRect(IArmCore& core) {
+  // void SetClipRect(IDisplay *pIDisplay, const AEERect *pRect)
+  uint32_t prect = core.GetRegister(kR1);
+  if (prect != 0) {
+    clip_x_ = static_cast<int16_t>(core.GetMemory().Read16(prect + 0));
+    clip_y_ = static_cast<int16_t>(core.GetMemory().Read16(prect + 2));
+    clip_dx_ = static_cast<int16_t>(core.GetMemory().Read16(prect + 4));
+    clip_dy_ = static_cast<int16_t>(core.GetMemory().Read16(prect + 6));
+  } else {
+    clip_x_ = 0;
+    clip_y_ = 0;
+    clip_dx_ = static_cast<int16_t>(width_);
+    clip_dy_ = static_cast<int16_t>(height_);
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void IDisplayHle::GetClipRect(IArmCore& core) {
+  // void GetClipRect(IDisplay *pIDisplay, AEERect *pRect)
+  uint32_t prect = core.GetRegister(kR1);
+  if (prect != 0) {
+    core.GetMemory().Write16(prect + 0, static_cast<uint16_t>(clip_x_));
+    core.GetMemory().Write16(prect + 2, static_cast<uint16_t>(clip_y_));
+    core.GetMemory().Write16(prect + 4, static_cast<uint16_t>(clip_dx_));
+    core.GetMemory().Write16(prect + 6, static_cast<uint16_t>(clip_dy_));
+  }
+  core.SetRegister(kR0, 0);
+}
+
 void IDisplayHle::GetDeviceBitmap(IArmCore& core) {
   // int GetDeviceBitmap(IDisplay *pIDisplay, IBitmap **ppBitmap)
   // po is R0 (unused), ppBitmap R1. Real disassembly (PHASE8_LOG.md)
@@ -168,8 +201,8 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
       Stub,                                    // 15 GetDestination
       [this](IArmCore& c) { GetDeviceBitmap(c); },  // 16 GetDeviceBitmap
       Stub,                                    // 17 SetFont
-      Stub,                                    // 18 SetClipRect
-      Stub,                                    // 19 GetClipRect
+      [this](IArmCore& c) { SetClipRect(c); },  // 18 SetClipRect
+      [this](IArmCore& c) { GetClipRect(c); },  // 19 GetClipRect
       Stub,                                    // 20 Clone
       Stub,                                    // 21 MakeDefault
       Stub,                                    // 22 IsEnabled

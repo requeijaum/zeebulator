@@ -725,6 +725,43 @@ TEST(IDisplayHle, GetDeviceBitmapWritesTheRegisteredInstanceAndReturnsSuccess) {
   EXPECT_EQ(cpu.GetMemory().Read32(kPpBitmapAddr), kBitmapObj);
 }
 
+TEST(IDisplayHle, SetClipRectAndGetClipRectWorkCorrectly) {
+  TestBackend backend;
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  IDisplayHle display(backend, 640, 480);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+
+  constexpr uint32_t kRectAddr = 0x80002000;
+  // Write test rect (x=10, y=20, dx=100, dy=200)
+  cpu.GetMemory().Write16(kRectAddr + 0, 10);
+  cpu.GetMemory().Write16(kRectAddr + 2, 20);
+  cpu.GetMemory().Write16(kRectAddr + 4, 100);
+  cpu.GetMemory().Write16(kRectAddr + 6, 200);
+
+  // Call SetClipRect(display, &rect) (slot 18)
+  uint32_t set_clip_fn = cpu.GetMemory().Read32(kVtableAddr + 18 * 4);
+  EXPECT_EQ(hle.CallArmFunction(set_clip_fn, display_obj, kRectAddr), 0u);
+
+  // Read back via GetClipRect (slot 19) into new addr
+  constexpr uint32_t kOutRectAddr = 0x80002100;
+  uint32_t get_clip_fn = cpu.GetMemory().Read32(kVtableAddr + 19 * 4);
+  EXPECT_EQ(hle.CallArmFunction(get_clip_fn, display_obj, kOutRectAddr), 0u);
+
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 0), 10);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 2), 20);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 4), 100);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 6), 200);
+
+  // Set null rect restores full screen bounds
+  EXPECT_EQ(hle.CallArmFunction(set_clip_fn, display_obj, 0u), 0u);
+  EXPECT_EQ(hle.CallArmFunction(get_clip_fn, display_obj, kOutRectAddr), 0u);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 0), 0);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 2), 0);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 4), 640);
+  EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 6), 480);
+}
+
 TEST(IDisplayHle, ObjectAddressPointsAtVtable) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);

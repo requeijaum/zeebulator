@@ -182,6 +182,8 @@ class IDisplayHle {
   void DrawText(IArmCore& core);
   void DrawRect(IArmCore& core);
   void SetColor(IArmCore& core);
+  void SetClipRect(IArmCore& core);
+  void GetClipRect(IArmCore& core);
   void Update(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
 
@@ -192,6 +194,10 @@ class IDisplayHle {
   std::vector<uint16_t> last_presented_;  // snapshot as of the last real Update() call
   bool has_presented_ = false;
   uint32_t current_rgbval_ = 0x00FFFFFF;  // last color SetColor() set (white by default)
+  int16_t clip_x_ = 0;
+  int16_t clip_y_ = 0;
+  int16_t clip_dx_ = 0;
+  int16_t clip_dy_ = 0;
   uint32_t device_bitmap_ptr_ = 0;
 };
 
