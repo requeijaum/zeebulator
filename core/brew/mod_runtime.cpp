@@ -29,7 +29,7 @@ constexpr uint32_t kMemcpyAliasSlotOffset = 0x44;
 constexpr uint32_t kReallocSlotOffset = 0x74;
 constexpr uint32_t kUnknownSlotOffset0x40 = 0x40;
 constexpr uint32_t kUnknownSlotOffset0xc = 0xc;
-constexpr uint32_t kUnknownSlotOffset0xd0 = 0xd0;
+constexpr uint32_t kStricmpSlotOffset = 0xd0;
 constexpr uint32_t kUnknownSlotOffset0xdc = 0xdc;
 constexpr uint32_t kUnknownSlotOffset0x184 = 0x184;
 constexpr uint32_t kUnknownSlotOffset0x1b4 = 0x1b4;
@@ -389,6 +389,29 @@ void ModRuntime::StrchrImpl(IArmCore& core) {
   }
 }
 
+void ModRuntime::StricmpImpl(IArmCore& core) {
+  // int stricmp(const char *a, const char *b) -- AEEHelperFuncs offset
+  // 0xd0 in the official SDK. BREW game code uses this for case-insensitive
+  // factory/driver-name lookup (e.g. "neogeo" vs "NeoGeo").
+  uint32_t a = core.GetRegister(kR0);
+  uint32_t b = core.GetRegister(kR1);
+  auto& mem = core.GetMemory();
+  for (;;) {
+    uint8_t ca = mem.Read8(a++);
+    uint8_t cb = mem.Read8(b++);
+    auto ascii_lower = [](uint8_t c) -> uint8_t {
+      return (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + ('a' - 'A')) : c;
+    };
+    uint8_t la = ascii_lower(ca);
+    uint8_t lb = ascii_lower(cb);
+    if (la != lb || ca == 0 || cb == 0) {
+      core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(la) -
+                                                 static_cast<int32_t>(lb)));
+      return;
+    }
+  }
+}
+
 void ModRuntime::StrstrImpl(IArmCore& core) {
   // char *strstr(const char *haystack, const char *needle)
   uint32_t haystack = core.GetRegister(kR0);
@@ -681,7 +704,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
   uint32_t unknown_0x40_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0xc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0xd0_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
   uint32_t unknown_0xdc_fn =
       hle_.Register([this](IArmCore& core) { DecompressGzipInPlaceImpl(core); });
   uint32_t unknown_0x184_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
@@ -798,7 +821,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kReallocSlotOffset, realloc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x40, unknown_0x40_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0xd0, unknown_0xd0_fn);
+  memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xdc, unknown_0xdc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x184, unknown_0x184_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x1b4, unknown_0x1b4_fn);

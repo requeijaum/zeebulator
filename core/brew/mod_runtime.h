@@ -630,6 +630,7 @@ class ModRuntime {
   void BoundedStrcpyImpl(IArmCore& core);
   void StrncpyImpl(IArmCore& core);
   void StrchrImpl(IArmCore& core);
+  void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
   void FormatSingleIntImpl(IArmCore& core);

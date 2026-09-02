@@ -20,6 +20,7 @@ constexpr uint32_t kStrlenSlotOffset = 0x14;
 constexpr uint32_t kStrcpySlotOffset = 0x8;
 constexpr uint32_t kBoundedStrcpySlotOffset = 0xe4;
 constexpr uint32_t kStrncpySlotOffset = 0xc8;
+constexpr uint32_t kStricmpSlotOffset = 0xd0;
 constexpr uint32_t kStrchrSlotOffset = 0x18;
 constexpr uint32_t kStrstrSlotOffset = 0xe8;
 constexpr uint32_t kSprintfSlotOffset = 0x13c;
@@ -523,6 +524,32 @@ TEST(ModRuntime, StrlenReturnsZeroForEmptyString) {
   cpu.GetMemory().Write8(kStr, 0);
 
   EXPECT_EQ(hle.CallArmFunction(strlen_fn, kStr), 0u);
+}
+
+TEST(ModRuntime, StricmpComparesCaseInsensitivelyAndOrdersDifferentStrings) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t stricmp_fn = cpu.GetMemory().Read32(kTableAddress + kStricmpSlotOffset);
+
+  constexpr uint32_t kLower = 0x80300100;
+  constexpr uint32_t kMixed = 0x80300120;
+  constexpr uint32_t kOther = 0x80300140;
+  auto write_string = [&](uint32_t address, const char* text) {
+    for (size_t i = 0;; ++i) {
+      cpu.GetMemory().Write8(address + static_cast<uint32_t>(i),
+                             static_cast<uint8_t>(text[i]));
+      if (text[i] == '\0') break;
+    }
+  };
+  write_string(kLower, "neogeo");
+  write_string(kMixed, "NeoGeo");
+  write_string(kOther, "zupapa");
+
+  EXPECT_EQ(hle.CallArmFunction(stricmp_fn, kLower, kMixed), 0u);
+  EXPECT_LT(static_cast<int32_t>(hle.CallArmFunction(stricmp_fn, kLower, kOther)), 0);
+  EXPECT_GT(static_cast<int32_t>(hle.CallArmFunction(stricmp_fn, kOther, kLower)), 0);
 }
 
 TEST(ModRuntime, BoundedStrcpyCopiesUpToRequestedLength) {
