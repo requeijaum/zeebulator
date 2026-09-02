@@ -159,6 +159,10 @@ void FileHle::ReadFromHandle(IArmCore& core, uint32_t handle) {
   }
   f.position += n;
   core.SetRegister(kR0, n);
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] Read handle=0x%x want=%u got=%u newpos=%u/%zu\n",
+                 handle, want, n, f.position, f.data->size());
+  }
 }
 
 void FileHle::ReadImpl(IArmCore& core) {
@@ -251,6 +255,11 @@ void FileHle::SeekImpl(IArmCore& core) {
   }
   f.position = static_cast<uint32_t>(new_pos);
   core.SetRegister(kR0, kAeeSuccess);
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] Seek handle=0x%x type=%u dist=%d -> pos=%u/%zu\n",
+                 core.GetRegister(kR0) == kAeeSuccess ? it->first : 0u,
+                 seek_type, move_distance, f.position, f.data->size());
+  }
 }
 
 uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_object_address,
