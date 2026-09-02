@@ -783,6 +783,38 @@ int main(int argc, char** argv) {
   if (std::string(argv[2]) != "-") MergeGgzInto(vfs, argv[2]);
   if (std::string(argv[3]) != "-") MergeGgzInto(vfs, argv[3]);
   if (argc >= 6) MergeBootPkgInto(vfs, argv[5]);
+  // Sibling per-game .pkg auto-discovery (2026-09-02): arcade-core ports
+  // (spinmast/strhoop/cninja/...) ship their content in a per-game <name>.pkg
+  // next to the .mod. Running without it leaves the game's asset parser reading
+  // empty data (a "class-C" boot stall). When the caller passed no explicit
+  // --pkg, scan the mod's own folder for *.pkg siblings (excluding boot.pkg,
+  // which has its own shared-bootstrap discovery below) and merge them. Opt-out
+  // via ZEEB_NO_ASSET_AUTODISCOVER=1.
+  if (pkg_paths.empty() && std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
+    namespace fs = std::filesystem;
+    try {
+      fs::path own_dir = fs::absolute(argv[1]).parent_path();
+      std::vector<fs::path> found;
+      for (const auto& e : fs::directory_iterator(own_dir)) {
+        if (!e.is_regular_file()) continue;
+        std::string ext = e.path().extension().string();
+        for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+        if (ext == ".pkg" && e.path().filename() != "boot.pkg")
+          found.push_back(e.path());
+      }
+      std::sort(found.begin(), found.end());
+      for (const auto& p : found) {
+        std::printf("auto-discovered sibling game pkg %s\n", p.string().c_str());
+        try {
+          MergeGamePkgInto(vfs, p.string().c_str());
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "  (skipped %s: %s)\n", p.string().c_str(), e.what());
+        }
+      }
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "pkg auto-discovery skipped: %s\n", e.what());
+    }
+  }
   for (const auto& pkg_path : pkg_paths) MergeGamePkgInto(vfs, pkg_path.c_str());
   // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
   // cluster, RE'd 2026-09-02) do NOT ship the shared arcade bootstrap in
