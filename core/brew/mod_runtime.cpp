@@ -302,6 +302,24 @@ void ModRuntime::MemcpyImpl(IArmCore& core) {
   uint32_t dest = core.GetRegister(kR0);
   uint32_t src = core.GetRegister(kR1);
   uint32_t count = core.GetRegister(kR2);
+  // Defensive size guard (2026-09-02): a count near 0xffffffff (seen live in
+  // peggle: 0xfffffff8) is never a real copy -- it would loop ~4 billion Write8
+  // over the whole address space, hanging the interpreter and corrupting the
+  // loaded module's code (peggle then "executed" the zero-padding at 0x142e00
+  // and wandered out of range: the "timer callback did not complete
+  // trustworthily" symptom). A real device's memcpy would fault long before
+  // completing such a copy. Skip absurd sizes and leave a one-line breadcrumb so
+  // the upstream cause (whatever mis-computes this negative-looking size) stays
+  // visible rather than silently masked. 64 MiB is well above any legitimate
+  // single guest copy on this 32 MiB-class device.
+  constexpr uint32_t kMaxSaneCopy = 64u * 1024 * 1024;
+  if (count > kMaxSaneCopy) {
+    std::fprintf(stderr,
+                 "[memcpy guard] skipping absurd count=0x%08x (dest=0x%08x src=0x%08x)\n",
+                 count, dest, src);
+    core.SetRegister(kR0, dest);
+    return;
+  }
   for (uint32_t i = 0; i < count; ++i) {
     memory_.Write8(dest + i, memory_.Read8(src + i));
   }
@@ -313,6 +331,15 @@ void ModRuntime::MemsetImpl(IArmCore& core) {
   uint32_t dest = core.GetRegister(kR0);
   uint8_t value = static_cast<uint8_t>(core.GetRegister(kR1));
   uint32_t count = core.GetRegister(kR2);
+  // Same absurd-size guard as MemcpyImpl (see there): a ~4 GiB memset would hang
+  // and corrupt. Skip and breadcrumb.
+  constexpr uint32_t kMaxSaneCopy = 64u * 1024 * 1024;
+  if (count > kMaxSaneCopy) {
+    std::fprintf(stderr, "[memset guard] skipping absurd count=0x%08x (dest=0x%08x)\n",
+                 count, dest);
+    core.SetRegister(kR0, dest);
+    return;
+  }
   for (uint32_t i = 0; i < count; ++i) {
     memory_.Write8(dest + i, value);
   }
