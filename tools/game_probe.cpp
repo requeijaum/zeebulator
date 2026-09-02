@@ -1034,6 +1034,19 @@ int main(int argc, char** argv) {
   // research/sources/2026-08-31_dd-media-interface-contract.md.
   cpu.GetMemory().SetMediaBindingGuardRegion(0x80200000, 0x80300000);
 
+  // ZEEB_SEED_READ=addr:value (hex) — persistent +0x63c optional-callback
+  // seed at the memory layer. Fires on every guard read (interp AND JIT),
+  // returning `value` whenever [addr] reads back 0 (impossible on hardware).
+  // See core/memory/memory.h SetSeedRead. Inert unless the env var is set.
+  if (const char* sr = std::getenv("ZEEB_SEED_READ")) {
+    unsigned long addr = 0, val = 0;
+    if (std::sscanf(sr, "%lx:%lx", &addr, &val) == 2 && addr != 0) {
+      cpu.GetMemory().SetSeedRead(static_cast<uint32_t>(addr),
+                                  static_cast<uint32_t>(val));
+      std::fprintf(stderr, "[seedread] armed [0x%08lx] 0->0x%08lx\n", addr, val);
+    }
+  }
+
   constexpr uint32_t kBase = 0x00100000;
   zeebulator::LoadMod(cpu, mod_data, kBase);
   auto mod_size = static_cast<uint32_t>(mod_data.size());

@@ -3,6 +3,7 @@
 #include "core/control/debug_hooks.h"
 
 #include <cstring>
+#include <cstdio>
 
 namespace zeebulator {
 
@@ -32,11 +33,29 @@ uint16_t Memory::Read16(uint32_t address) const {
 }
 
 uint32_t Memory::Read32(uint32_t address) const {
-  return static_cast<uint32_t>(Read8(address)) |
-         (static_cast<uint32_t>(Read8(address + 1)) << 8) |
-         (static_cast<uint32_t>(Read8(address + 2)) << 16) |
-         (static_cast<uint32_t>(Read8(address + 3)) << 24);
+  uint32_t v = static_cast<uint32_t>(Read8(address)) |
+               (static_cast<uint32_t>(Read8(address + 1)) << 8) |
+               (static_cast<uint32_t>(Read8(address + 2)) << 16) |
+               (static_cast<uint32_t>(Read8(address + 3)) << 24);
+  // Persistent +0x63c optional-callback seed: if this exact word is the
+  // (impossible-on-hardware) 0 and a seed is armed for it, substitute the
+  // seed value so the guard's `blx r3` targets a valid no-op instead of 0.
+  // Backend-independent (fires on every guard read, interp or JIT).
+  if (seed_read_addr_ != 0 && address == seed_read_addr_ && v == 0) {
+    v = seed_read_value_;
+    if (seed_read_hits_ == 0) {
+      std::fprintf(stderr, "[seedread] FIRST HIT [0x%08x]->0x%08x\n",
+                   address, v);
+    }
+    ++seed_read_hits_;
+  }
+  return v;
  }
+
+void Memory::SetSeedRead(uint32_t address, uint32_t value) {
+  seed_read_addr_ = address;
+  seed_read_value_ = value;
+}
 
 void Memory::Write8(uint32_t address, uint8_t value) {
   DebugHooks::Instance().OnMemWrite(address, 1);

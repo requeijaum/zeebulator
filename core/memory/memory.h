@@ -46,6 +46,19 @@ class Memory {
   // (default), so existing behavior/tests are unaffected unless opted in.
   void SetMediaBindingGuardRegion(uint32_t start, uint32_t end);
 
+  // Diagnostic +0x63c-callback seed (backend-independent; works under BOTH
+  // interp and JIT, unlike the one-shot post-event-loop writes). The
+  // Data East / cninja optional-callback guard reads [obj+0x63c]; on the
+  // real device this is either a registered fn pointer or the framework's
+  // "no callback" sentinel, never 0. Our register-step is type-gated and
+  // doesn't run for these titles, so the slot stays 0 -> guard's `blx r3`
+  // wanders to 0. This PERSISTENT read-override makes Read32(addr) return
+  // `value` whenever the stored word is 0, so it survives the constructor
+  // re-zeroing the slot every timer tick (the one-shot seed could not).
+  // (0,_) = disabled. Value 0xF0000000 (trap_base) turns the optional
+  // callback into a clean HLE no-op. Opt-in via ZEEB_SEED_READ=addr:value.
+  void SetSeedRead(uint32_t address, uint32_t value);
+
   // Save-state support (TASKS_TOOLING.md Phase B, stage 1): writes only
   // the pages actually allocated so far (page index + full 4KB
   // contents each), not the whole sparse 4GB address space. Format is
@@ -73,6 +86,15 @@ class Memory {
   uint32_t media_guard_start_ = 0;
   uint32_t media_guard_end_ = 0;
   std::unordered_map<uint32_t, uint32_t> media_bound_slots_;
+
+  // Persistent +0x63c seed read-override (see SetSeedRead). Disabled when
+  // seed_read_addr_ == 0.
+  uint32_t seed_read_addr_ = 0;
+  uint32_t seed_read_value_ = 0;
+  mutable uint64_t seed_read_hits_ = 0;
+
+ public:
+  uint64_t seed_read_hits() const { return seed_read_hits_; }
 };
 
 }  // namespace zeebulator

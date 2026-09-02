@@ -49,7 +49,11 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
     return std::uint16_t(MemoryRead8(a)) | std::uint16_t(MemoryRead8(a + 1)) << 8;
   }
   std::uint32_t MemoryRead32(std::uint32_t a) override {
-    return std::uint32_t(MemoryRead16(a)) | std::uint32_t(MemoryRead16(a + 2)) << 16;
+    // Delegate to Memory::Read32 so backend-independent read logic (e.g. the
+    // persistent +0x63c optional-callback seed) applies under the JIT too.
+    // Code fetches go through MemoryReadCode below, which is fine: the seed
+    // only rewrites a specific BSS data word that is never fetched as code.
+    return memory->Read32(a);
   }
   std::uint64_t MemoryRead64(std::uint32_t a) override {
     return std::uint64_t(MemoryRead32(a)) | std::uint64_t(MemoryRead32(a + 4)) << 32;
