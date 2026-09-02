@@ -8,8 +8,62 @@
 
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
+#include "dynarmic/interface/A32/coprocessor.h"
 
 namespace zeebulator {
+
+// No-op coprocessor: the reference interpreter THROWS UnimplementedInstruction
+// when a coprocessor op actually executes (it never does at runtime for the
+// titles we boot). But dynarmic compiles whole blocks ahead of the PC, so a
+// coprocessor opcode sitting anywhere inside a compiled block (often data or
+// never-reached code past a forced/optional branch) makes the x64 backend hit
+// `ASSERT_FALSE("Should raise coproc exception here")` at COMPILE time and
+// abort the process. Registering a benign coprocessor makes the backend emit a
+// harmless callback/scratch access instead of asserting, so the JIT can compile
+// past such opcodes; if one were ever truly executed it is a silent no-op,
+// which is strictly safer than crashing and matches "coproc is inert" on the
+// userspace BREW target. Reads yield 0 via a shared scratch word.
+class NopCoprocessor final : public Dynarmic::A32::Coprocessor {
+ public:
+  using Coprocessor = Dynarmic::A32::Coprocessor;
+  using CoprocReg = Dynarmic::A32::CoprocReg;
+  static std::uint64_t NopFn(void*, std::uint32_t, std::uint32_t) { return 0; }
+
+  std::optional<Callback> CompileInternalOperation(bool, unsigned, CoprocReg,
+                                                   CoprocReg, CoprocReg,
+                                                   unsigned) override {
+    return Callback{&NopFn, std::nullopt};
+  }
+  CallbackOrAccessOneWord CompileSendOneWord(bool, unsigned, CoprocReg,
+                                             CoprocReg, unsigned) override {
+    return Callback{&NopFn, std::nullopt};
+  }
+  CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned,
+                                               CoprocReg) override {
+    return Callback{&NopFn, std::nullopt};
+  }
+  CallbackOrAccessOneWord CompileGetOneWord(bool, unsigned, CoprocReg,
+                                            CoprocReg, unsigned) override {
+    return &scratch_;
+  }
+  CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned,
+                                              CoprocReg) override {
+    return std::array<std::uint32_t*, 2>{&scratch_, &scratch2_};
+  }
+  std::optional<Callback> CompileLoadWords(bool, bool, CoprocReg,
+                                           std::optional<std::uint8_t>) override {
+    return Callback{&NopFn, std::nullopt};
+  }
+  std::optional<Callback> CompileStoreWords(bool, bool, CoprocReg,
+                                            std::optional<std::uint8_t>) override {
+    return Callback{&NopFn, std::nullopt};
+  }
+
+ private:
+  std::uint32_t scratch_ = 0;
+  std::uint32_t scratch2_ = 0;
+};
+
 
 // Bridges the dynarmic JIT to our sparse Memory. Reads/writes are composed
 // from byte accesses so unaligned access (which dynarmic explicitly allows)
@@ -138,6 +192,15 @@ DynarmicArmCore::DynarmicArmCore()
   Dynarmic::A32::UserConfig cfg;
   cfg.callbacks = callbacks_.get();
   cfg.arch_version = ZeeboArchVersion();
+  // Opt-in benign coprocessor so the block compiler doesn't ASSERT/abort on a
+  // coprocessor opcode embedded in a compiled-ahead block (see NopCoprocessor).
+  // Gated to keep default/test behavior byte-identical unless requested.
+  if (const char* c = std::getenv("ZEEB_NOP_COPROC")) {
+    if (c[0] == '1') {
+      auto nop = std::make_shared<NopCoprocessor>();
+      for (auto& slot : cfg.coprocessors) slot = nop;
+    }
+  }
   jit_ = std::make_unique<Dynarmic::A32::Jit>(cfg);
   callbacks_->jit = jit_.get();
   Reset();

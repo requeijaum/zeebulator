@@ -1051,6 +1051,35 @@ int main(int argc, char** argv) {
   zeebulator::LoadMod(cpu, mod_data, kBase);
   auto mod_size = static_cast<uint32_t>(mod_data.size());
 
+  // ZEEB_FORCE_BRANCH=pc[,pc...] (hex) — force the conditional branch at each
+  // PC to UNCONDITIONAL by rewriting the ARM condition field (bits 31..28) to
+  // 0xE ("always"). This is the faithful expression of the +0x63c OPTIONAL
+  // callback: the guard is `cmp r3,r5; beq skip; blx r3` and the real device,
+  // for a title whose (type-gated) register-step never ran, always has the
+  // "no callback" sentinel so it ALWAYS takes `beq skip`. Forcing the branch
+  // reproduces exactly that skip under BOTH backends (unlike a fixed memory
+  // seed, which cannot equal the live r5=r7+0x48). Applied after LoadMod and
+  // NotifyCodeChanged'd so the JIT recompiles the patched block. Inert unless
+  // the env var is set.
+  if (const char* fb = std::getenv("ZEEB_FORCE_BRANCH")) {
+    std::string s(fb);
+    size_t pos = 0;
+    while (pos < s.size()) {
+      size_t comma = s.find(',', pos);
+      std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+      pos = (comma == std::string::npos) ? s.size() : comma + 1;
+      unsigned long bpc = std::strtoul(tok.c_str(), nullptr, 16);
+      if (bpc == 0) continue;
+      uint32_t instr = cpu.GetMemory().Read32(static_cast<uint32_t>(bpc));
+      uint32_t forced = (instr & 0x0FFFFFFFu) | 0xE0000000u;  // cond -> AL
+      cpu.GetMemory().Write32(static_cast<uint32_t>(bpc), forced);
+      cpu.NotifyCodeChanged(static_cast<uint32_t>(bpc), 4);
+      std::fprintf(stderr, "[forcebranch] [0x%08lx] 0x%08x -> 0x%08x (unconditional)\n",
+                   bpc, instr, forced);
+    }
+  }
+
+
   // Real compiled .mod code (ARM RVCT ROPI convention) expects a
   // "static base" pointer at kBase-4 -- see core/brew/mod_runtime.h and
   // PHASE8_LOG.md for how this was found via real disassembly.
