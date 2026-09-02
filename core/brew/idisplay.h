@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "core/backend.h"
+#include "core/brew/bitmap_hle.h"
 #include "core/brew/hle_runtime.h"
 #include "core/memory/memory.h"
 
@@ -45,6 +47,18 @@ class IDisplayHle {
   // a real interface object (see BuildGenericStubObject) before the app
   // can call GetDeviceBitmap without crashing.
   void SetDeviceBitmapInstance(uint32_t bitmap_ptr) { device_bitmap_ptr_ = bitmap_ptr; }
+
+  // Configures the guest-memory arena that CreateDIBitmap / CreateDIBitmapEx
+  // (slots 13/24) bump-allocate offscreen DIB objects and their pixel buffers
+  // from. Deliberately isolated from the ModRuntime heap: the display owns a
+  // dedicated region so an app allocating offscreen bitmaps can never collide
+  // with malloc'd guest data. If no arena is configured (base==0), the
+  // CreateDIBitmap path reports failure (ENOMEMORY) instead of allocating,
+  // keeping the default behavior identical to before this feature landed.
+  void SetDibArena(uint32_t base, uint32_t size) {
+    dib_arena_next_ = base;
+    dib_arena_end_ = base + size;
+  }
 
   // Re-pushes the *last frame real app code actually committed via
   // IDISPLAY_Update* to the backend -- a no-op if Update() has never
@@ -190,6 +204,7 @@ class IDisplayHle {
   void GetDestination(IArmCore& core);
   void IsEnabled(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
+  void CreateDIBitmap(IArmCore& core);
 
   Backend& backend_;
   int width_;
@@ -204,6 +219,18 @@ class IDisplayHle {
   int16_t clip_dy_ = 0;
   uint32_t device_bitmap_ptr_ = 0;
   uint32_t destination_ptr_ = 0;
+
+  // Guest-memory arena for CreateDIBitmap-allocated offscreen DIBs (see
+  // SetDibArena). dib_arena_next_ is the next free byte; dib_arena_end_ the
+  // exclusive upper bound. Both 0 = no arena configured (feature disabled).
+  uint32_t dib_arena_next_ = 0;
+  uint32_t dib_arena_end_ = 0;
+  // HleRuntime captured at Build() time so CreateDIBitmap can register the
+  // freshly-created BitmapHle object's methods at runtime.
+  HleRuntime* hle_ = nullptr;
+  // Keeps the BitmapHle wrappers alive for the emulator's lifetime; the guest
+  // holds pointers into their guest-memory objects, so they must not be freed.
+  std::vector<std::unique_ptr<BitmapHle>> owned_dibs_;
 };
 
 }  // namespace zeebulator

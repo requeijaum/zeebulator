@@ -62,6 +62,10 @@ int main(int argc, char** argv) {
 
   uint32_t display_obj =
       display.Build(cpu.GetMemory(), hle, /*vtable=*/0x80002000, /*object=*/0x80003000);
+  // Dedicated arena for CreateDIBitmap-allocated offscreen DIBs (isolated
+  // from the ModRuntime heap). 4 MiB at a high guest address the app's own
+  // allocations never touch.
+  display.SetDibArena(/*base=*/0x84000000, /*size=*/0x00400000);
   zeebulator::IShellHle shell_hle(cpu.GetMemory(), hle, kWidth, kHeight);
   shell_hle.RegisterInstance(/*AEECLSID_DISPLAY=*/0x01001001, display_obj);
   uint32_t shell =

@@ -960,6 +960,9 @@ int main(int argc, char** argv) {
 
   uint32_t display_obj =
       display.Build(cpu.GetMemory(), hle, /*vtable=*/0x80002000, /*object=*/0x80003000);
+  // Dedicated offscreen-DIB arena for CreateDIBitmap (slot 13), isolated from
+  // the ModRuntime heap so app allocations can never collide.
+  display.SetDibArena(/*base=*/0x84000000, /*size=*/0x00400000);
   // Real compiled app code obtains IDisplay through
   // ISHELL_CreateInstance(AEECLSID_DISPLAY, ...), not directly -- found
   // via real disassembly of AEEApplet_New's call chain (PHASE8_LOG.md).

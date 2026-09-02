@@ -276,6 +276,70 @@ void IDisplayHle::IsEnabled(IArmCore& core) {
   core.SetRegister(kR0, 1);
 }
 
+void IDisplayHle::CreateDIBitmap(IArmCore& core) {
+  // int CreateDIBitmap(IDisplay *pIDisplay, IBitmap **ppbmDIB, uint8 depth,
+  //                    uint16 width, uint16 height)
+  // R0 = pIDisplay, R1 = ppbmDIB (output), R2 = depth (low byte),
+  // R3 = width (low 16), stack[0] = height.
+  // Matches the zeemu BrewDisplay CreateDIBitmap handler arg order.
+  constexpr uint32_t kAeeSuccess = 0;
+  constexpr uint32_t kEFailed = 1;
+  constexpr uint32_t kENoMemory = 4;
+
+  uint32_t pp_out = core.GetRegister(kR1);
+  int depth = static_cast<int>(core.GetRegister(kR2) & 0xFF);
+  int width = static_cast<int>(core.GetRegister(kR3) & 0xFFFF);
+  int height = static_cast<int>(HleRuntime::ReadStackArg(core, 0) & 0xFFFF);
+
+  // A null output pointer or no configured arena/runtime cannot succeed.
+  if (pp_out == 0 || hle_ == nullptr || dib_arena_end_ == 0) {
+    if (pp_out != 0) core.GetMemory().Write32(pp_out, 0);
+    core.SetRegister(kR0, kEFailed);
+    return;
+  }
+
+  // Only 16bpp DIBs are supported by this backend today; higher/other depths
+  // report EUNSUPPORTED-equivalent failure without allocating.
+  if (depth != 16 || width <= 0 || height <= 0) {
+    core.GetMemory().Write32(pp_out, 0);
+    core.SetRegister(kR0, kEFailed);
+    return;
+  }
+
+  const int pitch = ((width * depth + 31) / 32) * 4;
+  const uint32_t buffer_size = static_cast<uint32_t>(pitch) * static_cast<uint32_t>(height);
+  // DIB object header is 36 bytes (see bitmap_hle.h layout); vtable is 6 slots
+  // (AddRef..GetTransparencyColor) * 4 bytes. Align each block to 4 bytes.
+  auto align4 = [](uint32_t v) { return (v + 3u) & ~3u; };
+  const uint32_t vtable_size = 6u * 4u;
+  const uint32_t object_size = 36u;
+
+  uint32_t vtable_addr = align4(dib_arena_next_);
+  uint32_t object_addr = align4(vtable_addr + vtable_size);
+  uint32_t buffer_addr = align4(object_addr + object_size);
+  uint32_t new_next = align4(buffer_addr + buffer_size);
+
+  if (new_next > dib_arena_end_) {
+    core.GetMemory().Write32(pp_out, 0);
+    core.SetRegister(kR0, kENoMemory);
+    return;
+  }
+
+  // Zero the pixel buffer so a freshly-created DIB starts blank.
+  for (uint32_t i = 0; i < buffer_size; i += 2) {
+    core.GetMemory().Write16(buffer_addr + i, 0);
+  }
+
+  auto dib = std::make_unique<BitmapHle>(core.GetMemory(), *hle_, width, height,
+                                         depth, buffer_addr);
+  uint32_t obj = dib->Build(vtable_addr, object_addr);
+  owned_dibs_.push_back(std::move(dib));
+  dib_arena_next_ = new_next;
+
+  core.GetMemory().Write32(pp_out, obj);
+  core.SetRegister(kR0, kAeeSuccess);
+}
+
 void IDisplayHle::Update(IArmCore&) {
   last_presented_ = framebuffer_;
   has_presented_ = true;
@@ -285,6 +349,7 @@ void IDisplayHle::Update(IArmCore&) {
 
 uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
                              uint32_t vtable_address, uint32_t object_address) {
+  hle_ = &hle;
   // Order matches AEEIDisplay.h's INHERIT_IDisplay macro exactly
   // (verified directly against real Qualcomm source -- see TASKS.md
   // Phase 3). Originally only the first 13 slots (through DrawFrame)
@@ -309,7 +374,7 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
       [this](IArmCore& c) { SetColor(c); },     // 10 SetColor
       Stub,                                    // 11 GetSymbol
       Stub,                                    // 12 DrawFrame
-      Stub,                                    // 13 CreateDIBitmap
+      [this](IArmCore& c) { CreateDIBitmap(c); },  // 13 CreateDIBitmap
       [this](IArmCore& c) { SetDestination(c); },  // 14 SetDestination
       [this](IArmCore& c) { GetDestination(c); },  // 15 GetDestination
       [this](IArmCore& c) { GetDeviceBitmap(c); },  // 16 GetDeviceBitmap

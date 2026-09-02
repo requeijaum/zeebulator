@@ -750,6 +750,55 @@ TEST(IDisplayHle, GetDeviceBitmapWritesTheRegisteredInstanceAndReturnsSuccess) {
   EXPECT_EQ(cpu.GetMemory().Read32(kPpBitmapAddr), kBitmapObj);
 }
 
+TEST(IDisplayHle, CreateDIBitmapAllocatesUsableOffscreenDib) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  TestBackend backend;
+  IDisplayHle display(backend, 64, 48);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+  // Give the display a dedicated DIB arena.
+  constexpr uint32_t kArenaBase = 0x80040000;
+  display.SetDibArena(kArenaBase, 0x10000);
+
+  uint32_t create_fn = cpu.GetMemory().Read32(kVtableAddr + 13 * 4);
+  constexpr uint32_t kPpOut = 0x80030000;
+  cpu.GetMemory().Write32(kPpOut, 0);
+
+  // CreateDIBitmap(display, &out, depth=16, width=8, height=4)
+  // width in R3, height on stack arg 0 (at SP+0, per the HLE ABI).
+  constexpr uint32_t kStackAddr = 0x80002000;
+  cpu.SetRegister(zeebulator::kSP, kStackAddr);
+  cpu.GetMemory().Write32(kStackAddr + 0, 4);  // height
+  uint32_t rc = hle.CallArmFunction(create_fn, display_obj, kPpOut, 16, 8);
+  EXPECT_EQ(rc, 0u);  // AEE_SUCCESS
+
+  uint32_t dib_obj = cpu.GetMemory().Read32(kPpOut);
+  EXPECT_NE(dib_obj, 0u);
+
+  // The returned object must expose a working GetInfo (slot 12 of BitmapHle):
+  // read the DIB's own vtable and query dimensions.
+  uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
+  uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
+  constexpr uint32_t kInfoStruct = 0x80031000;
+  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 8);
+  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 0), 8);   // width
+  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 2), 4);   // height
+}
+
+TEST(IDisplayHle, CreateDIBitmapWithoutArenaFails) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  TestBackend backend;
+  IDisplayHle display(backend, 64, 48);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+  uint32_t create_fn = cpu.GetMemory().Read32(kVtableAddr + 13 * 4);
+  constexpr uint32_t kPpOut = 0x80030000;
+  cpu.GetMemory().Write32(kPpOut, 0xDEADBEEF);
+  uint32_t rc = hle.CallArmFunction(create_fn, display_obj, kPpOut, 16, 8);
+  EXPECT_NE(rc, 0u);                               // failure
+  EXPECT_EQ(cpu.GetMemory().Read32(kPpOut), 0u);   // output nulled
+}
+
 TEST(IDisplayHle, SetDestinationAndGetDestinationRouteCorrectly) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);
