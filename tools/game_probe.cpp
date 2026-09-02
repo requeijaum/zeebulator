@@ -365,7 +365,16 @@ CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap
                                    AbdTextState* abd_text_state = nullptr,
                                    bool resume = false,
                                    const std::function<bool()>& should_yield = {}) {
-  uint64_t kMaxSteps = 5'000'000;
+  // Default per-call step budget. Raised from 5M to 64M (2026-09-02): several
+  // real titles (cninja/spinmast/strhoop) run a legitimate inline LZ asset
+  // decompressor over their .pkg during the pre-resume timer drain that needs
+  // ~40-50M interpreter steps on the first tick -- at 5M it aborted with the
+  // misleading "timer callback did not complete trustworthily" even though it
+  // was doing real, finite work (confirmed: at 60M cninja finishes the
+  // decompressor, clears the drain, and reaches a later real blocker). A
+  // genuinely stuck title still aborts, just after a larger bound. Override with
+  // ZEEB_MAX_STEPS for tighter/looser probing.
+  uint64_t kMaxSteps = 64'000'000;
   if (const char* budget = std::getenv("ZEEB_MAX_STEPS")) {
     uint64_t parsed = std::strtoull(budget, nullptr, 0);
     if (parsed > 0) kMaxSteps = parsed;
