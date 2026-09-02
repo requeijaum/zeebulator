@@ -890,6 +890,14 @@ int main(int argc, char** argv) {
         std::string lext = ext;
         for (auto& c : lext) c = static_cast<char>(std::tolower(c));
         if (lext == ".mod" || lext == ".pkg" || lext == ".sig") continue;
+        // Skip internal/host-side artifacts and archives handled by their own
+        // explicit paths (--bar, save/replay sidecars): registering these as
+        // loose siblings would double-register (data.bar is also passed via
+        // --bar) or shadow nothing the game opens by name. Games only open the
+        // small loose framework assets (.wav/.fnz/.tex/...) this pass targets.
+        if (lext == ".bar" || lext == ".userdata" || lext == ".savestate" ||
+            lext == ".playlog")
+          continue;
         const std::string fname = e.path().filename().string();
         std::vector<uint8_t> bytes;
         try {
