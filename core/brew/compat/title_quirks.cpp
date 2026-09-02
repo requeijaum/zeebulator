@@ -76,6 +76,45 @@ const std::vector<TitleQuirk>& KnownTitles() {
           /*evidence=*/"research/sources/2026-09-02_clsid-static-recovery.md",
       },
       TitleQuirk{
+          /*real_clsid=*/0x0108AF6Cu,  // 17346412 -- Resident Evil 4 (bio4_brew)
+          /*mif_clsid=*/0x0108AF6Cu,
+          /*folder=*/"276675",
+          /*display_name=*/"Resident Evil 4",
+          /*mod_filename=*/"bio4_brew.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Capcom/Zeebo port. Real clsid 0x0108af6c boots to event loop with "
+          "CreateInstance OK.",
+          /*evidence=*/"research/sources/2026-09-02_clsid-static-recovery.md",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010A2335u,  // 17441589 -- Activity Center
+          /*mif_clsid=*/0x010A2335u,
+          /*folder=*/"280634",
+          /*display_name=*/"Activity Center",
+          /*mod_filename=*/"activitycenter.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Zeebo title. Real clsid 0x010a2335 boots to event loop with "
+          "CreateInstance OK.",
+          /*evidence=*/"research/sources/2026-09-02_clsid-static-recovery.md",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010A2337u,  // 17441591 -- Alice in Wonderland
+          /*mif_clsid=*/0x010A2337u,
+          /*folder=*/"280386",
+          /*display_name=*/"Alice in Wonderland",
+          /*mod_filename=*/"alice.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Zeebo title. Real clsid 0x010a2337 boots to event loop with "
+          "CreateInstance OK (sister title of activitycenter).",
+          /*evidence=*/"research/sources/2026-09-02_clsid-static-recovery.md",
+      },
+      TitleQuirk{
           /*real_clsid=*/0x0108FF19u,  // 17366809 -- sits between peteca and ids
           /*mif_clsid=*/0x01060000u,   // MIF value is a decoy
           /*folder=*/"279380",
