@@ -16,7 +16,7 @@ namespace {
 TEST(TitleQuirks, RegistryIsNonEmptyAndWellFormed) {
   const auto& titles = KnownTitles();
   ASSERT_FALSE(titles.empty());
-  EXPECT_EQ(titles.size(), 17u);
+  EXPECT_EQ(titles.size(), 29u);
   for (const auto& t : titles) {
     EXPECT_NE(t.real_clsid, 0u) << t.display_name << " must have a real clsid";
     EXPECT_FALSE(t.folder.empty()) << t.display_name << " must have a folder";

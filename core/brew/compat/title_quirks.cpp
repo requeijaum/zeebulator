@@ -159,7 +159,7 @@ const std::vector<TitleQuirk>& KnownTitles() {
       TitleQuirk{
           /*real_clsid=*/0x0108EFF9u,  // 17362937 -- Zeebo Sports Tennis
           /*mif_clsid=*/0x01060000u,
-          /*folder=*/"277717",
+          /*folder=*/"277534",
           /*display_name=*/"Zeebo Sports Tennis",
           /*mod_filename=*/"zeebotennis.mod",
           /*assets=*/AssetKind::kNone,
@@ -232,6 +232,155 @@ const std::vector<TitleQuirk>& KnownTitles() {
           /*status=*/BootStatus::kBoots,
           /*notes=*/"First-party Zeebo Extreme title. Reaches event loop.",
           /*evidence=*/"research/sources/scripts/boot_matrix.py",
+      },
+      // --- Titles verified 2026-09-02 via MIF-tail CLSID recovery ------------
+      // The real AEECLSID lives in the last 20 bytes of each title's .mif
+      // (folder.mif), at byte offset len-20 as a little-endian uint32. This
+      // was confirmed against every already-known title (pacmania 0x01087b72,
+      // RE4 0x0108af6c, quake 0x01087a3c, activitycenter 0x010a2335, ...) and
+      // then used to recover CLSIDs for the rest of the corpus, each verified
+      // through the real probe (CreateInstance accepted + reaches the event
+      // loop with no unhandled instruction). See research/sources/scripts/
+      // clsid_validate.sh.
+      TitleQuirk{
+          /*real_clsid=*/0x01087B73u,  // 17333107 -- Ridge Racer
+          /*mif_clsid=*/0x01087B73u,
+          /*folder=*/"276152",
+          /*display_name=*/"Ridge Racer",
+          /*mod_filename=*/"ridgeracer.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Namco port. CLSID recovered from MIF tail; CreateInstance OK, "
+          "reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x0108C0BBu,  // 17350843 -- Rolimã (Zeebo Extreme Rolimã)
+          /*mif_clsid=*/0x0108C0BBu,
+          /*folder=*/"276809",
+          /*display_name=*/"Zeebo Extreme Rolima",
+          /*mod_filename=*/"Rolimaz.mod",
+          /*assets=*/AssetKind::kNone,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "First-party Zeebo Extreme title. CLSID from MIF tail; reaches "
+          "event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x01099CD6u,  // 17407190 -- Peggle
+          /*mif_clsid=*/0x01099CD6u,
+          /*folder=*/"278962",
+          /*display_name=*/"Peggle",
+          /*mod_filename=*/"peggle.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "PopCap port. CLSID from MIF tail; CreateInstance OK, reaches event "
+          "loop. Peggle per-tick loop already studied (TASKS.md Phase 8).",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924DEu,  // 17376478 -- Caveman Ninja / Joe & Mac
+          /*mif_clsid=*/0x010924DEu,
+          /*folder=*/"278986",
+          /*display_name=*/"Caveman Ninja",
+          /*mod_filename=*/"cninja.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/
+          "Data East / G-mode arcade port. CLSID from MIF tail; reaches event "
+          "loop (also in the regression audit).",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924E1u,  // 17376481 -- Spin Master
+          /*mif_clsid=*/0x010924E1u,
+          /*folder=*/"278987",
+          /*display_name=*/"Spin Master",
+          /*mod_filename=*/"spinmast.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924E2u,  // 17376482 -- Street Hoop
+          /*mif_clsid=*/0x010924E2u,
+          /*folder=*/"278988",
+          /*display_name=*/"Street Hoop",
+          /*mod_filename=*/"strhoop.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010963A5u,  // 17392549 -- (folder 279036 game.mod)
+          /*mif_clsid=*/0x010963A5u,
+          /*folder=*/"279036",
+          /*display_name=*/"Game 279036",
+          /*mod_filename=*/"game.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"CLSID from MIF tail; CreateInstance OK, reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924E3u,  // 17376483 -- Super Baseball 2020 (supbtime)
+          /*mif_clsid=*/0x010924E3u,
+          /*folder=*/"279125",
+          /*display_name=*/"Super Baseball / SuperBTime",
+          /*mod_filename=*/"supbtime.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924DDu,  // 17376477 -- Karnov's Revenge
+          /*mif_clsid=*/0x010924DDu,
+          /*folder=*/"279126",
+          /*display_name=*/"Karnov's Revenge",
+          /*mod_filename=*/"karnovr.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924E4u,  // 17376484 -- Wizard Fire
+          /*mif_clsid=*/0x010924E4u,
+          /*folder=*/"279173",
+          /*display_name=*/"Wizard Fire",
+          /*mod_filename=*/"wizdfire.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924E0u,  // 17376480 -- Magical Drop 3
+          /*mif_clsid=*/0x010924E0u,
+          /*folder=*/"279200",
+          /*display_name=*/"Magical Drop 3",
+          /*mod_filename=*/"magdrop3.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
+      },
+      TitleQuirk{
+          /*real_clsid=*/0x010924DFu,  // 17376479 -- Dark Seal
+          /*mif_clsid=*/0x010924DFu,
+          /*folder=*/"279233",
+          /*display_name=*/"Dark Seal",
+          /*mod_filename=*/"darkseal.mod",
+          /*assets=*/AssetKind::kOther,
+          /*status=*/BootStatus::kBoots,
+          /*notes=*/"G-mode arcade port. CLSID from MIF tail; reaches event loop.",
+          /*evidence=*/"research/sources/scripts/clsid_validate.sh",
       },
   };
   return kTitles;
