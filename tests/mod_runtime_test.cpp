@@ -863,6 +863,29 @@ TEST(ModRuntime, SprintfFormatsARealConfirmedErrorCodeMessage) {
   EXPECT_EQ(cpu.GetMemory().Read32(kArgsCursor), kArgs + 4) << "cursor advanced past the one arg";
 }
 
+TEST(ModRuntime, SprintfSupportsPercentIAsSignedDecimalAliasOfPercentD) {
+  // Real title Rolimaz builds its resource path with "pak%i.pakz"; %i is a
+  // standard signed-decimal alias of %d. Before this fix %i fell through to the
+  // unknown-directive fallback and the literal "%i" reached OpenFile, so the
+  // game's own pak0.pakz never resolved and it stalled at boot.
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t sprintf_fn = cpu.GetMemory().Read32(kTableAddress + kSprintfSlotOffset);
+
+  constexpr uint32_t kDest = 0x80300100;
+  constexpr uint32_t kFmt = 0x80300200;
+  constexpr uint32_t kArgs = 0x80300300;
+  constexpr uint32_t kArgsCursor = 0x80300400;
+  WriteCString(cpu.GetMemory(), kFmt, "pak%i.pakz");
+  cpu.GetMemory().Write32(kArgs, 0);
+  cpu.GetMemory().Write32(kArgsCursor, kArgs);
+
+  hle.CallArmFunction(sprintf_fn, kDest, kFmt, kArgsCursor);
+  EXPECT_EQ(ReadCString(cpu.GetMemory(), kDest), "pak0.pakz");
+}
+
 TEST(ModRuntime, SprintfSupportsStringHexCharAndLiteralPercent) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, 0xF0000000, 0x1000);

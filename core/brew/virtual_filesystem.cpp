@@ -12,12 +12,58 @@ void VirtualFilesystem::AddFile(std::string name, std::vector<uint8_t> data) {
 }
 
 bool VirtualFilesystem::Exists(const std::string& name) const {
-  return files_.find(name) != files_.end();
+  return Find(name) != nullptr;
 }
 
 const std::vector<uint8_t>* VirtualFilesystem::Find(const std::string& name) const {
   auto it = files_.find(name);
-  return it == files_.end() ? nullptr : &it->second;
+  if (it != files_.end()) return &it->second;
+  // Path-normalization fallback (2026-09-02): real games build resource paths
+  // with printf into a buffer that often carries a leading "./" or "fs:/" and
+  // collapses to doubled slashes (e.g. Rolimaz opens ".//pak0.pakz" for a file
+  // registered as "pak0.pakz"). Registrations use the archive's own basename,
+  // so retry with a canonical form: strip a leading "fs:/" / "./" and collapse
+  // repeated '/'. If that still misses, fall back to a basename match (the
+  // segment after the last '/'), which resolves any remaining directory prefix
+  // a game prepends to a flat resource name.
+  auto canon = [](std::string s) {
+    // strip a leading fs:/ scheme
+    if (s.rfind("fs:/", 0) == 0) s.erase(0, 4);
+    // collapse "./" segments and doubled slashes
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+      if (s[i] == '/' && !out.empty() && out.back() == '/') continue;  // skip dup '/'
+      if (s[i] == '.' && i + 1 < s.size() && s[i + 1] == '/' &&
+          (out.empty() || out.back() == '/')) {
+        ++i;  // skip "./" (the '/' is consumed by the loop's ++i)
+        continue;
+      }
+      out.push_back(s[i]);
+    }
+    // strip any leading '/'
+    while (!out.empty() && out.front() == '/') out.erase(out.begin());
+    return out;
+  };
+  std::string c = canon(name);
+  it = files_.find(c);
+  if (it != files_.end()) return &it->second;
+  // basename fallback: match the tail segment against each registered file's
+  // own basename.
+  auto base_of = [](const std::string& s) {
+    size_t p = s.find_last_of('/');
+    return p == std::string::npos ? s : s.substr(p + 1);
+  };
+  std::string want = base_of(c);
+  if (!want.empty()) {
+    for (const auto& n : names_) {
+      if (base_of(n) == want) {
+        auto jt = files_.find(n);
+        if (jt != files_.end()) return &jt->second;
+      }
+    }
+  }
+  return nullptr;
 }
 
 VirtualFilesystem BuildVirtualFilesystemFromGgz(const GgzArchive& archive) {

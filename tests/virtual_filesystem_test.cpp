@@ -24,6 +24,42 @@ TEST(VirtualFilesystem, MissingFileIsAbsent) {
   EXPECT_EQ(vfs.Find("nope.bin"), nullptr);
 }
 
+TEST(VirtualFilesystem, FindNormalizesLeadingDotAndDoubledSlashes) {
+  // Real games build resource paths with printf and often carry a leading "./"
+  // that collapses to a doubled slash (Rolimaz opens ".//pak0.pakz" for a file
+  // registered under its plain basename "pak0.pakz").
+  VirtualFilesystem vfs;
+  std::vector<uint8_t> data = {4, 5, 6};
+  vfs.AddFile("pak0.pakz", data);
+
+  EXPECT_TRUE(vfs.Exists(".//pak0.pakz"));
+  ASSERT_NE(vfs.Find(".//pak0.pakz"), nullptr);
+  EXPECT_EQ(*vfs.Find(".//pak0.pakz"), data);
+  EXPECT_TRUE(vfs.Exists("./pak0.pakz"));
+  EXPECT_TRUE(vfs.Exists("fs:/pak0.pakz"));
+}
+
+TEST(VirtualFilesystem, FindFallsBackToBasename) {
+  // A game may prepend a directory prefix to a flat resource name.
+  VirtualFilesystem vfs;
+  std::vector<uint8_t> data = {7};
+  vfs.AddFile("font.bar", data);
+
+  ASSERT_NE(vfs.Find("assets/gfx/font.bar"), nullptr);
+  EXPECT_EQ(*vfs.Find("assets/gfx/font.bar"), data);
+}
+
+TEST(VirtualFilesystem, FindExactMatchStillWins) {
+  // Normalization must never shadow an exact registered name.
+  VirtualFilesystem vfs;
+  vfs.AddFile("a/x.bin", {1});
+  vfs.AddFile("b/x.bin", {2});
+  ASSERT_NE(vfs.Find("a/x.bin"), nullptr);
+  EXPECT_EQ((*vfs.Find("a/x.bin"))[0], 1);
+  ASSERT_NE(vfs.Find("b/x.bin"), nullptr);
+  EXPECT_EQ((*vfs.Find("b/x.bin"))[0], 2);
+}
+
 TEST(VirtualFilesystem, NamesPreservesInsertionOrderWithoutDuplicates) {
   VirtualFilesystem vfs;
   vfs.AddFile("a.bin", {1});

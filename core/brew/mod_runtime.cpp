@@ -538,6 +538,7 @@ void ModRuntime::SprintfImpl(IArmCore& core) {
     std::string formatted;
     switch (spec) {
       case 'd':
+      case 'i':
         formatted = std::to_string(static_cast<int32_t>(memory_.Read32(args)));
         args += 4;
         break;
@@ -630,6 +631,7 @@ void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
     std::string formatted;
     switch (spec) {
       case 'd':
+      case 'i':
         formatted = std::to_string(value);
         break;
       case 'u':
