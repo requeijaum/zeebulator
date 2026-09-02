@@ -27,6 +27,7 @@ constexpr uint32_t kSprintfSlotOffset = 0x13c;
 constexpr uint32_t kMallocSlotOffset = 0x68;
 constexpr uint32_t kFreeSlotOffset = 0x6c;
 constexpr uint32_t kGetUpTimeMsSlotOffset = 0xb0;
+constexpr uint32_t kSleepSlotOffset = 0x184;
 constexpr uint32_t kGetAppContextSlotOffset = 0xc0;
 constexpr uint32_t kDbgPrintfSlotOffset = 0x9c;
 constexpr uint32_t kMemcpyAliasSlotOffset = 0x44;
@@ -474,6 +475,19 @@ TEST(ModRuntime, GetUpTimeMsSelfAdvancesOnEveryReadEvenWithoutTick) {
   EXPECT_EQ(hle.CallArmFunction(get_uptime_ms_fn), 0u);
   EXPECT_EQ(hle.CallArmFunction(get_uptime_ms_fn), 1u);
   EXPECT_EQ(hle.CallArmFunction(get_uptime_ms_fn), 2u);
+}
+
+TEST(ModRuntime, SleepRequestsOneCooperativeYieldPerCall) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t sleep_fn = cpu.GetMemory().Read32(kTableAddress + kSleepSlotOffset);
+
+  EXPECT_FALSE(mod_runtime.ConsumeYieldRequest());
+  EXPECT_EQ(hle.CallArmFunction(sleep_fn, 1), 0u);
+  EXPECT_TRUE(mod_runtime.ConsumeYieldRequest());
+  EXPECT_FALSE(mod_runtime.ConsumeYieldRequest());
 }
 
 TEST(ModRuntime, MemsetFillsExactlyTheRequestedRangeAndReturnsDest) {

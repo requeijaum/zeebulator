@@ -688,6 +688,21 @@ void ModRuntime::GetUpTimeMsImpl(IArmCore& core) {
 
 void ModRuntime::Tick(uint32_t elapsed_ms) { uptime_ms_ += elapsed_ms; }
 
+void ModRuntime::SleepImpl(IArmCore& core) {
+  // The requested duration is consumed by the deterministic outer Tick clock.
+  // Returning from this HLE trap first leaves PC at the guest instruction after
+  // the call; CallArmFunctionChecked then observes this edge and suspends the
+  // containing callback without modifying any architectural state.
+  yield_requested_ = true;
+  core.SetRegister(kR0, 0);
+}
+
+bool ModRuntime::ConsumeYieldRequest() {
+  bool requested = yield_requested_;
+  yield_requested_ = false;
+  return requested;
+}
+
 void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t memcpy_fn = hle_.Register([this](IArmCore& core) { MemcpyImpl(core); });
   uint32_t memset_fn = hle_.Register([this](IArmCore& core) { MemsetImpl(core); });
@@ -707,7 +722,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
   uint32_t unknown_0xdc_fn =
       hle_.Register([this](IArmCore& core) { DecompressGzipInPlaceImpl(core); });
-  uint32_t unknown_0x184_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t sleep_fn = hle_.Register([this](IArmCore& core) { SleepImpl(core); });
   uint32_t unknown_0x1b4_fn =
       hle_.Register([this](IArmCore& core) { SortPointerArrayImpl(core); });
   uint32_t strncpy_fn = hle_.Register([this](IArmCore& core) { StrncpyImpl(core); });
@@ -823,7 +838,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xdc, unknown_0xdc_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x184, unknown_0x184_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x184, sleep_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x1b4, unknown_0x1b4_fn);
   memory_.Write32(table_address + kStrncpySlotOffset, strncpy_fn);
   memory_.Write32(table_address + kStrchrSlotOffset, strchr_fn);

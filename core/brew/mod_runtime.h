@@ -615,6 +615,12 @@ class ModRuntime {
   // externally-driven clock isn't enough.
   void Tick(uint32_t elapsed_ms);
 
+  // AEEHelper sleep cannot block the host inside a synchronous ARM callback.
+  // Its trap requests a cooperative return to the outer scheduler after the
+  // interpreter has restored the guest LR. The caller consumes the edge once;
+  // all guest registers/memory remain in the interpreter for exact resume.
+  bool ConsumeYieldRequest();
+
   // Writes `table_address` at `module_base - 4` and populates the
   // table's known slots. Must be called after the module itself has
   // been loaded at `module_base`; `table_address` must not overlap the
@@ -636,6 +642,7 @@ class ModRuntime {
   void FormatSingleIntImpl(IArmCore& core);
   void GetAppContextImpl(IArmCore& core);
   void GetUpTimeMsImpl(IArmCore& core);
+  void SleepImpl(IArmCore& core);
   void ReallocImpl(IArmCore& core);
   void DecompressGzipInPlaceImpl(IArmCore& core);
   void SortPointerArrayImpl(IArmCore& core);
@@ -656,6 +663,7 @@ class ModRuntime {
   uint32_t fourth_context_object_ = 0;
   uint32_t fifth_context_object_ = 0;
   uint32_t uptime_ms_ = 0;
+  bool yield_requested_ = false;
 
   // GetAppContextImpl only re-writes a field into the context struct
   // when its Set*() call is pending (tracked here), rather than on

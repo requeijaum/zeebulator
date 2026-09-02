@@ -270,6 +270,7 @@ struct CallResult {
   uint32_t r0 = 0;
   bool wandered_outside_module = false;
   bool exceeded_step_budget = false;
+  bool yielded = false;
 };
 
 struct AbdTextState {
@@ -342,18 +343,22 @@ CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap
                                    bool trace = false, bool hle_trace = false,
                                    zeebulator::IDisplayHle* display_for_liveness = nullptr,
                                    zeebulator::Sdl2UnifiedBackend* backend_for_liveness = nullptr,
-                                   AbdTextState* abd_text_state = nullptr) {
+                                   AbdTextState* abd_text_state = nullptr,
+                                   bool resume = false,
+                                   const std::function<bool()>& should_yield = {}) {
   uint64_t kMaxSteps = 5'000'000;
   if (const char* budget = std::getenv("ZEEB_MAX_STEPS")) {
     uint64_t parsed = std::strtoull(budget, nullptr, 0);
     if (parsed > 0) kMaxSteps = parsed;
   }
-  cpu.SetRegister(zeebulator::kR0, r0);
-  cpu.SetRegister(zeebulator::kR1, r1);
-  cpu.SetRegister(zeebulator::kR2, r2);
-  cpu.SetRegister(zeebulator::kR3, r3);
-  cpu.SetRegister(zeebulator::kLR, trap_base);
-  cpu.SetRegister(zeebulator::kPC, entry);
+  if (!resume) {
+    cpu.SetRegister(zeebulator::kR0, r0);
+    cpu.SetRegister(zeebulator::kR1, r1);
+    cpu.SetRegister(zeebulator::kR2, r2);
+    cpu.SetRegister(zeebulator::kR3, r3);
+    cpu.SetRegister(zeebulator::kLR, trap_base);
+    cpu.SetRegister(zeebulator::kPC, entry);
+  }
 
   CallResult result;
   uint32_t last_in_module_pc = 0;
@@ -484,6 +489,10 @@ CallResult CallArmFunctionChecked(zeebulator::ArmInterpreter& cpu, uint32_t trap
       result.wandered_outside_module = true;  // only warn once per call
     }
     cpu.Step();
+    if (should_yield && should_yield()) {
+      result.yielded = true;
+      break;
+    }
   }
   result.r0 = cpu.GetRegister(zeebulator::kR0);
   return result;
@@ -2524,6 +2533,7 @@ int main(int argc, char** argv) {
   uint32_t applet_ptr = 0;
   uint32_t handle_event_fn = 0;
   bool injected_simulated_download_complete = false;
+  bool boot_continuation_active = false;
   // Fase 5: linear execution trace logger (ZEEB_TRACE=lo-hi[,limit][,path]).
   // Env-gated, off by default. When the guest PC enters [lo,hi) the
   // interpreter's OnExec hook appends PC+opcode+regs to the trace file --
@@ -2675,24 +2685,40 @@ int main(int argc, char** argv) {
           uint32_t call_r0 = timer.r0_override.value_or(timer.user_data);
           uint32_t call_r1 = timer.r0_override.has_value() ? timer.user_data : 0;
           try {
-            CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, timer.callback,
-                                   call_r0, call_r1, 0, 0, /*trace=*/false,
-                                   /*hle_trace=*/false, &display, &backend);
+            mod_runtime.ConsumeYieldRequest();
+            auto drained = CallArmFunctionChecked(
+                cpu, kTrapBase, kBase, mod_size, timer.callback,
+                call_r0, call_r1, 0, 0, /*trace=*/false,
+                /*hle_trace=*/false, &display, &backend, nullptr,
+                /*resume=*/false,
+                [&mod_runtime]() { return mod_runtime.ConsumeYieldRequest(); });
+            if (drained.wandered_outside_module || drained.exceeded_step_budget) {
+              std::printf("  [pre-resume drain] timer callback did not complete trustworthily\n");
+            }
+            if (drained.yielded) {
+              boot_continuation_active = true;
+              break;
+            }
           } catch (const std::exception& e) {
             std::printf("  [pre-resume drain] timer callback threw: %s\n", e.what());
           }
         }
+        if (boot_continuation_active) break;
       }
     }
-    std::printf("Calling HandleEvent(EVT_APP_RESUME)...\n");
-    auto resume_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
-                                                 applet_ptr, kEvtAppResume, 0, kAppStartAddr,
-                                                 /*trace=*/false, /*hle_trace=*/false, &display, &backend);
-    if (resume_result.wandered_outside_module || resume_result.exceeded_step_budget) {
-      std::printf("HandleEvent(EVT_APP_RESUME) did not complete trustworthily -- stopping.\n");
-      return 1;
+    if (!boot_continuation_active) {
+      std::printf("Calling HandleEvent(EVT_APP_RESUME)...\n");
+      auto resume_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
+                                                   applet_ptr, kEvtAppResume, 0, kAppStartAddr,
+                                                   /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+      if (resume_result.wandered_outside_module || resume_result.exceeded_step_budget) {
+        std::printf("HandleEvent(EVT_APP_RESUME) did not complete trustworthily -- stopping.\n");
+        return 1;
+      }
+      std::printf("HandleEvent(EVT_APP_RESUME) returned %u\n", resume_result.r0);
+    } else {
+      std::printf("Deferring EVT_APP_RESUME: START timer yielded with a live guest continuation.\n");
     }
-    std::printf("HandleEvent(EVT_APP_RESUME) returned %u\n", resume_result.r0);
   } catch (const std::exception& e) {
     std::printf("%s threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n", stage, e.what(),
                 cpu.GetRegister(zeebulator::kPC), cpu.GetRegister(zeebulator::kPC) - kBase);
@@ -2924,6 +2950,10 @@ int main(int argc, char** argv) {
   SDL_Event event;
   constexpr uint32_t kTickMs = 16;
   uint64_t tick_count = 0;
+  // A guest callback may cooperatively yield from AEEHelper sleep while its
+  // full architectural continuation remains in `cpu`. While active, no other
+  // guest callback may run on that single CPU context; resume it first.
+  bool callback_continuation_active = boot_continuation_active;
   // Pending programmatic `step`: a step command doesn't fulfill until the
   // guest has actually advanced the requested number of ticks (below).
   bool ctl_step_active = false;
@@ -3393,6 +3423,25 @@ int main(int argc, char** argv) {
     // Driving these is what actually runs the game's per-frame logic;
     // nothing calls into the module otherwise from here on.
     if (!dbg_paused) mod_runtime.Tick(kTickMs);
+    if (!dbg_paused && callback_continuation_active) {
+      try {
+        auto resumed = CallArmFunctionChecked(
+            cpu, kTrapBase, kBase, mod_size, /*entry=*/0, 0, 0, 0, 0,
+            /*trace=*/false, /*hle_trace=*/false, &display, &backend,
+            &abd_text_state, /*resume=*/true,
+            [&mod_runtime]() { return mod_runtime.ConsumeYieldRequest(); });
+        callback_continuation_active = resumed.yielded;
+        if (resumed.wandered_outside_module || resumed.exceeded_step_budget) {
+          std::printf("resumed callback did not complete trustworthily -- stopping.\n");
+          running = false;
+        }
+      } catch (const std::exception& e) {
+        std::printf("resumed callback threw: %s (pc=0x%08x)\n", e.what(),
+                    cpu.GetRegister(zeebulator::kPC));
+        callback_continuation_active = false;
+        running = false;
+      }
+    }
     // Simulate a truthful "download/install 100% complete" notification
     // once the real callback has been registered (see the class-0x01005511
     // doc comment above) -- a real event struct shape confirmed via
@@ -3407,7 +3456,8 @@ int main(int argc, char** argv) {
     // triggered so far ever sets it. Kept as a real, evidence-grounded
     // building block for whoever traces that next -- not yet sufficient
     // on its own.
-    if (!injected_simulated_download_complete && *captured_download_callback != 0 &&
+    if (!callback_continuation_active && !injected_simulated_download_complete &&
+        *captured_download_callback != 0 &&
         tick_count >= 30) {
       injected_simulated_download_complete = true;
       constexpr uint32_t kSimulatedEventStructAddr = 0x80066000;
@@ -3448,7 +3498,9 @@ int main(int argc, char** argv) {
     // infrastructure for whoever picks up real controller-driven
     // navigation next.
     for (const auto& timer :
-         dbg_paused ? decltype(shell_hle.Tick(kTickMs)){} : shell_hle.Tick(kTickMs)) {
+         (dbg_paused || callback_continuation_active)
+             ? decltype(shell_hle.Tick(kTickMs)){}
+             : shell_hle.Tick(kTickMs)) {
       bool trace_this_tick = tick_count < 10 || persistent_log;
       if (trace_this_tick) std::printf("--- tick %llu ---\n", static_cast<unsigned long long>(tick_count));
       try {
@@ -3460,11 +3512,18 @@ int main(int argc, char** argv) {
         // that method's own doc comment for the live evidence.
         uint32_t call_r0 = timer.r0_override.value_or(timer.user_data);
         uint32_t call_r1 = timer.r0_override.has_value() ? timer.user_data : 0;
+        // Discard any sleep edge produced by an earlier, fully synchronous
+        // lifecycle call; this continuation belongs only to this callback.
+        mod_runtime.ConsumeYieldRequest();
         auto tick_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, timer.callback,
                                                    call_r0, call_r1, 0, 0,
                                                    /*trace=*/false,
                                                    /*hle_trace=*/trace_this_tick, &display, &backend,
-                                                   &abd_text_state);
+                                                   &abd_text_state, /*resume=*/false,
+                                                   [&mod_runtime]() {
+                                                     return mod_runtime.ConsumeYieldRequest();
+                                                   });
+        callback_continuation_active = tick_result.yielded;
         if (tick_result.wandered_outside_module || tick_result.exceeded_step_budget) {
           std::printf("timer callback did not complete trustworthily -- stopping.\n");
           running = false;
