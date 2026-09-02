@@ -707,9 +707,29 @@ void ModRuntime::GetAppContextImpl(IArmCore& core) {
 }
 
 void ModRuntime::GetUpTimeMsImpl(IArmCore& core) {
+  static const bool log_uptime = std::getenv("ZEEB_LOG_UPTIME") != nullptr;
+  static uint64_t uptime_calls = 0;
+  ++uptime_calls;
+  if (log_uptime && (uptime_calls % 1000 == 0)) {
+    std::fprintf(stderr, "[uptime] call#%llu ms=%u\n",
+                 static_cast<unsigned long long>(uptime_calls), uptime_ms_);
+  }
   core.SetRegister(kR0, uptime_ms_);
-  // Real code that busy-waits on elapsed time (confirmed by real
-  // disassembly -- see TASKS.md Phase 8, Super BurgerTime's real
+  // Experimental (ZEEB_UPTIME_YIELD=N) — TESTED, INSUFFICIENT ALONE (cninja,
+  // 2026-09-02): some titles (Data East cluster) run their whole per-frame
+  // loop inside ONE non-returning timer callback, busy-polling GetUpTimeMS
+  // instead of Sleep, so the outer Tick() loop never runs (ROADMAP UPDATE 12).
+  // Forcing a yield here every N reads DOES suspend/resume the continuation —
+  // but the resume path (game_probe.cpp `callback_continuation_active`, the
+  // START continuation) re-enters the SAME callback WITHOUT passing through the
+  // outer `++tick_count`, so no frame timer fires and no tick-gated input runs
+  // (verified: ZEEB_TICK_DIAG still logs 0 ticks with this on). The real fix
+  // must route the resumed continuation through the tick loop, not just yield.
+  // Kept opt-in and inert by default as a grounded building block. See UPDATE 13.
+  if (const char* y = std::getenv("ZEEB_UPTIME_YIELD")) {
+    unsigned long n = std::strtoul(y, nullptr, 10);
+    if (n != 0 && (uptime_calls % n == 0)) RequestYield();
+  }
   // ROM-readiness poll at static-base slot 0x184) calls this in a tight
   // loop entirely within a single native HLE call, with no opportunity
   // for the outer per-frame Tick() below to ever run in between. A
