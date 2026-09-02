@@ -1079,6 +1079,31 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ZEEB_NOP_INSTR=pc[,pc...] (hex) — overwrite each instruction with an ARM
+  // NOP (`mov r0,r0` = 0xe1a00000). Used to neutralize the optional-callback
+  // INDIRECT CALL directly (`blx r3`) instead of flipping the guard's `beq`.
+  // This is the block-terminal-preserving variant of ZEEB_FORCE_BRANCH: an
+  // indirect `blx r3` terminates a JIT IR block, and force-branching the beq
+  // that guards it made dynarmic set two terminals on one block
+  // (`ASSERT !HasTerminal()`); NOP-ing the call leaves all block boundaries
+  // intact and just skips the (absent) callback. Inert unless set.
+  if (const char* np = std::getenv("ZEEB_NOP_INSTR")) {
+    std::string s(np);
+    size_t pos = 0;
+    while (pos < s.size()) {
+      size_t comma = s.find(',', pos);
+      std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+      pos = (comma == std::string::npos) ? s.size() : comma + 1;
+      unsigned long npc = std::strtoul(tok.c_str(), nullptr, 16);
+      if (npc == 0) continue;
+      uint32_t instr = cpu.GetMemory().Read32(static_cast<uint32_t>(npc));
+      cpu.GetMemory().Write32(static_cast<uint32_t>(npc), 0xE1A00000u);  // NOP
+      cpu.NotifyCodeChanged(static_cast<uint32_t>(npc), 4);
+      std::fprintf(stderr, "[nopinstr] [0x%08lx] 0x%08x -> 0xe1a00000 (nop)\n",
+                   npc, instr);
+    }
+  }
+
 
   // Real compiled .mod code (ARM RVCT ROPI convention) expects a
   // "static base" pointer at kBase-4 -- see core/brew/mod_runtime.h and
