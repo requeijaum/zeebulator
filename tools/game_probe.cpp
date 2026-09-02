@@ -1727,7 +1727,47 @@ int main(int argc, char** argv) {
               tex, sig, pending_fill_color->has_value() ? 1 : 0);
         }
       }
-      if (!abd_font_atlas.has_value()) return;
+      if (!abd_font_atlas.has_value()) {
+        // Generic fill-quad bridge (ZEEB_GENERIC_RENDER) for non-ABD titles
+        // that never set an ABD font atlas but DO drive slot 107 with real
+        // 16.16 {x0,y0,x1@+8,far@+20} geometry and a real pending fill color
+        // (slot 40) and no bound texture -- confirmed live for peggle
+        // (folder 278962): its own real slot-107 callers 0x1262a0 (640x480
+        // full-screen background quad) and 0x11d000 (smaller UI quads at
+        // e.g. 320,240 / 182,278) both arrive with tex=0 fill=1. Without
+        // this, slot 107 returned early for every non-ABD title, so nothing
+        // ever reached the framebuffer even though the game's own real draw
+        // loop was running. Draws the solid-color quad through the same
+        // BlitRgba path the ABD 0x1054bc fill branch already uses. Default
+        // OFF, so ABD and ctest are untouched.
+        if (generic_render) {
+          uint32_t sa = zeebulator::HleRuntime::ReadStackArg(core, 0);
+          if (sa != 0 && *bound_texture == 0 && pending_fill_color->has_value()) {
+            int32_t gx0 = static_cast<int32_t>(core.GetMemory().Read32(sa + 0));
+            int32_t gy0 = static_cast<int32_t>(core.GetMemory().Read32(sa + 4));
+            int32_t gx1 = static_cast<int32_t>(core.GetMemory().Read32(sa + 8));
+            int32_t gfar = static_cast<int32_t>(core.GetMemory().Read32(sa + 20));
+            int px = gx0 / 65536;
+            int py = gy0 / 65536;
+            int pw = std::max(1, (gx1 - gx0) / 65536);
+            int ph = std::max(1, (gfar - gy0) / 65536);
+            // Sanity clamp: ignore degenerate/oversized quads (cmdlist nodes
+            // misread as geometry) -- keep within a generous display bound.
+            if (pw <= 4096 && ph <= 4096 && px >= -2048 && py >= -2048) {
+              const auto& color = **pending_fill_color;
+              std::vector<uint8_t> fill(static_cast<size_t>(pw) * ph * 4);
+              for (size_t i = 0; i < fill.size(); i += 4) {
+                fill[i + 0] = color[0];
+                fill[i + 1] = color[1];
+                fill[i + 2] = color[2];
+                fill[i + 3] = 255;
+              }
+              display.BlitRgba(px, py, pw, ph, fill.data());
+            }
+          }
+        }
+        return;
+      }
       uint32_t struct_addr = zeebulator::HleRuntime::ReadStackArg(core, 0);
       if (struct_addr == 0) return;
       uint32_t real_caller = zeebulator::HleRuntime::ReadStackArg(core, 1);
@@ -3644,7 +3684,13 @@ int main(int argc, char** argv) {
       // timer in a real burst.
       if (!backend.HasRealGlActivity()) {
         display.RepresentLastFrame();
-        if (abd_font_atlas.has_value()) display.PresentLiveFramebuffer();
+        // Present the live framebuffer for ABD (font atlas set) OR for any
+        // non-ABD title when the generic fill-quad/texture bridge is enabled
+        // (ZEEB_GENERIC_RENDER) -- otherwise peggle et al. draw into the live
+        // framebuffer via the generic slot-107 path but never present it.
+        if (abd_font_atlas.has_value() || std::getenv("ZEEB_GENERIC_RENDER") != nullptr) {
+          display.PresentLiveFramebuffer();
+        }
       }
     }
     mixer.Mix(backend, static_cast<size_t>(kAudioSampleRate * kTickMs / 1000));
