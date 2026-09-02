@@ -46,6 +46,8 @@ constexpr uint32_t kUnknownSlotOffset0x64 = 0x64;
 constexpr uint32_t kUnknownSlotOffset0xcc = 0xcc;
 constexpr uint32_t kUnknownSlotOffset0x90 = 0x90;
 constexpr uint32_t kUnknownSlotOffset0x10 = 0x10;
+constexpr uint32_t kUnknownSlotOffset0x34 = 0x34;
+constexpr uint32_t kUnknownSlotOffset0xd8 = 0xd8;
 constexpr uint32_t kUnknownSlotOffset0x1c = 0x1c;
 constexpr uint32_t kUnknownSlotOffset0x20 = 0x20;
 constexpr uint32_t kCheckObjectFlagSlotOffset0xa8 = 0xa8;
@@ -773,6 +775,23 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0x140_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x138_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x30_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  // CONFIRMED 2026-09-02 via live byte dump: AccelMenu (AirRacez/Boiaz/Bajaz) call
+  // [table+0xd8] as STRCMP for asset-name lookup (e.g. "audio/xui/count_down" vs
+  // "menu_select", "sfx_04.wav"). AEEHelperFuncs offset 0xd8 = STRCMP (case-sensitive;
+  // sits right after STRICMP at 0xd0). Real signed byte compare, 0 on exact match.
+  uint32_t unknown_0xd8_fn = hle_.Register([](IArmCore& core) {
+    uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1);
+    auto& mem = core.GetMemory();
+    for (;;) {
+      uint8_t ca = mem.Read8(a++), cb = mem.Read8(b++);
+      if (ca != cb || ca == 0 || cb == 0) {
+        core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(ca) -
+                                                    static_cast<int32_t>(cb)));
+        return;
+      }
+    }
+  });
+  uint32_t unknown_0x34_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x14c_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x150_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
@@ -896,6 +915,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0xcc, unknown_0xcc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0xd8, unknown_0xd8_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x1c, unknown_0x1c_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x20, unknown_0x20_fn);
   memory_.Write32(table_address + kCheckObjectFlagSlotOffset0xa8, check_object_flag_0xa8_fn);
