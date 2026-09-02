@@ -185,6 +185,7 @@ class IDisplayHle {
   void SetClipRect(IArmCore& core);
   void GetClipRect(IArmCore& core);
   void Update(IArmCore& core);
+  void BitBlt(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
 
   Backend& backend_;

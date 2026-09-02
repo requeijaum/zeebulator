@@ -60,6 +60,8 @@ add_library(zeebulator_core STATIC
   brew/ishell.h
   brew/idisplay.cpp
   brew/idisplay.h
+  brew/bitmap_hle.cpp
+  brew/bitmap_hle.h
   brew/font5x7.cpp
   brew/font5x7.h
   brew/virtual_filesystem.cpp

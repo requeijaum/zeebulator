@@ -787,6 +787,48 @@ TEST(IDisplayHle, SetClipRectAndGetClipRectWorkCorrectly) {
   EXPECT_EQ(cpu.GetMemory().Read16(kOutRectAddr + 6), 480);
 }
 
+TEST(IDisplayHle, BitBltDrawsSourceBitmapToFramebuffer) {
+  TestBackend backend;
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  IDisplayHle display(backend, 8, 8);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+
+  // Set up source bitmap 4x4 RGB565 with a solid color
+  constexpr uint32_t kSrcBmpObj = 0x80003000;
+  constexpr uint32_t kSrcBmpBuf = 0x80004000;
+  // Fill source buffer with red (0xF800)
+  for (int i = 0; i < 4 * 4; ++i) {
+    cpu.GetMemory().Write16(kSrcBmpBuf + i * 2, 0xF800);
+  }
+  // Setup DIB struct
+  cpu.GetMemory().Write32(kSrcBmpObj + 0, 0);       // vtable
+  cpu.GetMemory().Write32(kSrcBmpObj + 8, kSrcBmpBuf); // pBmp
+  cpu.GetMemory().Write32(kSrcBmpObj + 16, 0);     // transparent color
+  cpu.GetMemory().Write16(kSrcBmpObj + 20, 4);     // cx
+  cpu.GetMemory().Write16(kSrcBmpObj + 22, 4);     // cy
+  cpu.GetMemory().Write16(kSrcBmpObj + 24, 8);     // pitch (4 * 2)
+  cpu.GetMemory().Write8(kSrcBmpObj + 28, 16);     // depth
+
+  // BitBlt slot 6: args = display, xDest=2, yDest=2, cxDest=4; stack: cyDest=4, pSrc=kSrcBmpObj, xSrc=0, ySrc=0, rop=0
+  uint32_t bitblt_fn = cpu.GetMemory().Read32(kVtableAddr + 6 * 4);
+  constexpr uint32_t kStackAddr = 0x80002000;
+  cpu.SetRegister(zeebulator::kSP, kStackAddr);
+  cpu.GetMemory().Write32(kStackAddr + 0, 4);           // cyDest
+  cpu.GetMemory().Write32(kStackAddr + 4, kSrcBmpObj);   // pSrc
+  cpu.GetMemory().Write32(kStackAddr + 8, 0);           // xSrc
+  cpu.GetMemory().Write32(kStackAddr + 12, 0);          // ySrc
+  cpu.GetMemory().Write32(kStackAddr + 16, 0);          // rop
+
+  uint32_t res = hle.CallArmFunction(bitblt_fn, display_obj, 2, 2, 4);
+  EXPECT_EQ(res, 0u);
+
+  // Check framebuffer pixel at (2,2) is red
+  const auto& fb = display.LiveFramebuffer();
+  EXPECT_EQ(fb[2 * 8 + 2], 0xF800);
+  EXPECT_EQ(fb[0 * 8 + 0], 0x0000);  // Unwritten pixel
+}
+
 TEST(IDisplayHle, ObjectAddressPointsAtVtable) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);

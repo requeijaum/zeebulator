@@ -153,6 +153,93 @@ void IDisplayHle::GetClipRect(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+void IDisplayHle::BitBlt(IArmCore& core) {
+  // int BitBlt(IDisplay *pIDisplay, int xDest, int yDest, int cxDest, int cyDest,
+  //            IBitmap *pSrc, int xSrc, int ySrc, AEE_RasterOp rop)
+  // R0 = pIDisplay, R1 = xDest, R2 = yDest, R3 = cxDest
+  // Stack: [sp+0]=cyDest, [sp+4]=pSrc, [sp+8]=xSrc, [sp+12]=ySrc, [sp+16]=rop
+  int x_dest = static_cast<int32_t>(core.GetRegister(kR1));
+  int y_dest = static_cast<int32_t>(core.GetRegister(kR2));
+  int cx_dest = static_cast<int32_t>(core.GetRegister(kR3));
+  int cy_dest = static_cast<int32_t>(HleRuntime::ReadStackArg(core, 0));
+  uint32_t src_ptr = HleRuntime::ReadStackArg(core, 1);
+  int x_src = static_cast<int32_t>(HleRuntime::ReadStackArg(core, 2));
+  int y_src = static_cast<int32_t>(HleRuntime::ReadStackArg(core, 3));
+  uint32_t rop = HleRuntime::ReadStackArg(core, 4);
+
+  if (src_ptr == 0 || cx_dest <= 0 || cy_dest <= 0) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+
+  auto& mem = core.GetMemory();
+  // Read DIB layout from src_ptr
+  uint32_t p_bmp = mem.Read32(src_ptr + 8);
+  uint32_t transparent_color = mem.Read32(src_ptr + 16);
+  int src_w = static_cast<int>(mem.Read16(src_ptr + 20));
+  int src_h = static_cast<int>(mem.Read16(src_ptr + 22));
+  int src_pitch = static_cast<int>(mem.Read16(src_ptr + 24));
+  int src_depth = static_cast<int>(mem.Read8(src_ptr + 28));
+
+  if (p_bmp == 0) {
+    p_bmp = src_ptr;
+    src_w = cx_dest + std::max(x_src, 0);
+    src_h = cy_dest + std::max(y_src, 0);
+    src_pitch = src_w * 2;
+    src_depth = 16;
+    transparent_color = 0xFFFFFFFFu;
+  }
+
+  if (src_w <= 0) src_w = cx_dest;
+  if (src_h <= 0) src_h = cy_dest;
+  if (src_pitch <= 0) src_pitch = src_w * 2;
+
+  int copy_w = std::min(cx_dest, src_w - x_src);
+  int copy_h = std::min(cy_dest, src_h - y_src);
+
+  int clip_x0 = std::max<int>(clip_x_, 0);
+  int clip_y0 = std::max<int>(clip_y_, 0);
+  int clip_x1 = std::min<int>(clip_x_ + (clip_dx_ > 0 ? clip_dx_ : width_), width_);
+  int clip_y1 = std::min<int>(clip_y_ + (clip_dy_ > 0 ? clip_dy_ : height_), height_);
+
+  int x0 = std::max<int>(x_dest, clip_x0);
+  int y0 = std::max<int>(y_dest, clip_y0);
+  int x1 = std::min<int>(x_dest + copy_w, clip_x1);
+  int y1 = std::min<int>(y_dest + copy_h, clip_y1);
+
+  for (int y = y0; y < y1; ++y) {
+    int sy = y_src + (y - y_dest);
+    if (sy < 0 || sy >= src_h) continue;
+    uint32_t src_row = p_bmp + static_cast<uint32_t>(sy * src_pitch);
+    size_t dst_row_idx = static_cast<size_t>(y) * width_;
+
+    for (int x = x0; x < x1; ++x) {
+      int sx = x_src + (x - x_dest);
+      if (sx < 0 || sx >= src_w) continue;
+
+      uint16_t pixel = 0;
+      if (src_depth == 16) {
+        pixel = mem.Read16(src_row + static_cast<uint32_t>(sx * 2));
+      } else {
+        pixel = mem.Read16(src_row + static_cast<uint32_t>(sx * 2));
+      }
+
+      // 6 = AEE_RO_TRANSPARENT
+      if (rop == 6 && static_cast<uint32_t>(pixel) == transparent_color) {
+        continue;
+      }
+      // 1 = AEE_RO_XOR
+      if (rop == 1) {
+        framebuffer_[dst_row_idx + x] ^= pixel;
+      } else {
+        framebuffer_[dst_row_idx + x] = pixel;
+      }
+    }
+  }
+
+  core.SetRegister(kR0, 0);
+}
+
 void IDisplayHle::GetDeviceBitmap(IArmCore& core) {
   // int GetDeviceBitmap(IDisplay *pIDisplay, IBitmap **ppBitmap)
   // po is R0 (unused), ppBitmap R1. Real disassembly (PHASE8_LOG.md)
@@ -189,7 +276,7 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
       Stub,                                    // 3  MeasureTextEx
       [this](IArmCore& c) { DrawText(c); },     // 4  DrawText
       [this](IArmCore& c) { DrawRect(c); },     // 5  DrawRect
-      Stub,                                    // 6  BitBlt
+      [this](IArmCore& c) { BitBlt(c); },       // 6  BitBlt
       [this](IArmCore& c) { Update(c); },       // 7  Update
       Stub,                                    // 8  SetAnnunciators
       Stub,                                    // 9  Backlight
