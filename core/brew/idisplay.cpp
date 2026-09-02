@@ -276,40 +276,25 @@ void IDisplayHle::IsEnabled(IArmCore& core) {
   core.SetRegister(kR0, 1);
 }
 
-void IDisplayHle::CreateDIBitmap(IArmCore& core) {
-  // int CreateDIBitmap(IDisplay *pIDisplay, IBitmap **ppbmDIB, uint8 depth,
-  //                    uint16 width, uint16 height)
-  // R0 = pIDisplay, R1 = ppbmDIB (output), R2 = depth (low byte),
-  // R3 = width (low 16), stack[0] = height.
-  // Matches the zeemu BrewDisplay CreateDIBitmap handler arg order.
+uint32_t IDisplayHle::AllocateDib(IArmCore& core, int width, int height,
+                                   int depth, uint32_t* status) {
   constexpr uint32_t kAeeSuccess = 0;
   constexpr uint32_t kEFailed = 1;
   constexpr uint32_t kENoMemory = 4;
 
-  uint32_t pp_out = core.GetRegister(kR1);
-  int depth = static_cast<int>(core.GetRegister(kR2) & 0xFF);
-  int width = static_cast<int>(core.GetRegister(kR3) & 0xFFFF);
-  int height = static_cast<int>(HleRuntime::ReadStackArg(core, 0) & 0xFFFF);
-
-  // A null output pointer or no configured arena/runtime cannot succeed.
-  if (pp_out == 0 || hle_ == nullptr || dib_arena_end_ == 0) {
-    if (pp_out != 0) core.GetMemory().Write32(pp_out, 0);
-    core.SetRegister(kR0, kEFailed);
-    return;
+  // No configured arena/runtime cannot succeed.
+  if (hle_ == nullptr || dib_arena_end_ == 0) {
+    *status = kEFailed;
+    return 0;
   }
-
-  // Only 16bpp DIBs are supported by this backend today; higher/other depths
-  // report EUNSUPPORTED-equivalent failure without allocating.
+  // Only 16bpp DIBs are supported by this backend today.
   if (depth != 16 || width <= 0 || height <= 0) {
-    core.GetMemory().Write32(pp_out, 0);
-    core.SetRegister(kR0, kEFailed);
-    return;
+    *status = kEFailed;
+    return 0;
   }
 
   const int pitch = ((width * depth + 31) / 32) * 4;
   const uint32_t buffer_size = static_cast<uint32_t>(pitch) * static_cast<uint32_t>(height);
-  // DIB object header is 36 bytes (see bitmap_hle.h layout); vtable is 6 slots
-  // (AddRef..GetTransparencyColor) * 4 bytes. Align each block to 4 bytes.
   auto align4 = [](uint32_t v) { return (v + 3u) & ~3u; };
   const uint32_t vtable_size = 6u * 4u;
   const uint32_t object_size = 36u;
@@ -320,9 +305,8 @@ void IDisplayHle::CreateDIBitmap(IArmCore& core) {
   uint32_t new_next = align4(buffer_addr + buffer_size);
 
   if (new_next > dib_arena_end_) {
-    core.GetMemory().Write32(pp_out, 0);
-    core.SetRegister(kR0, kENoMemory);
-    return;
+    *status = kENoMemory;
+    return 0;
   }
 
   // Zero the pixel buffer so a freshly-created DIB starts blank.
@@ -335,9 +319,61 @@ void IDisplayHle::CreateDIBitmap(IArmCore& core) {
   uint32_t obj = dib->Build(vtable_addr, object_addr);
   owned_dibs_.push_back(std::move(dib));
   dib_arena_next_ = new_next;
+  *status = kAeeSuccess;
+  return obj;
+}
 
+void IDisplayHle::CreateDIBitmap(IArmCore& core) {
+  // int CreateDIBitmap(IDisplay *pIDisplay, IBitmap **ppbmDIB, uint8 depth,
+  //                    uint16 width, uint16 height)
+  // R0 = pIDisplay, R1 = ppbmDIB (output), R2 = depth (low byte),
+  // R3 = width (low 16), stack[0] = height.
+  // Matches the zeemu BrewDisplay CreateDIBitmap handler arg order.
+  uint32_t pp_out = core.GetRegister(kR1);
+  int depth = static_cast<int>(core.GetRegister(kR2) & 0xFF);
+  int width = static_cast<int>(core.GetRegister(kR3) & 0xFFFF);
+  int height = static_cast<int>(HleRuntime::ReadStackArg(core, 0) & 0xFFFF);
+
+  if (pp_out == 0) {
+    core.SetRegister(kR0, 1);  // EFAILED
+    return;
+  }
+  uint32_t status = 0;
+  uint32_t obj = AllocateDib(core, width, height, depth, &status);
   core.GetMemory().Write32(pp_out, obj);
-  core.SetRegister(kR0, kAeeSuccess);
+  core.SetRegister(kR0, status);
+}
+
+void IDisplayHle::CreateDIBitmapEx(IArmCore& core) {
+  // int CreateDIBitmapEx(IDisplay *pIDisplay, IBitmap **ppbmDIB, uint8 depth,
+  //                      uint16 height, uint16 width, uint16 paletteEntries,
+  //                      uint16 extraBytes)
+  // R0 = pIDisplay, R1 = ppbmDIB, R2 = depth, R3 = height, stack[0] = width,
+  // stack[1] = paletteEntries, stack[2] = extraBytes.
+  // Arg order (depth,height then width on stack) matches zeemu BrewDisplay's
+  // CreateDIBitmapEx handler. Palette/extraBytes are accepted and validated
+  // but not yet materialized (16bpp DIBs need no palette); a future
+  // paletted-DIB path can consume them.
+  uint32_t pp_out = core.GetRegister(kR1);
+  int depth = static_cast<int>(core.GetRegister(kR2) & 0xFF);
+  int height = static_cast<int>(core.GetRegister(kR3) & 0xFFFF);
+  int width = static_cast<int>(HleRuntime::ReadStackArg(core, 0) & 0xFFFF);
+  int palette_entries = static_cast<int>(HleRuntime::ReadStackArg(core, 1) & 0xFFFF);
+  int extra_bytes = static_cast<int>(HleRuntime::ReadStackArg(core, 2) & 0xFFFF);
+
+  if (pp_out == 0) {
+    core.SetRegister(kR0, 1);  // EFAILED
+    return;
+  }
+  if (palette_entries < 0 || extra_bytes < 0) {
+    core.GetMemory().Write32(pp_out, 0);
+    core.SetRegister(kR0, 1);  // EFAILED
+    return;
+  }
+  uint32_t status = 0;
+  uint32_t obj = AllocateDib(core, width, height, depth, &status);
+  core.GetMemory().Write32(pp_out, obj);
+  core.SetRegister(kR0, status);
 }
 
 void IDisplayHle::Update(IArmCore&) {
@@ -385,7 +421,7 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
       Stub,                                    // 21 MakeDefault
       [this](IArmCore& c) { IsEnabled(c); },    // 22 IsEnabled
       Stub,                                    // 23 NotifyEnable
-      Stub,                                    // 24 CreateDIBitmapEx
+      [this](IArmCore& c) { CreateDIBitmapEx(c); },  // 24 CreateDIBitmapEx
       Stub,                                    // 25 SetPrefs
   };
   return BuildInterfaceObject(memory, hle, vtable_address, object_address,

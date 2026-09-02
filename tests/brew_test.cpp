@@ -799,6 +799,40 @@ TEST(IDisplayHle, CreateDIBitmapWithoutArenaFails) {
   EXPECT_EQ(cpu.GetMemory().Read32(kPpOut), 0u);   // output nulled
 }
 
+TEST(IDisplayHle, CreateDIBitmapExAllocatesUsableOffscreenDib) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  TestBackend backend;
+  IDisplayHle display(backend, 64, 48);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, kVtableAddr, kObjectAddr);
+  display.SetDibArena(0x80040000, 0x10000);
+
+  uint32_t create_fn = cpu.GetMemory().Read32(kVtableAddr + 24 * 4);
+  constexpr uint32_t kPpOut = 0x80030000;
+  cpu.GetMemory().Write32(kPpOut, 0);
+
+  // CreateDIBitmapEx(display, &out, depth=16, height=6, width=10,
+  //                  paletteEntries=0, extraBytes=0)
+  // R2=depth, R3=height; stack[0]=width, stack[1]=palette, stack[2]=extra.
+  constexpr uint32_t kStackAddr = 0x80002000;
+  cpu.SetRegister(zeebulator::kSP, kStackAddr);
+  cpu.GetMemory().Write32(kStackAddr + 0, 10);  // width
+  cpu.GetMemory().Write32(kStackAddr + 4, 0);   // paletteEntries
+  cpu.GetMemory().Write32(kStackAddr + 8, 0);   // extraBytes
+  uint32_t rc = hle.CallArmFunction(create_fn, display_obj, kPpOut, 16, 6);
+  EXPECT_EQ(rc, 0u);  // AEE_SUCCESS
+
+  uint32_t dib_obj = cpu.GetMemory().Read32(kPpOut);
+  EXPECT_NE(dib_obj, 0u);
+
+  uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
+  uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
+  constexpr uint32_t kInfoStruct = 0x80031000;
+  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 8);
+  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 0), 10);  // width
+  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 2), 6);   // height
+}
+
 TEST(IDisplayHle, SetDestinationAndGetDestinationRouteCorrectly) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);

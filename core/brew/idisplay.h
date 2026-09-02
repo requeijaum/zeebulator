@@ -205,6 +205,12 @@ class IDisplayHle {
   void IsEnabled(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
   void CreateDIBitmap(IArmCore& core);
+  void CreateDIBitmapEx(IArmCore& core);
+  // Shared allocator for CreateDIBitmap/CreateDIBitmapEx. Bump-allocates a DIB
+  // object + pixel buffer from the DIB arena and returns the guest IBitmap*
+  // (0 on failure). status receives the AEE result code.
+  uint32_t AllocateDib(IArmCore& core, int width, int height, int depth,
+                       uint32_t* status);
 
   Backend& backend_;
   int width_;
