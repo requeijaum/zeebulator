@@ -142,14 +142,26 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
 
   auto file_it = resource_files_.find(filename);
   if (file_it == resource_files_.end()) {
+    if (std::getenv("ZEEB_LOG_FILE")) {
+      std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NO FILE REGISTERED\n",
+                   filename.c_str(), id, type);
+    }
     core.SetRegister(kR0, 1);  // EFAILED-ish: unregistered resource file
     return;
   }
   const BarEntry* entry =
       file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   if (entry == nullptr) {
+    if (std::getenv("ZEEB_LOG_FILE")) {
+      std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NO DIR ENTRY\n",
+                   filename.c_str(), id, type);
+    }
     core.SetRegister(kR0, 1);  // EFAILED-ish: no directory entry for this (type, id)
     return;
+  }
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> OK size=%u\n",
+                 filename.c_str(), id, type, entry->size);
   }
 
   constexpr uint32_t kSizeOnlySentinel = 0xFFFFFFFF;
