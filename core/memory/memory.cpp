@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 namespace zeebulator {
 
@@ -91,12 +92,20 @@ void Memory::Write32(uint32_t address, uint32_t value) {
     if (value >= media_guard_start_ && value < media_guard_end_) {
       // Game (or HLE) binds a real media interface here -> remember slot.
       media_bound_slots_[address] = value;
+      if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
+        std::fprintf(stderr, "[mediaguard] BIND slot[0x%08x]=0x%08x\n",
+                     address, value);
+      }
     } else if (value == 0) {
       auto it = media_bound_slots_.find(address);
       if (it != media_bound_slots_.end()) {
         // Release-clear of a live HLE-owned media binding: skip it so the
         // Play path still finds the interface. (Genuine rebinding to a
         // different, non-zero pointer is handled by the branch above.)
+        if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
+          std::fprintf(stderr, "[mediaguard] SUPPRESS-ZERO slot[0x%08x] (keep 0x%08x)\n",
+                       address, it->second);
+        }
         return;
       }
     }
