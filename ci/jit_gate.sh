@@ -47,6 +47,19 @@ done
 echo "  titles=$total ok=$ok divergences=$div total_steps=$sumsteps"
 [ "$div" -eq 0 ] || fail "$div title(s) diverged JIT vs interpreter"
 
+echo "== [2b/3] synthetic CPU conformance suite (testkit/cputests) =="
+CPUTESTS="$HOME/projects/zeebo-emulator/testkit/run_cputests.sh"
+if [ -x "$CPUTESTS" ] || [ -f "$CPUTESTS" ]; then
+  ZEEB_BUILD="$BUILD" bash "$CPUTESTS" >/tmp/jit_gate_cputests.log 2>&1
+  tail -1 /tmp/jit_gate_cputests.log
+  # require: 0 golden failures AND 0 lockstep divergences (incl. thumb2branch
+  # regressor for the Thumb-2 BL granularity fix).
+  grep -qE "SUMMARY: [0-9]+ pass, 0 fail, 0 lockstep divergences" /tmp/jit_gate_cputests.log \
+    || { tail -20 /tmp/jit_gate_cputests.log; fail "cputests red (golden or lockstep)"; }
+else
+  echo "  (skipped: run_cputests.sh not found)"
+fi
+
 echo "== [3/3] steady-state throughput sanity (JIT must beat interpreter) =="
 if [ -x "$BENCH_LOOP" ]; then
   line=$("$BENCH_LOOP" 2000000 3 2>&1 | grep speedup)

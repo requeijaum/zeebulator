@@ -867,56 +867,63 @@ int main(int argc, char** argv) {
     }
   }
   for (const auto& pkg_path : pkg_paths) MergeGamePkgInto(vfs, pkg_path.c_str());
-  // Loose sibling-asset auto-discovery (2026-09-02): several arcade-core ports
-  // (cninja/... — the Data East cluster) open small framework/menu assets that
-  // ship as LOOSE files next to the .mod (not packed in <name>.pkg): e.g.
-  // `ding.wav`, `menusmall.fnz`, `menu.fnz`, `font.FNZ`, `*.tex`. Their own
-  // fopen-style wrapper (RE'd at cninja 0x11b754) opens them by BARE name via
-  // IFileMgr_OpenFile; with the file absent our OpenFile returns handle 0 and
-  // the game dereferences the null FILE*, wandering to pc=0 after asset load
-  // (previously mis-attributed to a "null vtable[3]" gap — it is a missing
-  // loose asset, confirmed by ZEEB_LOG_FILE: `OpenFile('ding.wav') -> 0x0`).
-  // Register every loose sibling (excluding the .mod/.pkg/.sig we already
-  // handle) under its bare name plus the same `.\\`/`roms\\` path roots the
-  // pkg entries use, so a bare-name or prefixed open both resolve. Opt-out via
-  // the same ZEEB_NO_ASSET_AUTODISCOVER=1.
+  // Loose sibling-asset resolution — LAZY, on-demand (2026-09-08, replaces the
+  // eager 2026-09-02 pass). Several arcade-core ports (cninja/... — the Data
+  // East cluster) open small framework/menu assets that ship as LOOSE files
+  // next to the .mod (not packed in <name>.pkg): e.g. `ding.wav`,
+  // `menusmall.fnz`, `menu.fnz`, `font.FNZ`, `*.tex`. Their fopen-style wrapper
+  // (RE'd at cninja 0x11b754) opens them by BARE name via IFileMgr_OpenFile;
+  // with the file absent our OpenFile returns handle 0 and the game derefs the
+  // null FILE*, wandering to pc=0.
+  //
+  // The old fix pre-registered EVERY loose sibling (under 4 path roots) at
+  // boot. That polluted the flat namespace + basename fallback and silently
+  // regressed titles that merely SHARE a folder with unrelated loose files —
+  // Double Dragon (folder 274754) went to a blank white frame (git bisect →
+  // 86463ac; ROADMAP UPDATE 20). Fix: install a VFS miss-resolver that reads a
+  // loose sibling from the host FS ONLY when the guest actually opens a name
+  // that misses every in-VFS lookup. cninja asks for ding.wav → resolved on
+  // demand; DD asks for none of them → namespace stays clean. Opt-out (skip the
+  // host FS entirely) via ZEEB_NO_ASSET_AUTODISCOVER=1.
   if (std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
     namespace fs = std::filesystem;
     try {
       fs::path own_dir = fs::absolute(argv[1]).parent_path();
-      const std::string stem = fs::path(argv[1]).stem().string();
-      for (const auto& e : fs::directory_iterator(own_dir)) {
-        if (!e.is_regular_file()) continue;
-        std::string ext = e.path().extension().string();
-        std::string lext = ext;
-        for (auto& c : lext) c = static_cast<char>(std::tolower(c));
-        if (lext == ".mod" || lext == ".pkg" || lext == ".sig") continue;
-        // Skip internal/host-side artifacts and archives handled by their own
-        // explicit paths (--bar, save/replay sidecars): registering these as
-        // loose siblings would double-register (data.bar is also passed via
-        // --bar) or shadow nothing the game opens by name. Games only open the
-        // small loose framework assets (.wav/.fnz/.tex/...) this pass targets.
-        if (lext == ".bar" || lext == ".userdata" || lext == ".savestate" ||
-            lext == ".playlog")
-          continue;
-        const std::string fname = e.path().filename().string();
-        std::vector<uint8_t> bytes;
-        try {
-          bytes = ReadFile(e.path().string().c_str());
-        } catch (const std::exception&) {
-          continue;
+      const bool log_file = std::getenv("ZEEB_LOG_FILE") != nullptr;
+      vfs.SetMissResolver([own_dir, log_file](const std::string& basename,
+                                              std::vector<uint8_t>& out) -> bool {
+        // Reject empty / path-bearing names: the resolver only matches a bare
+        // sibling filename in the game's own folder (no traversal). The .mod's
+        // own container types are never served as loose assets.
+        if (basename.empty() ||
+            basename.find('/') != std::string::npos ||
+            basename.find('\\') != std::string::npos) {
+          return false;
         }
-        // Bare name (how cninja's fopen wrapper opens ding.wav/menusmall.fnz),
-        // plus the conventional path roots used elsewhere for pkg entries.
-        vfs.AddFile(fname, bytes);
-        vfs.AddFile(".\\" + fname, bytes);
-        vfs.AddFile(".\\" + stem + "\\" + fname, bytes);
-        vfs.AddFile("roms\\" + fname, bytes);
-        std::printf("registered loose sibling asset %s (%zu bytes)\n",
-                    fname.c_str(), bytes.size());
-      }
+        fs::path cand = own_dir / basename;
+        std::error_code ec;
+        if (!fs::is_regular_file(cand, ec)) return false;
+        std::string lext = cand.extension().string();
+        for (auto& c : lext) c = static_cast<char>(std::tolower(c));
+        if (lext == ".mod" || lext == ".pkg" || lext == ".sig" ||
+            lext == ".bar" || lext == ".userdata" || lext == ".savestate" ||
+            lext == ".playlog") {
+          return false;
+        }
+        try {
+          out = ReadFile(cand.string().c_str());
+        } catch (const std::exception&) {
+          return false;
+        }
+        if (log_file) {
+          std::fprintf(stderr,
+                       "[file] lazily resolved loose sibling '%s' (%zu bytes)\n",
+                       basename.c_str(), out.size());
+        }
+        return true;
+      });
     } catch (const std::exception& e) {
-      std::fprintf(stderr, "loose-asset auto-discovery skipped: %s\n", e.what());
+      std::fprintf(stderr, "loose-asset resolver not installed: %s\n", e.what());
     }
   }
   // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
@@ -4225,6 +4232,33 @@ int main(int argc, char** argv) {
   }
   control_server.Stop();
   mirror_server.Stop();
+
+  // Watch-hold (ZEEB_WATCH_HOLD=seconds): keep the window on screen for a human
+  // to look at even after the guest's own loop ended (returned, aborted, or hit
+  // its error dialog). Without this the window vanishes the instant `running`
+  // goes false, so a batch "boot each title for N seconds and eyeball it" run
+  // only ever shows a brief flash. We keep pumping SDL events (so the WM stays
+  // responsive and the last rendered frame -- error screen included -- stays
+  // visible) and re-present the last frame until the deadline or a real
+  // window close. Purely a viewing aid; changes no guest state.
+  if (const char* hold = std::getenv("ZEEB_WATCH_HOLD")) {
+    double hold_s = std::atof(hold);
+    if (hold_s > 0.0) {
+      uint32_t deadline = SDL_GetTicks() + static_cast<uint32_t>(hold_s * 1000.0);
+      bool closed = false;
+      while (!closed && SDL_GetTicks() < deadline) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+          if (ev.type == SDL_QUIT) { closed = true; break; }
+          if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) {
+            closed = true; break;
+          }
+        }
+        backend.PumpForHold();  // keep the last frame visible + WM responsive
+        SDL_Delay(16);
+      }
+    }
+  }
 
   SDL_DestroyWindow(window);
   SDL_Quit();

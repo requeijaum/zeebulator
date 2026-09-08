@@ -126,6 +126,30 @@ int main(int argc, char** argv) {
     last_pc = pc;
     interp.Step();
     jit.Step();
+
+    // Granularity sync: the reference interpreter models Thumb BL/BLX (and any
+    // Thumb-2 32-bit encoding) as TWO 16-bit sub-steps (ARMv4T style: the first
+    // halfword loads LR-high, the second completes the branch), whereas the
+    // dynarmic JIT retires the whole 32-bit instruction in one Step(). Comparing
+    // 1:1 would catch the interpreter mid-instruction and report a spurious
+    // divergence (LR bit0 differs only because the interpreter hasn't run the
+    // second halfword yet). If the interpreter is in Thumb state and the
+    // halfword it is now about to execute is the SECOND half of a 32-bit
+    // instruction whose FIRST half we just ran, advance the interpreter one more
+    // sub-step so both cores sit on an instruction boundary before we compare.
+    if (interp.GetCpsr() & (1u << kCpsrT)) {
+      uint32_t ipc = interp.GetRegister(kPC);
+      uint16_t prev_hw = interp.GetMemory().Read16(last_pc);
+      // Thumb-2 32-bit encodings begin with 111xx where bits[12:11] != 00
+      // (0xE800/0xF000/0xF800 first halfwords). Only treat it as a two-part
+      // step when PC advanced by exactly 2 (i.e. the interpreter did a halfword
+      // sub-step) and the JIT has already moved to the instruction after.
+      bool prev_was_thumb32_first =
+          (prev_hw & 0xE000u) == 0xE000u && (prev_hw & 0x1800u) != 0;
+      if (prev_was_thumb32_first && ipc == last_pc + 2) {
+        interp.Step();
+      }
+    }
   }
 
   std::fprintf(stderr,

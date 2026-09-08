@@ -66,6 +66,21 @@ const std::vector<uint8_t>* VirtualFilesystem::Find(const std::string& name) con
       }
     }
   }
+  // Lazy loose-asset fallback (2026-09-08): everything registered has missed.
+  // Ask the harness-installed resolver to fetch this loose sibling from the
+  // host FS ON DEMAND (by basename). On a hit, memoize under the basename so
+  // repeat opens resolve directly. Only names the guest actually requests get
+  // registered -- unlike the old eager pass, this never pollutes the namespace
+  // for titles that don't ask for the file.
+  if (miss_resolver_ && !want.empty()) {
+    std::vector<uint8_t> loaded;
+    if (miss_resolver_(want, loaded)) {
+      if (files_.find(want) == files_.end()) names_.push_back(want);
+      auto& slot = files_[want];
+      slot = std::move(loaded);
+      return &slot;
+    }
+  }
   return nullptr;
 }
 

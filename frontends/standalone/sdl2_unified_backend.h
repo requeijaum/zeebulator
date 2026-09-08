@@ -101,6 +101,11 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   // shown again within the same window.
   void ShowStatusMessage(const std::string& text);
 
+  // Viewing aid for post-run "watch-hold" (game_probe's ZEEB_WATCH_HOLD): after
+  // the guest loop has ended, re-present the last composited frame so it stays
+  // on screen while a human looks at it. Public wrapper over PresentFrame().
+  void PumpForHold() { PresentFrame(); }
+
   // Reads the fully-composited current frame (real GLES app draws + 2D
   // IDisplay quad + overlay, everything the window shows) back from the
   // offscreen FBO into `out` as tightly-packed RGBA8, row 0 = TOP (already

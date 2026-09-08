@@ -161,3 +161,35 @@ TEST(VirtualFilesystem, BuildFromGgzPopulatesAllEntries) {
   ASSERT_NE(vfs.Find("sound.wav"), nullptr);
   EXPECT_EQ(*vfs.Find("sound.wav"), sound_data);
 }
+
+TEST(VirtualFilesystem, MissResolverLazilyLoadsAndCaches) {
+  VirtualFilesystem vfs;
+  vfs.AddFile("packed.dat", {0x01, 0x02});
+  int calls = 0;
+  vfs.SetMissResolver([&calls](const std::string& basename,
+                               std::vector<uint8_t>& out) -> bool {
+    ++calls;
+    if (basename == "ding.wav") { out = {0xAA, 0xBB, 0xCC}; return true; }
+    return false;
+  });
+  // A name already in the VFS never invokes the resolver.
+  ASSERT_NE(vfs.Find("packed.dat"), nullptr);
+  EXPECT_EQ(calls, 0);
+  // A miss the resolver knows is served on demand...
+  const std::vector<uint8_t>* p = vfs.Find("ding.wav");
+  ASSERT_NE(p, nullptr);
+  EXPECT_EQ(*p, (std::vector<uint8_t>{0xAA, 0xBB, 0xCC}));
+  EXPECT_EQ(calls, 1);
+  // ...and cached: the second lookup hits the map, not the resolver.
+  ASSERT_NE(vfs.Find("ding.wav"), nullptr);
+  EXPECT_EQ(calls, 1);
+  EXPECT_TRUE(vfs.Exists("ding.wav"));
+  // A miss the resolver rejects stays absent.
+  EXPECT_EQ(vfs.Find("absent.bin"), nullptr);
+}
+
+TEST(VirtualFilesystem, MissResolverIgnoredWhenUnset) {
+  VirtualFilesystem vfs;
+  vfs.AddFile("a.dat", {0x00});
+  EXPECT_EQ(vfs.Find("nothere.dat"), nullptr);  // no resolver, plain miss
+}
