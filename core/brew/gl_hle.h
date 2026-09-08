@@ -141,6 +141,8 @@ class GlHle {
 
   // Texture object management + upload.
   void GlGenTextures(IArmCore& core);
+  void GlGetString(IArmCore& core);
+  void GlGetIntegerv(IArmCore& core);
   void GlDeleteTextures(IArmCore& core);
   void GlBindTexture(IArmCore& core);
   void GlTexParameterx(IArmCore& core);

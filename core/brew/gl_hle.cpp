@@ -437,6 +437,60 @@ void GlHle::GlGenTextures(IArmCore& core) {
   }
 }
 
+void GlHle::GlGetString(IArmCore& core) {
+  // const GLubyte *glGetString(GLenum name) -- R0 is name.
+  // Values mirror the BREW/AMR GLES 1.1 driver as reverse-engineered from
+  // the zeebx reference: several arcade titles (ironsight included) probe
+  // GL_EXTENSIONS for GL_OES_draw_texture and abort graphics init if it is
+  // absent -- an empty stub here makes them skip the matrix setup entirely.
+  constexpr GLenum kGlVendor = 0x1F00;
+  constexpr GLenum kGlRenderer = 0x1F01;
+  constexpr GLenum kGlVersion = 0x1F02;
+  constexpr GLenum kGlExtensions = 0x1F03;
+  const char* value = "";
+  switch (core.GetRegister(kR0)) {
+    case kGlVendor: value = "Zeebulator"; break;
+    case kGlRenderer: value = "Zeebulator Software Rasterizer"; break;
+    case kGlVersion: value = "OpenGL ES-CM 1.1"; break;
+    case kGlExtensions: value = "GL_OES_draw_texture GL_ATI_imageon_misc "; break;
+    default: break;
+  }
+  WriteCString(core.GetMemory(), kQueryStringBufferAddr, value);
+  core.SetRegister(kR0, kQueryStringBufferAddr);
+}
+
+void GlHle::GlGetIntegerv(IArmCore& core) {
+  // void glGetIntegerv(GLenum pname, GLint *params) -- R0 pname, R1 params.
+  // Constants mirror the zeebx gles::integer() table.
+  uint32_t params = core.GetRegister(kR1);
+  if (params == 0) return;
+  Memory& memory = core.GetMemory();
+  auto write1 = [&](int32_t v) { memory.Write32(params, static_cast<uint32_t>(v)); };
+  switch (core.GetRegister(kR0)) {
+    case 0x0D33: write1(1024); break;              // GL_MAX_TEXTURE_SIZE
+    case 0x84E2: write1(1); break;                 // GL_MAX_TEXTURE_UNITS
+    case 0x0D31: write1(8); break;                 // GL_MAX_LIGHTS
+    case 0x0D36:                                   // GL_MAX_MODELVIEW_STACK_DEPTH
+    case 0x0D38:                                   // GL_MAX_PROJECTION_STACK_DEPTH
+    case 0x0D39: write1(16); break;                // GL_MAX_TEXTURE_STACK_DEPTH
+    case 0x0D3A:                                   // GL_MAX_VIEWPORT_DIMS (2 values)
+      memory.Write32(params, 640);
+      memory.Write32(params + 4, 480);
+      break;
+    case 0x0D50: write1(4); break;                 // GL_SUBPIXEL_BITS
+    case 0x0D52:                                   // GL_RED_BITS
+    case 0x0D54: write1(5); break;                 // GL_BLUE_BITS
+    case 0x0D53: write1(6); break;                 // GL_GREEN_BITS
+    case 0x0D55:                                   // GL_ALPHA_BITS
+    case 0x86A2: write1(0); break;                 // GL_NUM_COMPRESSED_TEXTURE_FORMATS
+    case 0x0D56: write1(16); break;                // GL_DEPTH_BITS
+    case 0x0D57: write1(8); break;                 // GL_STENCIL_BITS
+    case 0x80E8:                                   // GL_MAX_ELEMENTS_VERTICES
+    case 0x80E9: write1(65535); break;             // GL_MAX_ELEMENTS_INDICES
+    default: write1(0); break;
+  }
+}
+
 void GlHle::GlDeleteTextures(IArmCore& core) {
   // void glDeleteTextures(GLsizei n, const GLuint *textures)
   auto n = static_cast<int32_t>(core.GetRegister(kR0));
@@ -652,8 +706,8 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlFrustumx(c); },     // 35 glFrustumx
       [this](IArmCore& c) { GlGenTextures(c); },  // 36 glGenTextures
       Stub,                                       // 37 glGetError
-      Stub,                                       // 38 glGetIntegerv
-      Stub,                                       // 39 glGetString
+      [this](IArmCore& c) { GlGetIntegerv(c); },  // 38 glGetIntegerv
+      [this](IArmCore& c) { GlGetString(c); },    // 39 glGetString
       Stub,                                       // 40 glHint
       Stub,                                       // 41 glLightModelx
       Stub,                                       // 42 glLightModelxv
