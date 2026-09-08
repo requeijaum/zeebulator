@@ -143,9 +143,11 @@ uint16_t ToRgb565(float r, float g, float b) {
 }
 
 std::array<float, 3> FromRgb565(uint16_t p) {
-  float r = static_cast<float>(((p >> 11) & 0x1F) << 3) / 255.0f;
-  float g = static_cast<float>(((p >> 5) & 0x3F) << 2) / 255.0f;
-  float b = static_cast<float>((p & 0x1F) << 3) / 255.0f;
+  // Replicacao de bits (nao shift lossy): 5-bit 0x1F -> 0xFF, nao 0xF8.
+  uint8_t r5 = (p >> 11) & 0x1F, g6 = (p >> 5) & 0x3F, b5 = p & 0x1F;
+  float r = static_cast<float>((r5 << 3) | (r5 >> 2)) / 255.0f;
+  float g = static_cast<float>((g6 << 2) | (g6 >> 4)) / 255.0f;
+  float b = static_cast<float>((b5 << 3) | (b5 >> 2)) / 255.0f;
   return {r, g, b};
 }
 
@@ -381,9 +383,10 @@ void SoftGlBackend::TexImage2D(GLenum /*target*/, const GlTextureImage& image) {
       uint16_t v = static_cast<uint16_t>(p[i * 2] | (p[i * 2 + 1] << 8));
       uint8_t r, g, b, a;
       if (image.type == kGlUnsignedShort565) {
-        r = static_cast<uint8_t>(((v >> 11) & 0x1F) << 3);
-        g = static_cast<uint8_t>(((v >> 5) & 0x3F) << 2);
-        b = static_cast<uint8_t>((v & 0x1F) << 3);
+        uint8_t r5 = (v >> 11) & 0x1F, g6 = (v >> 5) & 0x3F, b5 = v & 0x1F;
+        r = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
+        g = static_cast<uint8_t>((g6 << 2) | (g6 >> 4));
+        b = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
         a = 255;
       } else if (image.type == kGlUnsignedShort4444) {
         r = static_cast<uint8_t>(((v >> 12) & 0xF) * 17);
@@ -391,9 +394,10 @@ void SoftGlBackend::TexImage2D(GLenum /*target*/, const GlTextureImage& image) {
         b = static_cast<uint8_t>(((v >> 4) & 0xF) * 17);
         a = static_cast<uint8_t>((v & 0xF) * 17);
       } else {  // 5551
-        r = static_cast<uint8_t>(((v >> 11) & 0x1F) << 3);
-        g = static_cast<uint8_t>(((v >> 6) & 0x1F) << 3);
-        b = static_cast<uint8_t>(((v >> 1) & 0x1F) << 3);
+        uint8_t r5 = (v >> 11) & 0x1F, g5 = (v >> 6) & 0x1F, b5 = (v >> 1) & 0x1F;
+        r = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
+        g = static_cast<uint8_t>((g5 << 3) | (g5 >> 2));
+        b = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
         a = (v & 1) ? 255 : 0;
       }
       tex.pixels[i] = {r, g, b, a};

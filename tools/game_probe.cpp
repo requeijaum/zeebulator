@@ -3603,9 +3603,15 @@ int main(int argc, char** argv) {
         std::fprintf(f, "P6\n%d %d\n255\n", w, h);
         for (size_t i = 0; i < fb.size(); ++i) {
           uint16_t px = fb[i];
-          uint8_t r = static_cast<uint8_t>(((px >> 11) & 0x1F) << 3);
-          uint8_t g = static_cast<uint8_t>(((px >> 5) & 0x3F) << 2);
-          uint8_t b = static_cast<uint8_t>((px & 0x1F) << 3);
+          // Expansao 565->888 com replicacao de bits (nao shift lossy): um
+          // 5-bit 0x1F vira 0xFF, nao 0xF8 -- casa o tom do zeebx (que guarda
+          // o framebuffer em RGBA8 e so converte na apresentacao).
+          uint8_t r5 = (px >> 11) & 0x1F;
+          uint8_t g6 = (px >> 5) & 0x3F;
+          uint8_t b5 = px & 0x1F;
+          uint8_t r = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
+          uint8_t g = static_cast<uint8_t>((g6 << 2) | (g6 >> 4));
+          uint8_t b = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
           uint8_t rgb[3] = {r, g, b};
           std::fwrite(rgb, 1, 3, f);
         }
