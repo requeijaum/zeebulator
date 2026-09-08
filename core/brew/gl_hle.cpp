@@ -139,6 +139,78 @@ void GlHle::EglCreateWindowSurface(IArmCore& core) {
 
 void GlHle::EglDestroySurface(IArmCore& core) { core.SetRegister(kR0, kEglTrue); }
 
+// Shared EGL config/surface attribute table (mirrors zeebx gles::config_attrib;
+// used as an RE oracle, no code copied). 640x480 is the console screen.
+namespace {
+constexpr int32_t kScreenW = 640;
+constexpr int32_t kScreenH = 480;
+bool EglConfigAttrib(EGLint attribute, int32_t* out) {
+  switch (attribute) {
+    case 0x3020: *out = 16; return true;       // EGL_BUFFER_SIZE
+    case 0x3024: case 0x3022: *out = 5; return true;  // EGL_RED_SIZE / EGL_BLUE_SIZE
+    case 0x3023: *out = 6; return true;        // EGL_GREEN_SIZE
+    case 0x3021: *out = 0; return true;        // EGL_ALPHA_SIZE
+    case 0x3025: *out = 16; return true;       // EGL_DEPTH_SIZE
+    case 0x3026: *out = 8; return true;        // EGL_STENCIL_SIZE
+    case 0x3027: case 0x302B: case 0x3034: *out = 0x3038; return true;  // CAVEAT/VISUAL_TYPE/TRANSPARENT_TYPE = EGL_NONE
+    case 0x3028: *out = 1; return true;        // EGL_CONFIG_ID
+    case 0x302C: *out = kScreenW; return true; // EGL_MAX_PBUFFER_WIDTH
+    case 0x302A: *out = kScreenH; return true; // EGL_MAX_PBUFFER_HEIGHT
+    case 0x302D: *out = kScreenW * kScreenH; return true;  // EGL_MAX_PBUFFER_PIXELS
+    case 0x302E: *out = 1; return true;        // EGL_NATIVE_RENDERABLE = EGL_TRUE
+    case 0x3033: *out = 0x0007; return true;   // EGL_SURFACE_TYPE = all bits
+    case 0x303F: *out = 0x308E; return true;   // EGL_COLOR_BUFFER_TYPE = EGL_RGB_BUFFER
+    case 0x3040: *out = 0x0001; return true;   // EGL_RENDERABLE_TYPE = EGL_OPENGL_ES_BIT
+    case 0x303B: case 0x303C: *out = 1; return true;  // MIN/MAX_SWAP_INTERVAL
+    case 0x3029: case 0x302F: case 0x3031: case 0x3032:  // LEVEL/VISUAL_ID/SAMPLES/SAMPLE_BUFFERS
+    case 0x3037: case 0x3038: case 0x3039:     // TRANSPARENT_{RED,GREEN,BLUE}
+    case 0x303A: case 0x303D: *out = 0; return true;  // BIND_TO_TEXTURE_{RGB,RGBA}
+    default: return false;
+  }
+}
+}  // namespace
+
+void GlHle::EglGetConfigAttrib(IArmCore& core) {
+  // EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
+  //                               EGLint attribute, EGLint *value)
+  EGLint attribute = static_cast<EGLint>(core.GetRegister(kR2));
+  uint32_t value = core.GetRegister(kR3);
+  int32_t out = 0;
+  if (EglConfigAttrib(attribute, &out)) {
+    WriteEGLintIfNonNull(core.GetMemory(), value, out);
+    core.SetRegister(kR0, kEglTrue);
+  } else {
+    core.SetRegister(kR0, kEglFalse);
+  }
+}
+
+void GlHle::EglQuerySurface(IArmCore& core) {
+  // EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface surface,
+  //                            EGLint attribute, EGLint *value)
+  // Games read EGL_WIDTH/EGL_HEIGHT here to size their projection -- a blind
+  // Stub left it unwritten, so the guest built a degenerate projection and
+  // never issued the real matrix setup (ironsight went black).
+  constexpr EGLint kEglHeight = 0x3056;
+  constexpr EGLint kEglWidth = 0x3057;
+  EGLint attribute = static_cast<EGLint>(core.GetRegister(kR2));
+  uint32_t value = core.GetRegister(kR3);
+  int32_t out = 0;
+  bool ok = true;
+  if (attribute == kEglWidth) {
+    out = kScreenW;
+  } else if (attribute == kEglHeight) {
+    out = kScreenH;
+  } else {
+    ok = EglConfigAttrib(attribute, &out);
+  }
+  if (ok) {
+    WriteEGLintIfNonNull(core.GetMemory(), value, out);
+    core.SetRegister(kR0, kEglTrue);
+  } else {
+    core.SetRegister(kR0, kEglFalse);
+  }
+}
+
 void GlHle::EglCreateContext(IArmCore& core) { core.SetRegister(kR0, kContextHandle); }
 
 void GlHle::EglDestroyContext(IArmCore& core) {
@@ -768,12 +840,12 @@ uint32_t GlHle::BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_addres
       Stub,                                                // 8  eglGetProcAddress
       Stub,                                                // 9  eglGetConfigs
       [this](IArmCore& c) { EglChooseConfig(c); },           // 10 eglChooseConfig
-      Stub,                                                // 11 eglGetConfigAttrib
+      [this](IArmCore& c) { EglGetConfigAttrib(c); },        // 11 eglGetConfigAttrib
       [this](IArmCore& c) { EglCreateWindowSurface(c); },    // 12 eglCreateWindowSurface
       Stub,                                                // 13 eglCreatePixmapSurface
       Stub,                                                // 14 eglCreatePbufferSurface
       [this](IArmCore& c) { EglDestroySurface(c); },         // 15 eglDestroySurface
-      Stub,                                                // 16 eglQuerySurface
+      [this](IArmCore& c) { EglQuerySurface(c); },           // 16 eglQuerySurface
       [this](IArmCore& c) { EglCreateContext(c); },          // 17 eglCreateContext
       [this](IArmCore& c) { EglDestroyContext(c); },         // 18 eglDestroyContext
       [this](IArmCore& c) { EglMakeCurrent(c); },            // 19 eglMakeCurrent

@@ -100,6 +100,8 @@ class GlHle {
   void EglChooseConfig(IArmCore& core);
   void EglCreateWindowSurface(IArmCore& core);
   void EglDestroySurface(IArmCore& core);
+  void EglQuerySurface(IArmCore& core);
+  void EglGetConfigAttrib(IArmCore& core);
   void EglCreateContext(IArmCore& core);
   void EglDestroyContext(IArmCore& core);
   void EglMakeCurrent(IArmCore& core);
