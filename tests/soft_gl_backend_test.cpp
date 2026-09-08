@@ -63,6 +63,7 @@ TEST(SoftGlBackend, ClearFillsFramebuffer) {
   SoftGlBackend gl(fb, kW, kH);
   gl.ClearColor(1.0f, 0.0f, 0.0f, 1.0f);
   gl.Clear(kGL_COLOR_BUFFER_BIT);
+  gl.SwapBuffers();  // buffer 565 do IDisplay so e populado na apresentacao
   for (uint16_t p : fb) {
     auto rgb = Rgb565ToRgb(p);
     EXPECT_GT(rgb[0], 240);  // vermelho forte
@@ -79,6 +80,7 @@ TEST(SoftGlBackend, TriangleFillsCenterPixel) {
   GlVertexArrays quad = FullscreenQuad({0.0f, 1.0f, 0.0f, 1.0f});
   gl.DrawArrays(kGL_TRIANGLES, quad);
   // O pixel central deve ficar verde.
+  gl.SwapBuffers();
   uint16_t center = fb[(kH / 2) * kW + (kW / 2)];
   auto rgb = Rgb565ToRgb(center);
   EXPECT_LT(rgb[0], 16);
@@ -104,6 +106,7 @@ TEST(SoftGlBackend, AlphaBlendMixesWithBackground) {
   GlVertexArrays quad = FullscreenQuad({0.0f, 0.0f, 0.0f, 0.5f});
   gl.DrawArrays(kGL_TRIANGLES, quad);
   // 0*0.5 + 1*0.5 = 0.5 -> cinza médio.
+  gl.SwapBuffers();
   uint16_t center = fb[(kH / 2) * kW + (kW / 2)];
   auto rgb = Rgb565ToRgb(center);
   EXPECT_GT(rgb[0], 100);
@@ -151,6 +154,7 @@ TEST(SoftGlBackend, TextureSampleModulatesColor) {
   // Quad branco com UV -> modula: branco * azul = azul.
   GlVertexArrays quad = FullscreenQuad({1.0f, 1.0f, 1.0f, 1.0f}, /*with_uv=*/true);
   gl.DrawArrays(kGL_TRIANGLES, quad);
+  gl.SwapBuffers();
   uint16_t center = fb[(kH / 2) * kW + (kW / 2)];
   auto rgb = Rgb565ToRgb(center);
   EXPECT_LT(rgb[0], 16);
@@ -190,6 +194,7 @@ TEST(SoftGlBackend, DepthTestOrdersFragments) {
   GlVertexArrays far_green = quad_z({0, 1, 0, 1}, 0.5f);
   gl.DrawArrays(kGL_TRIANGLES, near_red);
   gl.DrawArrays(kGL_TRIANGLES, far_green);
+  gl.SwapBuffers();
   uint16_t center = fb[(kH / 2) * kW + (kW / 2)];
   auto rgb = Rgb565ToRgb(center);
   EXPECT_GT(rgb[0], 240);  // permanece vermelho

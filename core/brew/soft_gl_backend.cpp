@@ -135,20 +135,12 @@ int WrapIndex(GLenum mode, int index, int size) {
   return r;
 }
 
-uint16_t ToRgb565(float r, float g, float b) {
-  int ri = static_cast<int>(std::max(0.0f, std::min(1.0f, r)) * 255.0f + 0.5f);
-  int gi = static_cast<int>(std::max(0.0f, std::min(1.0f, g)) * 255.0f + 0.5f);
-  int bi = static_cast<int>(std::max(0.0f, std::min(1.0f, b)) * 255.0f + 0.5f);
-  return static_cast<uint16_t>(((ri >> 3) << 11) | ((gi >> 2) << 5) | (bi >> 3));
+uint8_t ToU8(float v) {
+  return static_cast<uint8_t>(std::max(0.0f, std::min(1.0f, v)) * 255.0f + 0.5f);
 }
 
-std::array<float, 3> FromRgb565(uint16_t p) {
-  // Replicacao de bits (nao shift lossy): 5-bit 0x1F -> 0xFF, nao 0xF8.
-  uint8_t r5 = (p >> 11) & 0x1F, g6 = (p >> 5) & 0x3F, b5 = p & 0x1F;
-  float r = static_cast<float>((r5 << 3) | (r5 >> 2)) / 255.0f;
-  float g = static_cast<float>((g6 << 2) | (g6 >> 4)) / 255.0f;
-  float b = static_cast<float>((b5 << 3) | (b5 >> 2)) / 255.0f;
-  return {r, g, b};
+uint16_t U8ToRgb565(uint8_t r, uint8_t g, uint8_t b) {
+  return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 
 }  // namespace
@@ -157,6 +149,7 @@ SoftGlBackend::SoftGlBackend(std::vector<uint16_t>& framebuffer, int width, int 
     : framebuffer_(framebuffer),
       width_(width),
       height_(height),
+      color_(static_cast<size_t>(width) * height, std::array<uint8_t, 3>{0, 0, 0}),
       depth_(static_cast<size_t>(width) * height, 1.0f) {
   vp_w_ = width;
   vp_h_ = height;
@@ -176,13 +169,19 @@ void SoftGlBackend::MultTop(const Matrix& m) {
 }
 
 void SoftGlBackend::SwapBuffers() {
+  // Quantiza o buffer de cor RGBA8 interno para o framebuffer 565 do IDisplay
+  // uma unica vez, na apresentacao (como o zeebx) -- sem acumulo de erro 565.
+  for (size_t i = 0; i < color_.size() && i < framebuffer_.size(); ++i) {
+    framebuffer_[i] = U8ToRgb565(color_[i][0], color_[i][1], color_[i][2]);
+  }
   if (on_present_) on_present_(present_user_);
 }
 
 void SoftGlBackend::Clear(GLbitfield mask) {
   if (mask & kColorBufferBit) {
-    uint16_t c = ToRgb565(clear_color_[0], clear_color_[1], clear_color_[2]);
-    std::fill(framebuffer_.begin(), framebuffer_.end(), c);
+    std::array<uint8_t, 3> c{ToU8(clear_color_[0]), ToU8(clear_color_[1]),
+                             ToU8(clear_color_[2])};
+    std::fill(color_.begin(), color_.end(), c);
   }
   if (mask & kDepthBufferBit) {
     std::fill(depth_.begin(), depth_.end(), clear_depth_);
@@ -620,7 +619,8 @@ void SoftGlBackend::RasterizePrepared(const Vertex& v0, const Vertex& v1, const 
 
       if (alpha_test_ && !Compare(alpha_func_, src[3], alpha_ref_)) continue;
 
-      std::array<float, 3> dst_rgb = FromRgb565(framebuffer_[idx]);
+      std::array<float, 3> dst_rgb{color_[idx][0] / 255.0f, color_[idx][1] / 255.0f,
+                                   color_[idx][2] / 255.0f};
       std::array<float, 4> out;
       if (blend_) {
         std::array<float, 4> dst{dst_rgb[0], dst_rgb[1], dst_rgb[2], 1.0f};
@@ -632,7 +632,7 @@ void SoftGlBackend::RasterizePrepared(const Vertex& v0, const Vertex& v1, const 
       } else {
         out = src;
       }
-      framebuffer_[idx] = ToRgb565(out[0], out[1], out[2]);
+      color_[idx] = {ToU8(out[0]), ToU8(out[1]), ToU8(out[2])};
       if (depth_test_ && depth_mask_) depth_[idx] = z;
     }
   }

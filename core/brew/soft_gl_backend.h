@@ -122,6 +122,11 @@ class SoftGlBackend : public GlBackend {
   void RasterizePrepared(const Vertex& v0, const Vertex& v1, const Vertex& v2);
 
   std::vector<uint16_t>& framebuffer_;
+  // Buffer de cor interno RGBA8 (como o zeebx): todo blend acontece aqui em 8
+  // bits e so e quantizado para o framebuffer_ 565 do IDisplay no SwapBuffers.
+  // Evita acumulo de erro de arredondamento por-fragmento (155 draws sobrepostos
+  // escureciam a cena quando o blend lia/escrevia direto no 565).
+  std::vector<std::array<uint8_t, 3>> color_;
   int width_;
   int height_;
   std::vector<float> depth_;  // z-buffer, width_*height_, NDC [0,1]
