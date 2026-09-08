@@ -105,6 +105,11 @@ class GlBackend {
   virtual void Rotate(float angle_degrees, float x, float y, float z) = 0;
   virtual void Scale(float x, float y, float z) = 0;
   virtual void Color4(float r, float g, float b, float a) = 0;
+  // glTexEnv(GL_TEXTURE_ENV_MODE, mode): controla como o texel combina com a
+  // cor do fragmento (MODULATE 0x2100 default, REPLACE 0x1E01, DECAL, ADD).
+  // Sem isto, MODULATE fixo escurecia texturas que o guest pediu em REPLACE
+  // pela cor de vertice corrente (ironsight: R*0.52/G*0.86/B*1.0).
+  virtual void TexEnvMode(GLenum mode) { (void)mode; }
   // Real, confirmed-needed for real OBM1 sprite transparency (TASKS.md/
   // PHASE8_LOG.md Phase 8): Double Dragon's own real disassembly shows
   // it pairing GL_ALPHA_TEST (glAlphaFuncx(GL_NOTEQUAL, 0.0), discarding

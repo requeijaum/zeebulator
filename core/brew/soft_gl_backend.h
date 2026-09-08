@@ -71,6 +71,7 @@ class SoftGlBackend : public GlBackend {
   void Rotate(float angle_degrees, float x, float y, float z) override;
   void Scale(float x, float y, float z) override;
   void Color4(float r, float g, float b, float a) override;
+  void TexEnvMode(GLenum mode) override { texture_env_mode_ = mode; }
   void AlphaFunc(GLenum func, float ref) override;
   void BlendFunc(GLenum sfactor, GLenum dfactor) override;
   void DepthFunc(GLenum func) override;
@@ -141,6 +142,7 @@ class SoftGlBackend : public GlBackend {
   std::array<float, 4> clear_color_{0, 0, 0, 1};
   float clear_depth_ = 1.0f;
   std::array<float, 4> current_color_{1, 1, 1, 1};
+  GLenum texture_env_mode_ = 0x2100;  // GL_MODULATE (default GLES1.x)
 
   bool blend_ = false;
   GLenum blend_src_ = 1;   // GL_ONE

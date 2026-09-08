@@ -358,6 +358,21 @@ void GlHle::GlColor4x(IArmCore& core) {
                    FixedToFloat(static_cast<GLfixed>(core.GetRegister(kR3))));
 }
 
+// glTexEnvx(target, pname, param): so GL_TEXTURE_ENV_MODE (0x2200) importa para
+// o pipeline fixed-function. param chega como enum cru (nao 16.16). A variante
+// vetorial glTexEnvxv passa um ponteiro em R2 -> ler a primeira palavra.
+void GlHle::GlTexEnvx(IArmCore& core) {
+  if (core.GetRegister(kR1) == 0x2200) {
+    backend_.TexEnvMode(static_cast<GLenum>(core.GetRegister(kR2)));
+  }
+}
+
+void GlHle::GlTexEnvxv(IArmCore& core) {
+  if (core.GetRegister(kR1) == 0x2200) {
+    backend_.TexEnvMode(static_cast<GLenum>(core.GetMemory().Read32(core.GetRegister(kR2))));
+  }
+}
+
 // --- Vertex arrays / draw calls -------------------------------------------
 
 void GlHle::GlVertexPointer(IArmCore& core) {
@@ -812,8 +827,8 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       Stub,                                       // 69 glStencilMask
       Stub,                                       // 70 glStencilOp
       [this](IArmCore& c) { GlTexCoordPointer(c); }, // 71 glTexCoordPointer
-      Stub,                                       // 72 glTexEnvx
-      Stub,                                       // 73 glTexEnvxv
+      [this](IArmCore& c) { GlTexEnvx(c); },       // 72 glTexEnvx
+      [this](IArmCore& c) { GlTexEnvxv(c); },      // 73 glTexEnvxv
       [this](IArmCore& c) { GlTexImage2D(c); },   // 74 glTexImage2D
       [this](IArmCore& c) { GlTexParameterx(c); }, // 75 glTexParameterx
       Stub,                                       // 76 glTexSubImage2D

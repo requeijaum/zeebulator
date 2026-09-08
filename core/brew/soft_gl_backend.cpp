@@ -613,8 +613,23 @@ void SoftGlBackend::RasterizePrepared(const Vertex& v0, const Vertex& v1, const 
       std::array<float, 4> src{attr(0), attr(1), attr(2), attr(3)};
       if (tex) {
         std::array<float, 4> texel = tex->Sample(attr(4), attr(5));
-        // GL_MODULATE (padrão fixed-function; o que o ddragonz usa).
-        for (int c = 0; c < 4; ++c) src[c] *= texel[c];
+        switch (texture_env_mode_) {
+          case 0x1E01:  // GL_REPLACE: texel substitui a cor do fragmento
+            src = texel;
+            break;
+          case 0x2101:  // GL_DECAL: mistura RGB por alpha do texel, mantem alpha
+            for (int c = 0; c < 3; ++c)
+              src[c] = src[c] * (1.0f - texel[3]) + texel[c] * texel[3];
+            break;
+          case 0x0104:  // GL_ADD: soma RGB (satura), multiplica alpha
+            for (int c = 0; c < 3; ++c) src[c] = std::min(1.0f, src[c] + texel[c]);
+            src[3] *= texel[3];
+            break;
+          case 0x2100:  // GL_MODULATE (default fixed-function)
+          default:
+            for (int c = 0; c < 4; ++c) src[c] *= texel[c];
+            break;
+        }
       }
 
       if (alpha_test_ && !Compare(alpha_func_, src[3], alpha_ref_)) continue;

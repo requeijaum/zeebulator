@@ -130,6 +130,8 @@ class GlHle {
   void GlRotatex(IArmCore& core);
   void GlScalex(IArmCore& core);
   void GlColor4x(IArmCore& core);
+  void GlTexEnvx(IArmCore& core);
+  void GlTexEnvxv(IArmCore& core);
 
   // Vertex arrays / draw calls.
   void GlVertexPointer(IArmCore& core);
