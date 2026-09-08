@@ -192,6 +192,19 @@ class IDisplayHle {
   }
   const std::vector<uint16_t>& LiveFramebuffer() const { return framebuffer_; }
 
+  // Acessor mutável ao framebuffer vivo, para o rasterizador de software
+  // (SoftGlBackend, ZEEB_GL_SOFT=1) compor o conteúdo GL diretamente no
+  // MESMO buffer RGB565 que o screenshot do canal de controle apresenta
+  // (LastPresentedFramebuffer cai neste `framebuffer_` quando ainda não
+  // houve Update()). Sem isto, o backend headless rasterizaria num buffer
+  // paralelo que a captura nunca enxerga -- exatamente o teto "GL-HLE não
+  // rasteriza offscreen" (UPDATE 19). O SoftGlBackend, ao ver eglSwapBuffers,
+  // chama PresentLiveFramebuffer() para marcar has_presented_ e commitar o
+  // frame. Deliberadamente separado dos caminhos 2D (BlitRgba/DrawRect):
+  // um título puramente GL como o ddragonz nunca chama IDISPLAY_Update, então
+  // RepresentLastFrame ficaria eternamente no-op para ele.
+  std::vector<uint16_t>& MutableFramebuffer() { return framebuffer_; }
+
  private:
   void DrawText(IArmCore& core);
   void DrawRect(IArmCore& core);

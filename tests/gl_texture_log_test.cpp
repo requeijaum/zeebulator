@@ -48,6 +48,8 @@ class FakeGlBackend : public GlBackend {
   void Disable(GLenum) override {}
   void MatrixMode(GLenum) override {}
   void LoadIdentity() override {}
+  void LoadMatrix(const float[16]) override {}
+  void MultMatrix(const float[16]) override {}
   void PushMatrix() override {}
   void PopMatrix() override {}
   void Ortho(float, float, float, float, float, float) override {}

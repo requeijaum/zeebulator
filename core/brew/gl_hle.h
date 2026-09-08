@@ -118,6 +118,8 @@ class GlHle {
   void GlDepthMask(IArmCore& core);
   void GlMatrixMode(IArmCore& core);
   void GlLoadIdentity(IArmCore& core);
+  void GlLoadMatrixx(IArmCore& core);
+  void GlMultMatrixx(IArmCore& core);
   void GlPushMatrix(IArmCore& core);
   void GlPopMatrix(IArmCore& core);
   void GlOrthox(IArmCore& core);

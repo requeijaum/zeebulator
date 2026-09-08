@@ -43,6 +43,8 @@ class FakeGlBackend : public zeebulator::GlBackend {
   void Disable(zeebulator::GLenum cap) override { last_disabled = cap; }
   void MatrixMode(zeebulator::GLenum mode) override { last_matrix_mode = mode; }
   void LoadIdentity() override { ++load_identity_count; }
+  void LoadMatrix(const float[16]) override {}
+  void MultMatrix(const float[16]) override {}
   void PushMatrix() override { ++push_matrix_count; }
   void PopMatrix() override { ++pop_matrix_count; }
   void Ortho(float left, float right, float bottom, float top, float near_plane,

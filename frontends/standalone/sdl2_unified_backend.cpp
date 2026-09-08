@@ -628,6 +628,8 @@ void Sdl2UnifiedBackend::Enable(GLenum cap) { glEnable(cap); }
 void Sdl2UnifiedBackend::Disable(GLenum cap) { glDisable(cap); }
 void Sdl2UnifiedBackend::MatrixMode(GLenum mode) { glMatrixMode(mode); }
 void Sdl2UnifiedBackend::LoadIdentity() { glLoadIdentity(); }
+void Sdl2UnifiedBackend::LoadMatrix(const float m[16]) { glLoadMatrixf(m); }
+void Sdl2UnifiedBackend::MultMatrix(const float m[16]) { glMultMatrixf(m); }
 void Sdl2UnifiedBackend::PushMatrix() { glPushMatrix(); }
 void Sdl2UnifiedBackend::PopMatrix() { glPopMatrix(); }
 void Sdl2UnifiedBackend::Ortho(float left, float right, float bottom, float top,

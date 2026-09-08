@@ -129,6 +129,8 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   void Disable(GLenum cap) override;
   void MatrixMode(GLenum mode) override;
   void LoadIdentity() override;
+  void LoadMatrix(const float m[16]) override;
+  void MultMatrix(const float m[16]) override;
   void PushMatrix() override;
   void PopMatrix() override;
   void Ortho(float left, float right, float bottom, float top, float near_plane,

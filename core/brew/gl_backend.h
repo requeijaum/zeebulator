@@ -82,6 +82,10 @@ class GlBackend {
   virtual void Disable(GLenum cap) = 0;
   virtual void MatrixMode(GLenum mode) = 0;
   virtual void LoadIdentity() = 0;
+  // Substitui / multiplica a matriz corrente por uma matriz 4x4 column-major
+  // (16 floats), como glLoadMatrixx / glMultMatrixx (após FixedToFloat).
+  virtual void LoadMatrix(const float m[16]) = 0;
+  virtual void MultMatrix(const float m[16]) = 0;
   // Real, confirmed-needed for real per-sprite transform scoping
   // (TASKS.md/PHASE8_LOG.md Phase 8): both were silent no-op Stubs
   // until real front/back sprite ordering was found live-broken --

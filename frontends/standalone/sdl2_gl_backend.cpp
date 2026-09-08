@@ -46,6 +46,8 @@ void Sdl2GlBackend::Enable(GLenum cap) { glEnable(cap); }
 void Sdl2GlBackend::Disable(GLenum cap) { glDisable(cap); }
 void Sdl2GlBackend::MatrixMode(GLenum mode) { glMatrixMode(mode); }
 void Sdl2GlBackend::LoadIdentity() { glLoadIdentity(); }
+void Sdl2GlBackend::LoadMatrix(const float m[16]) { glLoadMatrixf(m); }
+void Sdl2GlBackend::MultMatrix(const float m[16]) { glMultMatrixf(m); }
 void Sdl2GlBackend::PushMatrix() { glPushMatrix(); }
 void Sdl2GlBackend::PopMatrix() { glPopMatrix(); }
 void Sdl2GlBackend::Ortho(float left, float right, float bottom, float top, float near_plane,

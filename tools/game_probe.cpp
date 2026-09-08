@@ -30,6 +30,7 @@
 #include "core/audio/soundfont_synth.h"
 #include "core/brew/file_hle.h"
 #include "core/brew/gl_hle.h"
+#include "core/brew/soft_gl_backend.h"
 #include "core/brew/idisplay.h"
 #include "core/brew/interface_object.h"
 #include "core/brew/ishell.h"
@@ -1054,7 +1055,24 @@ int main(int argc, char** argv) {
   // guest memory expects, which a cold, non-interactive boot never
   // recreates on its own the way real gameplay would.
   zeebulator::GlTextureRecordingBackend gl_recorder(backend);
-  zeebulator::GlHle gl_hle(gl_recorder);
+  // ZEEB_GL_SOFT=1: rasterizador de software (SoftGlBackend) compõe o
+  // conteúdo GL diretamente no framebuffer RGB565 do IDisplay, para que o
+  // screenshot headless enxergue geometria real (destrava UPDATE 19). Fica
+  // atrás de env var para não alterar o default (recorder), preservando o
+  // oráculo congelado. SwapBuffers marca has_presented_ via
+  // PresentLiveFramebuffer.
+  std::unique_ptr<zeebulator::SoftGlBackend> soft_gl;
+  zeebulator::GlBackend* gl_backend = &gl_recorder;
+  if (const char* gs = std::getenv("ZEEB_GL_SOFT"); gs && gs[0] == '1') {
+    soft_gl = std::make_unique<zeebulator::SoftGlBackend>(
+        display.MutableFramebuffer(), kWidth, kHeight);
+    soft_gl->SetPresentCallback(
+        [](void* u) { static_cast<zeebulator::IDisplayHle*>(u)->PresentLiveFramebuffer(); },
+        &display);
+    gl_backend = soft_gl.get();
+    std::fprintf(stderr, "[gl] SoftGlBackend ativo (ZEEB_GL_SOFT=1)\n");
+  }
+  zeebulator::GlHle gl_hle(*gl_backend);
   zeebulator::Mixer mixer(kAudioSampleRate);
   zeebulator::FileHle file_hle(cpu.GetMemory(), hle, vfs, /*object_region=*/0x80100000);
   {

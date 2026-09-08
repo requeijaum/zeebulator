@@ -47,6 +47,8 @@ class RecordingGlBackend : public GlBackend {
   void Disable(zeebulator::GLenum) override {}
   void MatrixMode(zeebulator::GLenum mode) override { matrix_modes.push_back(mode); }
   void LoadIdentity() override { ++load_identity_count; }
+  void LoadMatrix(const float[16]) override {}
+  void MultMatrix(const float[16]) override {}
   void PushMatrix() override {}
   void PopMatrix() override {}
   void Ortho(float left, float right, float bottom, float top, float near_plane,

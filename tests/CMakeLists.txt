@@ -49,6 +49,7 @@ add_executable(zeebulator_tests
   ${PROJECT_SOURCE_DIR}/frontends/standalone/letterbox.cpp
   save_state_test.cpp
   gl_texture_log_test.cpp
+  soft_gl_backend_test.cpp
   zpad_edges_test.cpp
   ${PROJECT_SOURCE_DIR}/frontends/standalone/zpad_edges.cpp
 )

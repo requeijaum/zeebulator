@@ -183,6 +183,8 @@ void GlHle::GlClearColorx(IArmCore& core) {
 }
 
 void GlHle::GlViewport(IArmCore& core) {
+  GpuLog("Viewport x=%d y=%d w=%d h=%d", core.GetRegister(kR0), core.GetRegister(kR1),
+         core.GetRegister(kR2), core.GetRegister(kR3));
   backend_.Viewport(static_cast<int>(core.GetRegister(kR0)),
                      static_cast<int>(core.GetRegister(kR1)),
                      static_cast<int>(core.GetRegister(kR2)),
@@ -222,6 +224,21 @@ void GlHle::GlDepthMask(IArmCore& core) {
 
 void GlHle::GlMatrixMode(IArmCore& core) { backend_.MatrixMode(core.GetRegister(kR0)); }
 void GlHle::GlLoadIdentity(IArmCore&) { backend_.LoadIdentity(); }
+void GlHle::GlLoadMatrixx(IArmCore& core) {
+  // void glLoadMatrixx(const GLfixed *m) -- 16 GLfixed column-major em r0.
+  uint32_t ptr = core.GetRegister(kR0);
+  float m[16];
+  for (int i = 0; i < 16; ++i)
+    m[i] = FixedToFloat(static_cast<GLfixed>(core.GetMemory().Read32(ptr + i * 4u)));
+  backend_.LoadMatrix(m);
+}
+void GlHle::GlMultMatrixx(IArmCore& core) {
+  uint32_t ptr = core.GetRegister(kR0);
+  float m[16];
+  for (int i = 0; i < 16; ++i)
+    m[i] = FixedToFloat(static_cast<GLfixed>(core.GetMemory().Read32(ptr + i * 4u)));
+  backend_.MultMatrix(m);
+}
 void GlHle::GlPushMatrix(IArmCore&) { backend_.PushMatrix(); }
 void GlHle::GlPopMatrix(IArmCore&) { backend_.PopMatrix(); }
 
@@ -644,12 +661,12 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       Stub,                                       // 44 glLightxv
       Stub,                                       // 45 glLineWidthx
       [this](IArmCore& c) { GlLoadIdentity(c); }, // 46 glLoadIdentity
-      Stub,                                       // 47 glLoadMatrixx
+      [this](IArmCore& c) { GlLoadMatrixx(c); },  // 47 glLoadMatrixx
       Stub,                                       // 48 glLogicOp
       Stub,                                       // 49 glMaterialx
       Stub,                                       // 50 glMaterialxv
       [this](IArmCore& c) { GlMatrixMode(c); },   // 51 glMatrixMode
-      Stub,                                       // 52 glMultMatrixx
+      [this](IArmCore& c) { GlMultMatrixx(c); },  // 52 glMultMatrixx
       Stub,                                       // 53 glMultiTexCoord4x
       Stub,                                       // 54 glNormal3x
       [this](IArmCore& c) { GlNormalPointer(c); }, // 55 glNormalPointer

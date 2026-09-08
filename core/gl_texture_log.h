@@ -114,6 +114,8 @@ class GlTextureRecordingBackend : public GlBackend {
   void Disable(GLenum cap) override { real_.Disable(cap); }
   void MatrixMode(GLenum mode) override { real_.MatrixMode(mode); }
   void LoadIdentity() override { real_.LoadIdentity(); }
+  void LoadMatrix(const float m[16]) override { real_.LoadMatrix(m); }
+  void MultMatrix(const float m[16]) override { real_.MultMatrix(m); }
   void PushMatrix() override { real_.PushMatrix(); }
   void PopMatrix() override { real_.PopMatrix(); }
   void Ortho(float left, float right, float bottom, float top, float near_plane,

@@ -76,6 +76,8 @@ add_library(zeebulator_core STATIC
   brew/gl_backend.h
   brew/gl_hle.cpp
   brew/gl_hle.h
+  brew/soft_gl_backend.cpp
+  brew/soft_gl_backend.h
   brew/hid_hle.cpp
   brew/hid_hle.h
   brew/compat/title_quirks.cpp
