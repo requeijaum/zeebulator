@@ -35,6 +35,8 @@ add_library(zeebulator_core STATIC
   loader/pakz.h
   loader/wav.cpp
   loader/wav.h
+  loader/mp3.cpp
+  loader/mp3.h
   loader/midi.cpp
   loader/midi.h
   loader/atitc.cpp
@@ -105,3 +107,7 @@ target_include_directories(zeebulator_core PRIVATE
   ${tinysoundfont_SOURCE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
+# minimp3 is a bundled single-header MP3 decoder (public domain / CC0), used
+# by loader/mp3.cpp. Header-only: just needs its dir on the include path.
+target_include_directories(zeebulator_core PRIVATE
+  ${PROJECT_SOURCE_DIR}/third_party/minimp3)

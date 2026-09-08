@@ -1,6 +1,7 @@
 #include "core/brew/media_hle.h"
 
 #include "core/control/debug_sink.h"
+#include "core/loader/mp3.h"
 
 #include <zlib.h>
 
@@ -119,6 +120,13 @@ std::optional<WavAudio> DecodeAudioBuffer(const std::vector<uint8_t>& data, int 
     if (!midi) return std::nullopt;
     return RenderMidi(*midi, mix_sample_rate, soundfont_synth);
   }
+  // MP3: an ID3v2 tag ("ID3") or a raw MPEG audio sync word (0xFF followed by
+  // 0xE_/0xF_). minimp3 tolerates leading junk, so a soft sniff is enough --
+  // ParseMp3 still returns nullopt if no real frame decodes.
+  if (data.size() >= 3 && ((data[0] == 'I' && data[1] == 'D' && data[2] == '3') ||
+                           (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0))) {
+    return ParseMp3(data.data(), data.size());
+  }
   return std::nullopt;
 }
 
@@ -147,6 +155,9 @@ std::optional<WavAudio> DecodeAudioFile(const std::string& name, const std::vect
     auto midi = ParseMidi(data.data(), data.size());
     if (!midi) return std::nullopt;
     return RenderMidi(*midi, mix_sample_rate, soundfont_synth);
+  }
+  if (HasExtension(name, ".mp3")) {
+    return ParseMp3(data.data(), data.size());
   }
   return std::nullopt;
 }

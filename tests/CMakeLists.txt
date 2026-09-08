@@ -33,6 +33,7 @@ add_executable(zeebulator_tests
   hid_hle_test.cpp
   gl_lifecycle_test.cpp
   wav_test.cpp
+  mp3_test.cpp
   mixer_test.cpp
   media_hle_test.cpp
   midi_test.cpp
