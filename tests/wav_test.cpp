@@ -64,6 +64,34 @@ std::vector<uint8_t> BuildWav(uint16_t audio_format, uint16_t channels, uint32_t
   return out;
 }
 
+// Builds a RIFF/WAVE with an IMA-ADPCM (format 17) fmt chunk and a raw data
+// block. block_align lives in the fmt chunk at offset 12.
+std::vector<uint8_t> BuildWavAdpcm(uint16_t channels, uint32_t sample_rate,
+                                   uint16_t block_align, const std::vector<uint8_t>& data) {
+  std::vector<uint8_t> fmt_chunk;
+  AppendU16LE(fmt_chunk, 17);  // WAVE_FORMAT_IMA_ADPCM
+  AppendU16LE(fmt_chunk, channels);
+  AppendU32LE(fmt_chunk, sample_rate);
+  AppendU32LE(fmt_chunk, 0);            // byte rate (unused by decoder)
+  AppendU16LE(fmt_chunk, block_align);  // offset 12
+  AppendU16LE(fmt_chunk, 4);            // bits per sample (nibble)
+
+  std::vector<uint8_t> body;
+  AppendTag(body, "fmt ");
+  AppendU32LE(body, static_cast<uint32_t>(fmt_chunk.size()));
+  body.insert(body.end(), fmt_chunk.begin(), fmt_chunk.end());
+  AppendTag(body, "data");
+  AppendU32LE(body, static_cast<uint32_t>(data.size()));
+  body.insert(body.end(), data.begin(), data.end());
+
+  std::vector<uint8_t> out;
+  AppendTag(out, "RIFF");
+  AppendU32LE(out, static_cast<uint32_t>(4 + body.size()));
+  AppendTag(out, "WAVE");
+  out.insert(out.end(), body.begin(), body.end());
+  return out;
+}
+
 }  // namespace
 
 TEST(Wav, ParsesSixteenBitMonoPcm) {
@@ -119,10 +147,57 @@ TEST(Wav, OddSizedChunkPaddingDoesNotDesyncSubsequentChunks) {
 }
 
 TEST(Wav, RejectsNonPcmFormatTagInsteadOfMisdecoding) {
+  // format 2 (MS-ADPCM) is not handled -> reject, don't mis-decode.
   std::vector<uint8_t> pcm = {1, 2, 3, 4};
-  auto wav = BuildWav(/*format=*/0x0011 /* IMA ADPCM */, 1, 22050, 4, pcm);
+  auto wav = BuildWav(/*format=*/0x0002 /* MS ADPCM */, 1, 22050, 4, pcm);
   auto result = ParseWav(wav.data(), wav.size());
   EXPECT_FALSE(result.has_value());
+}
+
+TEST(Wav, DecodesImaAdpcmMonoRoundTrip) {
+  // Encode a known PCM ramp to IMA-ADPCM (single block), decode via ParseWav,
+  // and check the header sample is exact and the decode tracks the signal.
+  // block: [predictor lo, hi, index, reserved] then nibble body.
+  const int16_t start = 100;
+  std::vector<uint8_t> block;
+  AppendU16LE(block, static_cast<uint16_t>(start));  // initial predictor
+  block.push_back(0);                                // step index
+  block.push_back(0);                                // reserved
+  // 4 body bytes = 8 nibbles = 8 decoded samples. Nibble 0 => +step/8.
+  for (int i = 0; i < 4; ++i) block.push_back(0x00);
+
+  uint16_t block_align = static_cast<uint16_t>(block.size());
+  auto wav = BuildWavAdpcm(/*channels=*/1, /*rate=*/8000, block_align, block);
+  auto result = ParseWav(wav.data(), wav.size());
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->channels, 1);
+  EXPECT_EQ(result->sample_rate, 8000);
+  // header sample (exact) + 8 decoded from the 4 body bytes.
+  ASSERT_EQ(result->samples.size(), 9u);
+  EXPECT_EQ(result->samples[0], start) << "header predictor must round-trip exactly";
+  // nibble 0 with step index 0 (step=7): delta = 7>>3 = 0 -> predictor unchanged.
+  for (size_t i = 1; i < result->samples.size(); ++i)
+    EXPECT_EQ(result->samples[i], start) << "zero nibbles keep predictor flat at index 0";
+}
+
+TEST(Wav, DecodesImaAdpcmNibblesFollowStepTable) {
+  const int16_t start = 0;
+  std::vector<uint8_t> block;
+  AppendU16LE(block, static_cast<uint16_t>(start));
+  block.push_back(3);  // step index 3 -> step table[3] = 10
+  block.push_back(0);
+  // nibble 0x4 has magnitude bit 4 set -> delta = step>>3 + step = 1 + 10 = 11.
+  block.push_back(0x04);
+  block.push_back(0x00);
+  block.push_back(0x00);
+  block.push_back(0x00);
+
+  auto wav = BuildWavAdpcm(1, 8000, static_cast<uint16_t>(block.size()), block);
+  auto result = ParseWav(wav.data(), wav.size());
+  ASSERT_TRUE(result.has_value());
+  ASSERT_GE(result->samples.size(), 2u);
+  EXPECT_EQ(result->samples[0], 0) << "header";
+  EXPECT_EQ(result->samples[1], 11) << "nibble 0x4 at step index 3 (step=10): +11";
 }
 
 TEST(Wav, RejectsFileMissingRiffHeader) {

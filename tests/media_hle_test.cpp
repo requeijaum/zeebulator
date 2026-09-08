@@ -477,7 +477,7 @@ TEST(MediaHle, RejectsNonPcmWavInsteadOfMisdecoding) {
   std::vector<uint8_t> body;
   AppendTag(body, "fmt ");
   AppendU32LE(body, 16);
-  AppendU16LE(body, 0x0011);  // IMA ADPCM, not PCM
+  AppendU16LE(body, 0x0002);  // MS-ADPCM: an unsupported compressed format
   AppendU16LE(body, 1);
   AppendU32LE(body, 22050);
   AppendU32LE(body, 22050);
