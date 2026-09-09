@@ -119,6 +119,9 @@ class IShellHle {
   // immediately; the default zero dereferenced a null vtable.
   void SetLoadResObjectReturn(uint32_t object_ptr);
 
+  // Optional ThreadHle hook for cooperative threads
+  void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
+
   // Schedules `callback`/`user_data` exactly the way a real
   // ISHELL_SetTimer(ms, callback, user_data) call would (same re-arm-
   // by-re-registering-the-same-identity semantics as SetTimerImpl),
@@ -182,6 +185,7 @@ class IShellHle {
   void LoadResObjectImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
   void GetHandlerImpl(IArmCore& core);
+  void DetectTypeImpl(IArmCore& core);
 
   Memory& memory_;
   HleRuntime& hle_;
@@ -192,10 +196,9 @@ class IShellHle {
   std::unordered_map<uint32_t, std::function<uint32_t()>> factories_;
   std::vector<PendingTimer> timers_;
   std::unordered_map<std::string, BarArchive> resource_files_;
-  // Per-object vtable-slot-43 call counter -- see Build()'s own doc
-  // comment on that slot for the real evidence this stateful behavior
-  // is grounded in.
-  std::unordered_map<uint32_t, uint32_t> slot43_call_counts_;
+  std::unordered_map<std::string, uint32_t> interned_mimes_;
+  uint32_t next_mime_addr_ = 0x0008d000;
+  class ThreadHle* thread_hle_ = nullptr;
 };
 
 }  // namespace zeebulator

@@ -65,6 +65,7 @@ ModRuntime::ModRuntime(Memory& memory, HleRuntime& hle, uint32_t heap_region, ui
                         uint32_t context_address)
     : memory_(memory),
       hle_(hle),
+      heap_start_(heap_region),
       heap_cursor_(heap_region),
       heap_end_(heap_region + heap_size),
       context_address_(context_address) {}
@@ -114,7 +115,10 @@ void ModRuntime::SetContextAddress(uint32_t context_address) {
   fifth_pending_ = false;
 }
 
+constexpr uint32_t kAllocNoZmem = 0x80000000u;
+
 uint32_t ModRuntime::Allocate(uint32_t size) {
+  size &= ~kAllocNoZmem;
   uint32_t aligned = (size + 3) & ~3u;  // word-align every allocation
   if (aligned > heap_end_ - heap_cursor_) {
     return 0;  // NULL: out of (emulated) heap space
@@ -128,37 +132,20 @@ void ModRuntime::MallocImpl(IArmCore& core) {
   core.SetRegister(kR0, Allocate(core.GetRegister(kR0)));
 }
 
-void ModRuntime::ReallocImpl(IArmCore& core) {
-  // void *realloc(void *ptr, size_t size)
-  //
-  // Real disassembly of Peggle (TASKS.md Phase 8, PHASE8_LOG.md) shows
-  // two independent real growable-array implementations (56-byte and
-  // 4-byte elements) calling this static-base slot identically:
-  // `(old_ptr=array's current buffer, new_size=new_element_count *
-  // element_size)`, checking the result for non-null before overwriting
-  // their own buffer pointer -- exactly realloc's real contract,
-  // including "leave the old block alone on failure" (this never writes
-  // to `old_ptr`, only reads from it).
-  //
-  // This allocator has no free-list (see Allocate()/FREE's own doc
-  // comment), so unlike real realloc there's no way to know the old
-  // block's real size to copy just that many bytes -- copies `size`
-  // bytes from the old block instead. Safe in this bump-allocator's
-  // specific case even when that overreads past the old block's real
-  // content: bump-allocated memory is never reused, so anything past
-  // the old content is either still-zeroed, never-touched memory, or a
-  // later allocation that hasn't happened yet -- and the real callers
-  // observed always immediately overwrite that tail with new elements
-  // right after a successful grow anyway.
-  uint32_t old_ptr = core.GetRegister(kR0);
-  uint32_t size = core.GetRegister(kR1);
+uint32_t ModRuntime::Reallocate(uint32_t old_ptr, uint32_t size) {
   uint32_t new_ptr = Allocate(size);
   if (new_ptr != 0 && old_ptr != 0) {
     for (uint32_t i = 0; i < size; ++i) {
       memory_.Write8(new_ptr + i, memory_.Read8(old_ptr + i));
     }
   }
-  core.SetRegister(kR0, new_ptr);
+  return new_ptr;
+}
+
+void ModRuntime::ReallocImpl(IArmCore& core) {
+  uint32_t old_ptr = core.GetRegister(kR0);
+  uint32_t size = core.GetRegister(kR1);
+  core.SetRegister(kR0, Reallocate(old_ptr, size));
 }
 
 void ModRuntime::DecompressGzipInPlaceImpl(IArmCore& core) {
@@ -703,6 +690,16 @@ void ModRuntime::GetAppContextImpl(IArmCore& core) {
     memory_.Write32(context_address_ + kAppContextSixthObjectOffset, sixth_context_object_);
     sixth_pending_ = false;
   }
+  // Slot 0xc0 in BREW SDK 4.0.2 is IApplet* GetAppInstance(void).
+  // During CreateInstance (within AEEApplet_New), the applet pointer is written into *ppObj.
+  // If pp_obj_address_ is set and points to a non-null applet, return *pp_obj_address_.
+  if (pp_obj_address_ != 0) {
+    uint32_t live_app = memory_.Read32(pp_obj_address_);
+    if (live_app != 0) {
+      core.SetRegister(kR0, live_app);
+      return;
+    }
+  }
   core.SetRegister(kR0, context_address_);
 }
 
@@ -779,7 +776,19 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t bounded_strcpy_fn = hle_.Register([this](IArmCore& core) { BoundedStrcpyImpl(core); });
   uint32_t strstr_fn = hle_.Register([this](IArmCore& core) { StrstrImpl(core); });
   uint32_t sprintf_fn = hle_.Register([this](IArmCore& core) { SprintfImpl(core); });
-  uint32_t dbgprintf_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t dbgprintf_fn = hle_.Register([this](IArmCore& core) {
+    uint32_t fmt_addr = core.GetRegister(kR0);
+    std::string fmt;
+    for (uint32_t i = 0; i < 512; ++i) {
+      char c = static_cast<char>(memory_.Read8(fmt_addr + i));
+      if (!c) break;
+      fmt.push_back(c);
+    }
+    // Print guest dbgprintf messages cleanly to stdout for game debugging
+    std::printf("[guest dbgprintf] %s (args: r1=0x%08x r2=0x%08x r3=0x%08x)\n",
+                fmt.c_str(), core.GetRegister(kR1), core.GetRegister(kR2), core.GetRegister(kR3));
+    core.SetRegister(kR0, 0);
+  });
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
   uint32_t unknown_0x40_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });

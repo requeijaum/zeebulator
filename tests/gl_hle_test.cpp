@@ -352,10 +352,16 @@ TEST(GlHle, EglQueryStringNeverReturnsNull) {
   }
 }
 
-TEST(GlHle, EglQueryStringExtensionsIsEmptySinceNoneAreImplemented) {
+TEST(GlHle, EglQueryStringExtensionsReportsQualcommSurfaceScale) {
   Fixture f;
   uint32_t addr = f.hle.CallArmFunction(f.EglSlot(7), 0, /*EGL_EXTENSIONS=*/0x3055);
-  EXPECT_EQ(f.cpu.GetMemory().Read8(addr), 0u) << "empty string: first byte is the terminator";
+  std::string s;
+  for (uint32_t i = 0;; ++i) {
+    char c = static_cast<char>(f.cpu.GetMemory().Read8(addr + i));
+    if (c == '\0') break;
+    s += c;
+  }
+  EXPECT_NE(s.find("EGL_QUALCOMM_surface_scale"), std::string::npos);
 }
 
 TEST(GlHle, DrawArraysGathersByteVerticesAndNormalizesUnsignedByteColors) {

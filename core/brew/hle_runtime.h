@@ -46,6 +46,9 @@ class HleRuntime {
   // value a vtable slot points at), or empty string if none/unknown.
   std::string LabelForAddress(uint32_t sentinel_address) const;
 
+  // Returns the configured base address for call-out traps.
+  uint32_t trap_base() const { return trap_base_; }
+
   // Calls into the app's own ARM code at `target` with up to 4 register
   // arguments, and runs the interpreter until that call returns. Returns
   // R0, the call's return value. Any UnimplementedInstruction the app

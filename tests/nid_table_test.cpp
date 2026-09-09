@@ -24,7 +24,7 @@ TEST(NidTable, KnownClassIdsResolveToStableNames) {
   EXPECT_STREQ(KnownClassName(0x01014bc3u), "AEECLSID_GL");
   // The ABD wall object and its real applet id are named -- the whole
   // point of the table for Phase 9d.
-  EXPECT_STREQ(KnownClassName(0x0103d8ecu), "ABD_RENDER_SCAFFOLD");
+  EXPECT_STREQ(KnownClassName(0x0103d8ecu), "AEECLSID_QEGL");
   EXPECT_STREQ(KnownClassName(0x0108e356u), "APP_ALIEN_BREAKER_DELUXE");
 }
 

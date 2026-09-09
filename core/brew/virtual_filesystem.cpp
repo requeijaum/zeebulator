@@ -52,15 +52,33 @@ const std::vector<uint8_t>* VirtualFilesystem::Find(const std::string& name) con
   it = files_.find(c);
   if (it != files_.end()) return &it->second;
   // basename fallback: match the tail segment against each registered file's
-  // own basename.
+  // own basename (case-insensitive, as BREW filesystem is case-insensitive).
   auto base_of = [](const std::string& s) {
     size_t p = s.find_last_of('/');
     return p == std::string::npos ? s : s.substr(p + 1);
   };
+  auto iequals = [](const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (std::tolower(static_cast<unsigned char>(a[i])) !=
+          std::tolower(static_cast<unsigned char>(b[i]))) {
+        return false;
+      }
+    }
+    return true;
+  };
   std::string want = base_of(c);
   if (!want.empty()) {
+    // Exact match first
     for (const auto& n : names_) {
       if (base_of(n) == want) {
+        auto jt = files_.find(n);
+        if (jt != files_.end()) return &jt->second;
+      }
+    }
+    // Case-insensitive match across registered names
+    for (const auto& n : names_) {
+      if (iequals(base_of(n), want) || iequals(n, c)) {
         auto jt = files_.find(n);
         if (jt != files_.end()) return &jt->second;
       }

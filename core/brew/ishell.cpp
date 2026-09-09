@@ -1,10 +1,11 @@
 #include "core/brew/ishell.h"
 
 #include <cstdio>
-#include <cstdlib>
-#include <utility>
+#include <cstring>
+#include <algorithm>
 
 #include "core/brew/interface_object.h"
+#include "core/brew/thread_hle.h"
 #include "core/brew/nid_table.h"
 
 namespace zeebulator {
@@ -70,24 +71,38 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
 
 void IShellHle::GetDeviceInfoImpl(IArmCore& core) {
   // void GetDeviceInfo(IShell *po, AEEDeviceInfo *pdi)
-  // po is R0 (unused, matches "this"), pdi R1. Real AEEDeviceInfo (see
-  // the real bundled AEEShell.h reference, research/docs/
-  // sdk_installer_extract/brew_sdk_headers_reference/) starts with
-  // `uint16 cxScreen; uint16 cyScreen;` at offsets 0/2 -- confirmed
-  // against real Double Dragon disassembly (TASKS.md/PHASE8_LOG.md
-  // Phase 8): its own real screen-size-query call site reads exactly
-  // those two offsets out of this call's own output buffer, and (before
-  // this fix) got 0/0 back from this slot's old blind-stub behavior,
-  // producing a real, confirmed-via-live-GL-trace degenerate
-  // `glViewport(0,0,1,0)` call downstream. Every other real
-  // AEEDeviceInfo field is left zeroed (this project doesn't have
-  // evidence any real game reads them yet) -- not a claim the rest of
-  // the struct is correctly populated, just that these two confirmed-
-  // read fields are.
+  // po is R0 (unused, matches "this"), pdi R1.
+  // Full AEEDeviceInfo mapping based on official BREW SDK and zeebx (machine.rs:2690):
+  // Offset 0..15: 8 uint16 fields (cxScreen, cyScreen, cxAltScreen, cyAltScreen, cxScrollBar, wEncoding, wMenuTextScroll, wColorDepth)
+  // Offset 24: dwRAM (64MB)
+  // If requested wStructSize >= 64, fill extended fields (dwNetLinger, dwSleepDefer, wMaxPath, dwPlatformID)
   uint32_t pdi = core.GetRegister(kR1);
   if (pdi != 0) {
+    uint16_t requested = memory_.Read16(pdi + 44);
+
+    // Zero up to dwLang (44 bytes)
+    for (uint32_t off = 0; off < 44; off += 4) {
+      memory_.Write32(pdi + off, 0);
+    }
+
     memory_.Write16(pdi + 0, static_cast<uint16_t>(screen_width_));   // cxScreen
     memory_.Write16(pdi + 2, static_cast<uint16_t>(screen_height_));  // cyScreen
+    memory_.Write16(pdi + 4, 0);                                       // cxAltScreen
+    memory_.Write16(pdi + 6, 0);                                       // cyAltScreen
+    memory_.Write16(pdi + 8, 8);                                       // cxScrollBar
+    memory_.Write16(pdi + 10, 3);                                      // wEncoding (AEE_ENC_ISOLATIN1)
+    memory_.Write16(pdi + 12, 0);                                      // wMenuTextScroll
+    memory_.Write16(pdi + 14, 16);                                     // wColorDepth (16-bit 565)
+
+    memory_.Write32(pdi + 24, 64 * 1024 * 1024);                      // dwRAM (64MB heap)
+
+    if (requested >= 64) {
+      memory_.Write16(pdi + 44, 64);  // wStructSize
+      memory_.Write32(pdi + 48, 0);   // dwNetLinger
+      memory_.Write32(pdi + 52, 0);   // dwSleepDefer
+      memory_.Write16(pdi + 56, 64);  // wMaxPath (AEE_MAX_FILE_NAME)
+      memory_.Write32(pdi + 60, 0);   // dwPlatformID
+    }
   }
   core.SetRegister(kR0, 0);
 }
@@ -114,7 +129,19 @@ void IShellHle::ScheduleTimer(uint32_t ms, uint32_t callback, uint32_t user_data
 
 void IShellHle::SetTimerImpl(IArmCore& core) {
   // int SetTimer(IShell *ps, uint32 dwCount, PFNNOTIFY pfnNotify, void *pUser)
-  ScheduleTimer(core.GetRegister(kR1), core.GetRegister(kR2), core.GetRegister(kR3));
+  uint32_t ms = core.GetRegister(kR1);
+  uint32_t callback = core.GetRegister(kR2);
+  uint32_t user_data = core.GetRegister(kR3);
+
+  // If callback == user_data, this is an AEECallback* struct:
+  // pfnNotify is at offset 16 (+0x10), pNotifyData is at offset 20 (+0x14).
+  if (callback != 0 && callback == user_data) {
+    uint32_t pfn = memory_.Read32(callback + 16);
+    uint32_t data = memory_.Read32(callback + 20);
+    ScheduleTimer(ms, pfn, data);
+  } else {
+    ScheduleTimer(ms, callback, user_data);
+  }
   core.SetRegister(kR0, 0);  // SUCCESS
 }
 
@@ -122,21 +149,36 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
   // int CancelTimer(IShell *ps, PFNNOTIFY pfnNotify, void *pUser)
   uint32_t callback = core.GetRegister(kR1);
   uint32_t user_data = core.GetRegister(kR2);
-  for (auto it = timers_.begin(); it != timers_.end(); ++it) {
-    if (it->callback == callback && it->user_data == user_data) {
-      timers_.erase(it);
-      core.SetRegister(kR0, 0);  // SUCCESS
-      return;
+  if (callback != 0 && callback == user_data) {
+    uint32_t pfn = memory_.Read32(callback + 16);
+    uint32_t data = memory_.Read32(callback + 20);
+    callback = pfn;
+    user_data = data;
+  }
+  // BREW SDK specification (and zeebx machine.rs:2182):
+  // When pfnNotify is null, cancel ALL timers associated with this context (user_data).
+  bool erased = false;
+  for (auto it = timers_.begin(); it != timers_.end();) {
+    if (it->user_data == user_data && (callback == 0 || it->callback == callback)) {
+      it = timers_.erase(it);
+      erased = true;
+    } else {
+      ++it;
     }
   }
-  core.SetRegister(kR0, 1);  // EFAILED-ish: no matching timer
+  core.SetRegister(kR0, erased ? 0 : 1);
 }
 
 void IShellHle::ResumeImpl(IArmCore& core) {
   // int ISHELL_Resume(IShell *ps, AEECallback *pCallback)
-  // Invokes or queues callback immediately (ms=0).
+  // Invokes or queues callback immediately (ms=0), or schedules a cooperative thread.
   uint32_t pcb = core.GetRegister(kR1);
   if (pcb != 0) {
+    if (thread_hle_ != nullptr && thread_hle_->IsResumeCallback(pcb)) {
+      thread_hle_->ResumeByCallback(pcb);
+      core.SetRegister(kR0, 0);  // SUCCESS
+      return;
+    }
     // AEECallback layout: pfnNotify at +16, pNotifyData at +20 (or +4/+8 depending on struct variant)
     // If it's a direct callback function pointer:
     uint32_t pfn = memory_.Read32(pcb + 16);
@@ -231,6 +273,107 @@ void IShellHle::GetHandlerImpl(IArmCore& core) {
   core.SetRegister(kR0, cls == kAudioMediaCls ? cls : 0);
 }
 
+void IShellHle::DetectTypeImpl(IArmCore& core) {
+  // int DetectType(IShell *po, const void *cpBuf, uint32 *pdwSize, const char *cpszName, const char **pcpszMIME)
+  // Canonical BREW SDK 4.0.2 / zeebx machine.rs:2209.
+  uint32_t buf_addr = core.GetRegister(kR1);
+  uint32_t size_ptr = core.GetRegister(kR2);
+  uint32_t name_ptr = core.GetRegister(kR3);
+  uint32_t sp = core.GetRegister(kSP);
+  uint32_t mime_ptr = memory_.Read32(sp);
+
+  constexpr uint32_t kDetectTypeBytes = 16;
+  constexpr uint32_t kEneedMore = 35;  // ENEEDMORE from AEEError.h
+  constexpr uint32_t kEnoType = 34;    // ENOTYPE from AEEError.h
+
+  // Sem dados e sem nome, a pergunta é: "de quantos bytes você precisa?"
+  if (buf_addr == 0 && name_ptr == 0) {
+    if (size_ptr != 0) {
+      memory_.Write32(size_ptr, kDetectTypeBytes);
+    }
+    core.SetRegister(kR0, kEneedMore);
+    return;
+  }
+
+  uint32_t available = (size_ptr != 0) ? memory_.Read32(size_ptr) : 0;
+  uint32_t read_len = std::min(available, kDetectTypeBytes);
+  std::vector<uint8_t> bytes(read_len);
+  for (uint32_t i = 0; i < read_len; ++i) {
+    bytes[i] = memory_.Read8(buf_addr + i);
+  }
+  std::string name = (name_ptr != 0) ? ReadCString(memory_, name_ptr) : "";
+
+  auto starts = [&](const uint8_t* magic, size_t len) {
+    if (bytes.size() < len) return false;
+    return std::memcmp(bytes.data(), magic, len) == 0;
+  };
+
+  const char* detected_mime = nullptr;
+  const uint8_t png_magic[] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  const uint8_t jpg_magic[] = {0xff, 0xd8, 0xff};
+  const uint8_t midi_magic[] = {'M', 'T', 'h', 'd'};
+  const uint8_t id3_magic[] = {'I', 'D', '3'};
+  const uint8_t amr_magic[] = {'#', '!', 'A', 'M', 'R'};
+
+  if (starts(png_magic, sizeof(png_magic))) {
+    detected_mime = "image/png";
+  } else if (starts(jpg_magic, sizeof(jpg_magic))) {
+    detected_mime = "image/jpeg";
+  } else if (bytes.size() >= 6 && (std::memcmp(bytes.data(), "GIF87a", 6) == 0 || std::memcmp(bytes.data(), "GIF89a", 6) == 0)) {
+    detected_mime = "image/gif";
+  } else if (bytes.size() >= 2 && bytes[0] == 'B' && bytes[1] == 'M') {
+    detected_mime = "image/bmp";
+  } else if (starts(midi_magic, sizeof(midi_magic))) {
+    detected_mime = "audio/mid";
+  } else if (starts(id3_magic, sizeof(id3_magic)) || (bytes.size() >= 2 && bytes[0] == 0xff && (bytes[1] & 0xe0) == 0xe0)) {
+    detected_mime = "audio/mpeg";
+  } else if (bytes.size() >= 12 && std::memcmp(bytes.data(), "RIFF", 4) == 0 && std::memcmp(bytes.data() + 8, "WAVE", 4) == 0) {
+    detected_mime = "audio/wav";
+  } else if (starts(amr_magic, sizeof(amr_magic))) {
+    detected_mime = "audio/amr";
+  } else if (!name.empty()) {
+    auto dot = name.find_last_of('.');
+    if (dot != std::string::npos) {
+      std::string ext = name.substr(dot + 1);
+      for (char& c : ext) c = static_cast<char>(std::tolower(c));
+      if (ext == "png") detected_mime = "image/png";
+      else if (ext == "jpg" || ext == "jpeg") detected_mime = "image/jpeg";
+      else if (ext == "gif") detected_mime = "image/gif";
+      else if (ext == "bmp") detected_mime = "image/bmp";
+      else if (ext == "mid" || ext == "midi") detected_mime = "audio/mid";
+      else if (ext == "mp3") detected_mime = "audio/mpeg";
+      else if (ext == "wav") detected_mime = "audio/wav";
+      else if (ext == "amr") detected_mime = "audio/amr";
+      else if (ext == "qcp") detected_mime = "audio/vnd.qcelp";
+      else if (ext == "txt") detected_mime = "text/plain";
+    }
+  }
+
+  if (detected_mime != nullptr) {
+    // Escreve string estática/internada na memória guest se mime_ptr for fornecido
+    if (mime_ptr != 0) {
+      // Aloca buffer permanente para a string MIME se não existir
+      auto it = interned_mimes_.find(detected_mime);
+      uint32_t str_addr = 0;
+      if (it != interned_mimes_.end()) {
+        str_addr = it->second;
+      } else {
+        str_addr = next_mime_addr_;
+        size_t slen = std::strlen(detected_mime);
+        next_mime_addr_ += static_cast<uint32_t>((slen + 4) & ~3u);
+        for (size_t i = 0; i <= slen; ++i) {
+          memory_.Write8(str_addr + static_cast<uint32_t>(i), static_cast<uint8_t>(detected_mime[i]));
+        }
+        interned_mimes_[detected_mime] = str_addr;
+      }
+      memory_.Write32(mime_ptr, str_addr);
+    }
+    core.SetRegister(kR0, 0);  // SUCCESS
+  } else {
+    core.SetRegister(kR0, kEnoType);
+  }
+}
+
 std::vector<IShellHle::ExpiredTimer> IShellHle::Tick(uint32_t elapsed_ms) {
   std::vector<ExpiredTimer> expired;
   for (auto it = timers_.begin(); it != timers_.end();) {
@@ -308,84 +451,20 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       // HID device scaffold) rather than pinned exactly to slot 43, so the
       // next real call into this range doesn't reproduce the same
       // undersized-vtable crash.
-      Stub,  // 42 unconfirmed
-      // 43: real, confirmed 3-arg out-param shape, still-unidentified
-      // real meaning. Real Alien Breaker Deluxe disassembly (`abd.mod`
-      // 0x101360-0x101374, a real per-object lazy-init routine gating a
-      // real object-pointer field this project's own live tracing
-      // confirmed stays null and crashes a later real call otherwise)
-      // calls this slot `(shell, dw=0, &pOut)` and requires *two* real
-      // conditions to proceed past a real bail-out branch: the literal
-      // return value 35 exactly (`cmp r0, #35`, not just "nonzero"), and
-      // `*pOut != 0` one instruction later.
-      //
-      // *pOut isn't a pointer real code dereferences, though -- confirmed
-      // live it flows on, unmodified, into a real raw unsigned comparison
-      // much further down the same real function (`abd.mod` 0x101550,
-      // `cmp [real handle from an earlier real lookup], pOut-value`) that
-      // decides between a real success path and a real "not ready yet"
-      // status. An earlier version of this fix wrote this same shell
-      // object's own address here, which is *always* non-null (passing
-      // the first check) but is such a large value that it's *never*
-      // less-or-equal to any real handle in that later comparison,
-      // permanently forcing the "not ready" branch -- confirmed live via
-      // that exact comparison's own operands. Writes the small constant 1
-      // instead: still real and non-null (passes the first check), and
-      // small enough to be less-or-equal to any real handle this project
-      // has observed there, letting the real success path trigger instead
-      // of a real value being guessed at.
-      //
-      // With that fix in place, real code reaches a second real call
-      // site to this exact slot, on the same object, with the same
-      // arguments (`this=shell, r1=0`) -- confirmed live this second
-      // call needs to return 0, not 35, to take its own further real
-      // branch (`abd.mod` 0x1016a0 onward): the real code's own `bne`
-      // otherwise skips real write logic a fixed-35 stub can't reach.
-      // This is the same real "async, not ready yet" shape as the
-      // `0x905` finding elsewhere in this same investigation (see
-      // TASKS.md) -- a real stateful/polling contract, not a single
-      // static value. Modeled here as a real per-object *toggle*, not a
-      // one-shot "first call ever" latch: an earlier version of this
-      // fix keyed the toggle on this shell object's own address (the
-      // only real identity available to this call, since the real
-      // per-target object being initialized -- e.g. `abd.mod`'s own
-      // `r4`-relative struct -- is never passed as an argument here at
-      // all), which correctly answered the *first* real per-object
-      // lazy-init sequence (35 then 0) but then starved every
-      // subsequent real object's own sequence of ever seeing 35 again
-      // (confirmed live: a live per-call trace showed a *second* real
-      // target object's own init call landing on this shared counter's
-      // 3rd call, getting 0 first instead of 35, and its own real
-      // out-field staying null as a direct result -- exactly the same
-      // failure shape the first fix solved for object one). Real
-      // Alien Breaker Deluxe disassembly runs this exact real lazy-
-      // init sequence back-to-back for what live tracing confirmed are
-      // 35 distinct real objects (`abd.mod`, real per-object pointers
-      // populated at addresses 0x80200000, 0x80200004, ... one word
-      // apart -- an evidently real, sequential real allocation, not a
-      // coincidence), each needing its own fresh 35-then-0 pair.
-      // Switched to alternating strictly by call parity (odd calls
-      // return 35, even calls return 0) rather than "only the very
-      // first call ever": confirmed live this correctly completes all
-      // 35 real per-object sequences in a row, each getting its own
-      // real, valid, non-null pointer -- both real call sites this
-      // slot's own doc comment above already documents (35 then 0, on
-      // the same object, same arguments) are still satisfied exactly,
-      // since they're just this same toggle's first two calls.
-      [this](IArmCore& c) {
-        uint32_t pout = c.GetRegister(kR2);
-        if (pout != 0) c.GetMemory().Write32(pout, 1);
-        uint32_t object_address = c.GetRegister(kR0);
-        uint32_t& count = slot43_call_counts_[object_address];
-        c.SetRegister(kR0, (count % 2 == 0) ? 35 : 0);
-        ++count;
-      },
-      Stub,  // 44 unconfirmed
-      Stub,  // 45 unconfirmed
-      Stub,  // 46 unconfirmed
-      Stub,  // 47 unconfirmed
-      Stub,  // 48 unconfirmed
-      Stub,  // 49 unconfirmed
+      Stub,  // 42 RegisterSystemCallback
+      // Slot 43: DetectType
+      // int DetectType(IShell *po, const void *cpBuf, uint32 *pdwSize, const char *cpszName, const char **pcpszMIME)
+      // Confirmed by BREW SDK 4.0.2 headers and zeebx oracle (machine.rs:2209 / aee_slots.rs:55).
+      // Replaces the historical alternating 35/0 heuristic for Alien Breaker Deluxe with canonical MIME detection.
+      [this](IArmCore& c) { DetectTypeImpl(c); },
+      Stub,  // 44 GetDeviceInfoEx
+      Stub,  // 45 GetClassItemID
+      Stub,  // 46 Obsolete
+      Stub,  // 47 GetProperty
+      Stub,  // 48 SetProperty
+      Stub,  // 49 RegisterEvent
+      Stub,  // 50 Reset
+      Stub,  // 51 AppIsInGroup
   };
   return BuildInterfaceObject(memory_, hle_, vtable_address, object_address, methods);
 }

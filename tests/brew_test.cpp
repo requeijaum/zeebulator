@@ -252,102 +252,111 @@ TEST(IShellHle, GetDeviceInfoWritesRealScreenDimensions) {
   EXPECT_EQ(cpu.GetMemory().Read16(kDeviceInfoAddr + 2), 480u);
 }
 
+static std::string ReadCStringHelper(zeebulator::Memory& memory, uint32_t addr) {
+  std::string s;
+  while (true) {
+    uint8_t c = memory.Read8(addr++);
+    if (c == 0) break;
+    s.push_back(static_cast<char>(c));
+  }
+  return s;
+}
+
 TEST(IShellHle, Slot43FirstCallReturnsTheConfirmedRealLiteral35) {
-  // Real, confirmed return value -- see IShellHle::Build's own doc
-  // comment on slot 43 for the full derivation. Real Alien Breaker
-  // Deluxe disassembly requires exactly 35 (not just nonzero/success)
-  // from this call's *first* real call site to proceed past a real
-  // bail-out branch gating a real object-pointer field this project's
-  // own live tracing confirmed otherwise stays null and crashes a
-  // later real call.
+  // Real, confirmed return value -- ISHELL_DetectType contract from BREW SDK 4.0.2
+  // and zeebx machine.rs:2209. When cpBuf == NULL && cpszName == NULL, guest asks
+  // how many bytes are needed. It returns ENEEDMORE (35) and sets *pdwSize = 16.
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);
   IShellHle shell_hle(cpu.GetMemory(), hle);
   shell_hle.Build(kVtableAddr, kObjectAddr);
 
+  constexpr uint32_t kSizePtr = 0x90000;
+  cpu.GetMemory().Write32(kSizePtr, 0);
+
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 43 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 35u);
+  // Args: R0=shell, R1=cpBuf(0), R2=pdwSize(kSizePtr), R3=cpszName(0)
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0, kSizePtr, 0), 35u);
+  EXPECT_EQ(cpu.GetMemory().Read32(kSizePtr), 16u);
 }
 
-TEST(IShellHle, Slot43SecondCallOnTheSameObjectReturnsZero) {
-  // Real, confirmed stateful/polling contract -- see IShellHle::Build's
-  // own doc comment on slot 43. Real code calls this exact slot a
-  // *second* time on the same object with the same arguments, deep
-  // inside the real success path the first call's fix unblocked, and
-  // needs 0 back (not 35 again) to take its own further real branch.
+TEST(IShellHle, Slot43SecondCallWithBufferReturnsZeroAndDetectsMime) {
+  // Second call passes the 16 bytes read and receives 0 (SUCCESS) with MIME pointer.
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);
   IShellHle shell_hle(cpu.GetMemory(), hle);
   shell_hle.Build(kVtableAddr, kObjectAddr);
 
+  constexpr uint32_t kBufAddr = 0x91000;
+  constexpr uint32_t kSizePtr = 0x90000;
+  constexpr uint32_t kMimeOutPtr = 0x90004;
+
+  // PNG magic bytes
+  const uint8_t png_header[16] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0, 0, 0, 0, 0};
+  for (size_t i = 0; i < 16; ++i) {
+    cpu.GetMemory().Write8(kBufAddr + static_cast<uint32_t>(i), png_header[i]);
+  }
+  cpu.GetMemory().Write32(kSizePtr, 16);
+  cpu.GetMemory().Write32(kMimeOutPtr, 0);
+
+  // Set SP with 5th argument pcpszMIME pointing to kMimeOutPtr
+  cpu.SetRegister(zeebulator::kSP, 0x80000000);
+  cpu.GetMemory().Write32(0x80000000, kMimeOutPtr);
+
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 43 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 35u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 0u);
+  // R0=shell, R1=cpBuf, R2=pdwSize, R3=cpszName(0), stack=pcpszMIME
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, kBufAddr, kSizePtr, 0), 0u);
+  uint32_t mime_str_addr = cpu.GetMemory().Read32(kMimeOutPtr);
+  EXPECT_NE(mime_str_addr, 0u);
+  EXPECT_EQ(ReadCStringHelper(cpu.GetMemory(), mime_str_addr), "image/png");
 }
 
-TEST(IShellHle, Slot43CallCountIsTrackedPerObject) {
-  // A second, distinct real object hitting this same slot starts its
-  // own real lazy-init sequence fresh -- the toggle this fix adds is
-  // keyed per-object (real `this`/R0), not a single global one, so two
-  // independently-initializing real objects can't stomp each other's
-  // state.
+TEST(IShellHle, Slot43DetectsMimeByNameFallback) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);
   IShellHle shell_hle(cpu.GetMemory(), hle);
   shell_hle.Build(kVtableAddr, kObjectAddr);
-  constexpr uint32_t kOtherObjectAddr = 0x80002000;
+
+  constexpr uint32_t kNameAddr = 0x92000;
+  constexpr uint32_t kMimeOutPtr = 0x90004;
+
+  const std::string filename = "music.mid";
+  for (size_t i = 0; i <= filename.size(); ++i) {
+    cpu.GetMemory().Write8(kNameAddr + static_cast<uint32_t>(i), static_cast<uint8_t>(filename[i]));
+  }
+  cpu.SetRegister(zeebulator::kSP, 0x80000000);
+  cpu.GetMemory().Write32(0x80000000, kMimeOutPtr);
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 43 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 35u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kOtherObjectAddr, 0), 35u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 0u);
+  // cpBuf=0, size_ptr=0, name_ptr=kNameAddr
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0, 0, kNameAddr), 0u);
+  uint32_t mime_str_addr = cpu.GetMemory().Read32(kMimeOutPtr);
+  EXPECT_NE(mime_str_addr, 0u);
+  EXPECT_EQ(ReadCStringHelper(cpu.GetMemory(), mime_str_addr), "audio/mid");
 }
 
-TEST(IShellHle, Slot43AlternatesRatherThanLatchingAfterTheFirstCall) {
-  // Real Alien Breaker Deluxe disassembly runs this exact real lazy-
-  // init sequence back-to-back for many distinct real objects, on the
-  // same shared shell object, all with the same arguments -- see
-  // IShellHle::Build's own doc comment on slot 43 for the full
-  // derivation. A "35 once, then 0 forever" latch (an earlier version
-  // of this fix) answers the first real object's own sequence
-  // correctly but starves every later one of ever seeing 35 again;
-  // this call's own real contract is a strict odd/even toggle instead,
-  // so every subsequent pair of calls gets its own fresh 35-then-0
-  // answer, matching real, confirmed behavior for at least two
-  // real, independent per-object sequences on the same object.
+TEST(IShellHle, Slot43ReturnsENOTYPEWhenUnrecognized) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);
   IShellHle shell_hle(cpu.GetMemory(), hle);
   shell_hle.Build(kVtableAddr, kObjectAddr);
 
-  uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 43 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 35u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 0u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 35u);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, 0), 0u);
-}
+  constexpr uint32_t kBufAddr = 0x91000;
+  constexpr uint32_t kSizePtr = 0x90000;
+  constexpr uint32_t kNameAddr = 0x92000;
 
-TEST(IShellHle, Slot43WritesTheSmallRealThirdArgOutParamValue) {
-  // Real, confirmed dual-condition gate -- see IShellHle::Build's own
-  // doc comment on slot 43. Confirmed live: leaving the real 3rd
-  // argument (a real out-param) unwritten still hits the same real
-  // bail-out branch one instruction later, even with the correct
-  // return value, since real code checks `*pOut != 0` as a second,
-  // separate condition. Writes the small constant 1, not a pointer --
-  // confirmed live that *pOut later flows unmodified into a real raw
-  // unsigned comparison against a real handle value, so a large
-  // "safe, always-valid object address" choice (an earlier version of
-  // this fix) permanently fails that later comparison instead.
-  ArmInterpreter cpu;
-  HleRuntime hle(cpu, kTrapBase, kTrapSize);
-  IShellHle shell_hle(cpu.GetMemory(), hle);
-  shell_hle.Build(kVtableAddr, kObjectAddr);
+  for (size_t i = 0; i < 16; ++i) {
+    cpu.GetMemory().Write8(kBufAddr + static_cast<uint32_t>(i), 0);
+  }
+  cpu.GetMemory().Write32(kSizePtr, 16);
+  const std::string filename = "unknown.xyz";
+  for (size_t i = 0; i <= filename.size(); ++i) {
+    cpu.GetMemory().Write8(kNameAddr + static_cast<uint32_t>(i), static_cast<uint8_t>(filename[i]));
+  }
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 43 * 4);
-  constexpr uint32_t kOutAddr = 0x90000;
-  cpu.GetMemory().Write32(kOutAddr, 0);
-  hle.CallArmFunction(sentinel, kObjectAddr, 0, kOutAddr);
-  EXPECT_EQ(cpu.GetMemory().Read32(kOutAddr), 1u);
+  // ENOTYPE is 34
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, kBufAddr, kSizePtr, kNameAddr), 34u);
 }
 
 TEST(IShellHle, ResumeQueuesCallbackTimerImmediately) {

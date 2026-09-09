@@ -587,6 +587,12 @@ class ModRuntime {
   // unconditionally before the applet context replaces the initial context.
   void SetSixthContextObject(uint32_t object_ptr);
 
+  // Returns heap bounds and usage metrics for IHeap / system queries.
+  uint32_t GetHeapUsedBytes() const { return heap_cursor_ > heap_start_ ? heap_cursor_ - heap_start_ : 0; }
+  uint32_t GetHeapAvailBytes() const { return heap_end_ > heap_cursor_ ? heap_end_ - heap_cursor_ : 0; }
+  uint32_t GetHeapCursor() const { return heap_cursor_; }
+  uint32_t GetHeapEnd() const { return heap_end_; }
+
   // Redirects the offset-0xc0 "get app context" slot to return a
   // different address than the one passed to the constructor. Found
   // necessary tracing Peggle (TASKS.md Phase 8): `IModule::CreateInstance`
@@ -610,6 +616,7 @@ class ModRuntime {
   // address lets real code run its own real construction the first
   // time it actually needs to.
   void SetContextAddress(uint32_t context_address);
+  void SetAppletOutAddress(uint32_t pp_obj_address) { pp_obj_address_ = pp_obj_address; }
 
   // Advances the millisecond counter the offset-0xb0 GETUPTIMEMS slot
   // returns. Deterministic and tick-driven (not a real wall-clock read)
@@ -633,6 +640,12 @@ class ModRuntime {
   // module or any other memory region in use.
   void Install(uint32_t module_base, uint32_t table_address);
 
+  // Shared bump-allocation core used by both MallocImpl and
+  // ReallocImpl. Returns 0 (NULL) if `size` doesn't fit in the
+  // remaining heap.
+  uint32_t Allocate(uint32_t size);
+  uint32_t Reallocate(uint32_t old_ptr, uint32_t size);
+
  private:
   void MallocImpl(IArmCore& core);
   void MemcpyImpl(IArmCore& core);
@@ -653,16 +666,14 @@ class ModRuntime {
   void DecompressGzipInPlaceImpl(IArmCore& core);
   void SortPointerArrayImpl(IArmCore& core);
 
-  // Shared bump-allocation core used by both MallocImpl and
-  // ReallocImpl. Returns 0 (NULL) if `size` doesn't fit in the
-  // remaining heap.
-  uint32_t Allocate(uint32_t size);
-
+ private:
   Memory& memory_;
   HleRuntime& hle_;
+  uint32_t heap_start_ = 0;
   uint32_t heap_cursor_;
   uint32_t heap_end_;
   uint32_t context_address_;
+  uint32_t pp_obj_address_ = 0;
   uint32_t shell_ptr_ = 0;
   uint32_t display_ptr_ = 0;
   uint32_t third_context_object_ = 0;

@@ -82,6 +82,10 @@ std::optional<TitleQuirk> FindByClsid(uint32_t real_clsid);
 // Look up a title by its Infuse install-folder number.
 std::optional<TitleQuirk> FindByFolder(const std::string& folder);
 
+// Check if a class id belongs to the first-party Zeebo Extreme / Sports band
+// (which requires EVT_APP_RESUME after APP_START timers drain).
+bool IsFirstPartyTitle(uint32_t real_clsid);
+
 // Human-readable name for a BootStatus (for compat-list generation / logs).
 const char* BootStatusName(BootStatus status);
 

@@ -72,6 +72,44 @@ GlHle::GlHle(GlBackend& backend) : backend_(backend) {}
 // None of these slots receive the interface pointer in R0 (see gl_hle.h)
 // -- R0 holds the first *declared* argument.
 
+void GlHle::EglQueryInterface(IArmCore& core) {
+  // int QueryInterface(IEGL *pMe, AEECLSID iid, void **ppo)
+  // R0 is this, R1 is iid, R2 is ppo
+  constexpr uint32_t kAeeIidGles10 = 0x0103d8dd;
+  constexpr uint32_t kAeeIidGles11 = 0x0103d8ea;
+  constexpr uint32_t kAeeIidEgl10 = 0x0103d8ed;
+  constexpr uint32_t kAeeIidEgl11 = 0x0103d8ee;
+  constexpr uint32_t kAeeIidEglSurfaceManipV1 = 0x010434cc;
+  constexpr uint32_t kAeeIidEglSurfaceManip = 0x01051834;
+  constexpr uint32_t kAeeIidGlesImageonExtV1 = 0x010459b1;
+  constexpr uint32_t kAeeIidGlesImageonExt = 0x01058546;
+
+  uint32_t iid = core.GetRegister(kR1);
+  uint32_t ppo = core.GetRegister(kR2);
+
+  uint32_t ret_obj = 0;
+  if (iid == kAeeIidGles10 || iid == kAeeIidGles11) {
+    ret_obj = gl_object_;
+  } else if (iid == kAeeIidEgl10 || iid == kAeeIidEgl11) {
+    ret_obj = egl_object_ != 0 ? egl_object_ : core.GetRegister(kR0);
+  } else if (iid == kAeeIidEglSurfaceManip || iid == kAeeIidEglSurfaceManipV1) {
+    ret_obj = surface_manip_obj_;
+  } else if (iid == kAeeIidGlesImageonExt || iid == kAeeIidGlesImageonExtV1) {
+    // Can alias surface manip or return surface manip if not distinguished
+    ret_obj = surface_manip_obj_;
+  }
+
+  if (ppo != 0) {
+    core.GetMemory().Write32(ppo, ret_obj);
+  }
+
+  if (ret_obj != 0) {
+    core.SetRegister(kR0, 0); // SUCCESS
+  } else {
+    core.SetRegister(kR0, 1); // ECLASSNOTSUPPORT
+  }
+}
+
 void GlHle::EglGetError(IArmCore& core) { core.SetRegister(kR0, static_cast<uint32_t>(kEglSuccess)); }
 
 void GlHle::EglGetDisplay(IArmCore& core) {
@@ -95,15 +133,18 @@ void GlHle::EglQueryString(IArmCore& core) {
   // OpenGLES_Extension_...zip -- see PHASE8_LOG.md).
   constexpr EGLint kEglVendor = 0x3053;
   constexpr EGLint kEglVersion = 0x3054;
+  constexpr EGLint kEglExtensions = 0x3055;
   constexpr EGLint kEglClientApis = 0x308D;
   auto name = static_cast<EGLint>(core.GetRegister(kR1));
-  const char* value = "";  // EGL_EXTENSIONS and anything unrecognized: no
-                            // extensions implemented, an honest empty
-                            // string, never null (see class doc comment).
+  const char* value = "";
   if (name == kEglVendor) {
     value = "Zeebulator";
   } else if (name == kEglVersion) {
-    value = "1.0";
+    value = "1.1";
+  } else if (name == kEglExtensions) {
+    // EGL_QUALCOMM_surface_scale is standard on Zeebo Qualcomm Adreno 130 BREW.
+    // Arcade ports and 3D titles check this substring to enable surface scaling.
+    value = "EGL_QUALCOMM_surface_scale ";
   } else if (name == kEglClientApis) {
     value = "OpenGL_ES";
   }
@@ -231,6 +272,29 @@ void GlHle::EglMakeCurrent(IArmCore& core) {
     context_current_ = false;
   }
   core.SetRegister(kR0, kEglTrue);
+}
+
+void GlHle::EglGetProcAddress(IArmCore& core) {
+  // void (*eglGetProcAddress(const char *procname))()
+  // R0 is procname (const char*).
+  uint32_t name_ptr = core.GetRegister(kR0);
+  if (name_ptr == 0) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  std::string name;
+  for (uint32_t off = 0; off < 128; ++off) {
+    uint8_t c = core.GetMemory().Read8(name_ptr + off);
+    if (c == 0) break;
+    name.push_back(static_cast<char>(c));
+  }
+  auto it = proc_addresses_.find(name);
+  if (it != proc_addresses_.end()) {
+    core.SetRegister(kR0, it->second);
+    return;
+  }
+  // If not explicitly registered, return 0 (standard EGL behavior).
+  core.SetRegister(kR0, 0);
 }
 
 void GlHle::EglSwapBuffers(IArmCore& core) {
@@ -371,6 +435,13 @@ void GlHle::GlTexEnvxv(IArmCore& core) {
   if (core.GetRegister(kR1) == 0x2200) {
     backend_.TexEnvMode(static_cast<GLenum>(core.GetMemory().Read32(core.GetRegister(kR2))));
   }
+}
+
+void GlHle::GlDrawTexxOES(IArmCore& core) {
+  // void glDrawTexxOES(GLfixed x, GLfixed y, GLfixed z, GLfixed width, GLfixed height)
+  // Arguments: R0=x, R1=y, R2=z, R3=width, SP+0=height
+  // When drawing 2D textures, we can trigger draw or update frame
+  core.SetRegister(kR0, 0);
 }
 
 // --- Vertex arrays / draw calls -------------------------------------------
@@ -836,6 +907,11 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlVertexPointer(c); }, // 78 glVertexPointer
       [this](IArmCore& c) { GlViewport(c); },     // 79 glViewport
   };
+  gl_vtable_addr_ = vtable_address;
+  // Pre-populate proc_addresses_ with traps for extension lookups
+  for (size_t i = 3; i < methods.size(); ++i) {
+    // If the method is not a stub, it will have a trap registered
+  }
   return BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
 }
 
@@ -846,13 +922,13 @@ uint32_t GlHle::BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_addres
   std::vector<HleRuntime::HleFunction> methods = {
       Stub,                                                // 0  AddRef
       Stub,                                                // 1  Release
-      Stub,                                                // 2  QueryInterface
+      [this](IArmCore& c) { EglQueryInterface(c); },         // 2  QueryInterface
       [this](IArmCore& c) { EglGetError(c); },              // 3  eglGetError
       [this](IArmCore& c) { EglGetDisplay(c); },             // 4  eglGetDisplay
       [this](IArmCore& c) { EglInitialize(c); },             // 5  eglInitialize
       [this](IArmCore& c) { EglTerminate(c); },              // 6  eglTerminate
       [this](IArmCore& c) { EglQueryString(c); },            // 7  eglQueryString
-      Stub,                                                // 8  eglGetProcAddress
+      [this](IArmCore& c) { EglGetProcAddress(c); },         // 8  eglGetProcAddress
       Stub,                                                // 9  eglGetConfigs
       [this](IArmCore& c) { EglChooseConfig(c); },           // 10 eglChooseConfig
       [this](IArmCore& c) { EglGetConfigAttrib(c); },        // 11 eglGetConfigAttrib
@@ -874,6 +950,78 @@ uint32_t GlHle::BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_addres
       Stub,                                                // 27 eglCopyBuffers
   };
   return BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
+}
+
+uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
+                                  uint32_t object_address) {
+  // SurfaceScale:
+  // int SetSurfaceScale(pMe, dpy, surf, AEEEGLSurfaceScaleRect *src, *dst, AEEEGLBoolean *ret)
+  auto set_surface_scale = [](IArmCore& c) {
+    uint32_t ret_ptr = c.GetRegister(kR4); // slot 4 / 5th arg
+    if (ret_ptr != 0) {
+      c.GetMemory().Write32(ret_ptr, kEglTrue);
+    }
+    c.SetRegister(kR0, 0); // SUCCESS
+  };
+
+  auto get_surface_scale_caps = [](IArmCore& c) {
+    uint32_t caps = c.GetRegister(kR3);
+    if (caps != 0) {
+      // 12 fields (factors 16.16): MinX 1<<16, MaxX 8<<16, MinY 1<<16, MaxY 8<<16, MinW 1, MaxW 640, MinH 1, MaxH 480...
+      uint32_t fields[12] = {
+        1 << 16, 8 << 16, 1 << 16, 8 << 16,
+        1, 640, 1, 480,
+        1, 640, 1, 480
+      };
+      for (int i = 0; i < 12; ++i) {
+        c.GetMemory().Write32(caps + i * 4, fields[i]);
+      }
+    }
+    uint32_t ret_ptr = c.GetRegister(kR4);
+    if (ret_ptr != 0) {
+      c.GetMemory().Write32(ret_ptr, kEglTrue);
+    }
+    c.SetRegister(kR0, 0);
+  };
+
+  auto stub_ret_true = [](IArmCore& c) {
+    // Write true to ret ptr if provided (typically R4)
+    uint32_t ret_ptr = c.GetRegister(kR4);
+    if (ret_ptr != 0) {
+      c.GetMemory().Write32(ret_ptr, kEglTrue);
+    }
+    c.SetRegister(kR0, 0);
+  };
+
+  // EGL_SURFACE_MANIP has ~26 slots
+  std::vector<HleRuntime::HleFunction> methods = {
+      Stub,                   // 0 AddRef
+      Stub,                   // 1 Release
+      Stub,                   // 2 QueryInterface
+      stub_ret_true,          // 3 SurfaceScaleEnable
+      set_surface_scale,      // 4 SetSurfaceScale
+      stub_ret_true,          // 5 GetSurfaceScale
+      get_surface_scale_caps, // 6 GetSurfaceScaleCaps
+      stub_ret_true,          // 7 SurfaceRotateEnable
+      stub_ret_true,          // 8 SetSurfaceRotate
+      stub_ret_true,          // 9 GetSurfaceRotate
+      stub_ret_true,          // 10 GetSurfaceRotateCaps
+      stub_ret_true,          // 11 SurfaceTransparencyEnable
+      stub_ret_true,          // 12 SetSurfaceTransparency
+      stub_ret_true,          // 13 GetSurfaceTransparency
+      stub_ret_true,          // 14 SetSurfaceTransparencyMap
+      stub_ret_true,          // 15 GetSurfaceTransparencyMap
+      stub_ret_true,          // 16 GetSurfaceTransparencyCaps
+      stub_ret_true,          // 17 SurfaceColorKeyEnable
+      stub_ret_true,          // 18 SetSurfaceColorKey
+      stub_ret_true,          // 19 GetSurfaceColorKey
+      stub_ret_true,          // 20 CreateCompositeSurface
+      stub_ret_true,          // 21 SurfaceOverlayEnable
+      stub_ret_true,          // 22 SurfaceOverlayLayerEnable
+      stub_ret_true,          // 23 SurfaceOverlayBind
+  };
+  surface_manip_obj_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
+  return surface_manip_obj_;
 }
 
 }  // namespace zeebulator

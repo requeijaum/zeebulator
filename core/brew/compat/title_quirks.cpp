@@ -394,10 +394,20 @@ std::optional<TitleQuirk> FindByClsid(uint32_t real_clsid) {
 }
 
 std::optional<TitleQuirk> FindByFolder(const std::string& folder) {
-  for (const auto& t : KnownTitles()) {
-    if (t.folder == folder) return t;
+  for (const auto& title : KnownTitles()) {
+    if (title.folder == folder) return title;
   }
   return std::nullopt;
+}
+
+bool IsFirstPartyTitle(uint32_t real_clsid) {
+  // First-party titles live in the 0x0108eff0..0x0108ffff range (Zeebo Extreme & Sports),
+  // e.g. AirRacez (0x0108ff06), Bajaz (0x0108ff07), Boiaz (0x0108ff13), JetBoardz (0x0108ff14),
+  // Zeeboids (0x0108ff1a), Tennis (0x0108eff9), Volley (0x0108ff15), Peteca (0x0108ff18), etc.
+  if (real_clsid >= 0x0108eff0u && real_clsid <= 0x0108ffffu) {
+    return true;
+  }
+  return false;
 }
 
 const char* BootStatusName(BootStatus status) {

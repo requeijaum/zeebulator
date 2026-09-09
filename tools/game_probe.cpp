@@ -35,8 +35,11 @@
 #include "core/brew/interface_object.h"
 #include "core/brew/ishell.h"
 #include "core/brew/media_hle.h"
+#include "core/brew/thread_hle.h"
+#include "core/brew/heap_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
+#include "core/brew/compat/title_quirks.h"
 #include "core/control/control_server.h"
 #include "core/control/debug_hooks.h"
 #include "core/control/mirror_server.h"
@@ -902,7 +905,31 @@ int main(int argc, char** argv) {
         }
         fs::path cand = own_dir / basename;
         std::error_code ec;
-        if (!fs::is_regular_file(cand, ec)) return false;
+        if (!fs::is_regular_file(cand, ec)) {
+          // Case-insensitive match on disk in the game's directory
+          bool found = false;
+          for (const auto& entry : fs::directory_iterator(own_dir, ec)) {
+            if (entry.is_regular_file(ec)) {
+              std::string fn = entry.path().filename().string();
+              if (fn.size() == basename.size()) {
+                bool eq = true;
+                for (size_t i = 0; i < fn.size(); ++i) {
+                  if (std::tolower(static_cast<unsigned char>(fn[i])) !=
+                      std::tolower(static_cast<unsigned char>(basename[i]))) {
+                    eq = false;
+                    break;
+                  }
+                }
+                if (eq) {
+                  cand = entry.path();
+                  found = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (!found) return false;
+        }
         std::string lext = cand.extension().string();
         for (auto& c : lext) c = static_cast<char>(std::tolower(c));
         if (lext == ".mod" || lext == ".pkg" || lext == ".sig" ||
@@ -2496,31 +2523,83 @@ int main(int argc, char** argv) {
   // again afterward) -- not a claim that real loading finishes in one
   // frame, just the simplest choice that doesn't require inventing an
   // arbitrary frame count.
-  constexpr uint32_t kSbtTaskListHeadAddress = 0x002e28fc;
-  std::vector<zeebulator::HleRuntime::HleFunction> sbt_methods(
-      40, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
-  sbt_methods[7] = [&shell_hle](zeebulator::IArmCore& core) {
-    constexpr uint32_t kInferredTickMs = 16;
-    uint32_t callback = core.GetRegister(zeebulator::kR2);
-    uint32_t user_data = core.GetRegister(zeebulator::kR3);
-    // r1 at this real call: found live (TASKS.md Phase 8, the Zeebo
-    // Sports Tênis/Zeeboids round) to be a real, non-zero, previously-
-    // discarded argument -- see IShellHle::ScheduleTimer's own doc
-    // comment on `r0_override` for the real evidence this is the
-    // callback's own real first argument, not a coincidence.
-    uint32_t r1_at_registration = core.GetRegister(zeebulator::kR1);
-    shell_hle.ScheduleTimer(kInferredTickMs, callback, user_data, r1_at_registration);
-    core.SetRegister(zeebulator::kR0, 0);  // SUCCESS
+  // IThread (0x01001017) real implementation
+  zeebulator::ThreadHle thread_hle(
+      cpu.GetMemory(), hle,
+      [&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); },
+      nullptr);
+  shell_hle.SetThreadHle(&thread_hle);
+  shell_hle.RegisterFactory(0x01001017, [&thread_hle]() {
+    return thread_hle.CreateThreadObject();
+  });
+
+  // IHeap (0x01001002) real implementation
+  zeebulator::HeapHle heap_hle(
+      cpu.GetMemory(), hle,
+      [&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); },
+      [&mod_runtime](uint32_t ptr, uint32_t sz) { return mod_runtime.Reallocate(ptr, sz); },
+      nullptr,
+      [&mod_runtime]() { return mod_runtime.GetHeapAvailBytes(); },
+      [&mod_runtime]() { return mod_runtime.GetHeapUsedBytes(); });
+  uint32_t heap_obj = heap_hle.Build(/*vtable=*/0x80080000, /*object=*/0x80081000);
+  shell_hle.RegisterInstance(zeebulator::HeapHle::kClsidHeap, heap_obj);
+
+  auto run_pending_threads_fn = [&](const char* phase_tag) {
+    std::printf("[run_pending_threads] %s check: has=%d\n", phase_tag, thread_hle.HasPendingThreads());
+    if (!thread_hle.HasPendingThreads()) return true;
+    for (uint32_t th_obj : thread_hle.TakePendingThreads()) {
+      auto* state = thread_hle.GetThreadState(th_obj);
+      if (!state || state->finished) continue;
+
+      std::printf("[run_pending_threads] %s running thread 0x%08x pc=0x%08x sp=0x%08x\n",
+                  phase_tag, th_obj, state->resume_pc, state->context[13]);
+
+      // Save the main caller's registers and CPSR
+      uint32_t saved_regs[16];
+      for (int r = 0; r < 16; ++r) saved_regs[r] = cpu.GetRegister(r);
+      uint32_t saved_cpsr = cpu.GetCpsr();
+
+      // Load thread registers R0-R12, SP
+      for (int r = 0; r <= 12; ++r) cpu.SetRegister(r, state->context[r]);
+      cpu.SetRegister(zeebulator::kSP, state->context[13]);
+      cpu.SetRegister(zeebulator::kLR, kTrapBase);
+      cpu.SetRegister(zeebulator::kPC, state->resume_pc);
+      state->suspended = false;
+
+      mod_runtime.ConsumeYieldRequest();
+      try {
+        auto res = CallArmFunctionChecked(
+            cpu, kTrapBase, kBase, mod_size, /*entry=*/0, 0, 0, 0, 0,
+            /*trace=*/false, /*hle_trace=*/false, &display, &backend,
+            &abd_text_state, /*resume=*/true,
+            [&mod_runtime]() { return mod_runtime.ConsumeYieldRequest(); });
+
+        std::printf("  [%s thread] thread 0x%08x returned: r0=%d yielded=%d wandered=%d exceeded=%d suspended=%d finished=%d pc=0x%08x\n",
+                    phase_tag, th_obj, res.r0, res.yielded, res.wandered_outside_module, res.exceeded_step_budget,
+                    state->suspended, state->finished, cpu.GetRegister(zeebulator::kPC));
+        if (res.yielded && !state->finished) {
+          // Thread yielded (e.g. via SleepImpl or cooperative yield)
+          for (int r = 0; r <= 12; ++r) state->context[r] = cpu.GetRegister(r);
+          state->context[13] = cpu.GetRegister(zeebulator::kSP);
+          state->resume_pc = cpu.GetRegister(zeebulator::kPC);
+          state->suspended = true;
+          // Re-enqueue thread for next tick
+          thread_hle.EnqueueThread(th_obj);
+        } else if (!state->suspended && !state->finished) {
+          thread_hle.FinishThread(th_obj, res.r0);
+        }
+      } catch (const std::exception& e) {
+        std::printf("  [%s thread] thread 0x%08x threw: %s (pc=0x%08x)\n",
+                    phase_tag, th_obj, e.what(), cpu.GetRegister(zeebulator::kPC));
+      }
+
+      // Restore the main caller's registers and CPSR
+      for (int r = 0; r < 16; ++r) cpu.SetRegister(r, saved_regs[r]);
+      cpu.SetCpsr(saved_cpsr);
+    }
+    return true;
   };
-  sbt_methods[10] = [&mod_runtime](zeebulator::IArmCore& core) {
-    core.GetMemory().Write32(kSbtTaskListHeadAddress, 0);
-    mod_runtime.RequestYield();
-    core.SetRegister(zeebulator::kR0, 0);
-  };
-  uint32_t unknown_0x01001017_obj = zeebulator::BuildInterfaceObject(
-      cpu.GetMemory(), hle, /*vtable_address=*/0x80046000, /*object_address=*/0x80047000,
-      sbt_methods);
-  shell_hle.RegisterInstance(0x01001017, unknown_0x01001017_obj);
+
   // Real code fetches "the current app's IShell"/"IDisplay" from an
   // ambient context (the static-base table's offset-0xc0 slot) in many
   // places, not just via the pIShell argument explicitly passed to
@@ -2967,6 +3046,7 @@ int main(int argc, char** argv) {
     uint32_t create_instance_fn = mem.Read32(module_vtable + 2 * 4);
     std::printf("Calling IModule::CreateInstance(ClsId=%u)...\n", cls_id);
     constexpr uint32_t kPpObjAddr = 0x00090010;
+    mod_runtime.SetAppletOutAddress(kPpObjAddr);
     auto create_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, create_instance_fn,
                                                  module_ptr, shell, cls_id, kPpObjAddr,
                                                  /*trace=*/false, /*hle_trace=*/false, &display, &backend);
@@ -3028,6 +3108,9 @@ int main(int argc, char** argv) {
     }
     std::printf("HandleEvent(EVT_APP_START) returned %u\n", handle_result.r0);
 
+    // Run any threads started during EVT_APP_START
+    run_pending_threads_fn("post-start");
+
     stage = "HandleEvent(EVT_APP_RESUME)";
     constexpr uint32_t kEvtAppResume = 3;
     // Root cause of the "first-party tick-1 wall" (AirRacez/Bajaz/Boiaz/
@@ -3047,8 +3130,9 @@ int main(int argc, char** argv) {
       constexpr int kMaxDrainTicks = 8;
       for (int t = 0; t < kMaxDrainTicks; ++t) {
         auto expired = shell_hle.Tick(16);
-        if (expired.empty()) break;
+        if (expired.empty() && !thread_hle.HasPendingThreads()) break;
         mod_runtime.Tick(16);
+        run_pending_threads_fn("pre-resume");
         for (const auto& timer : expired) {
           uint32_t call_r0 = timer.r0_override.value_or(timer.user_data);
           uint32_t call_r1 = timer.r0_override.has_value() ? timer.user_data : 0;
@@ -3074,8 +3158,9 @@ int main(int argc, char** argv) {
         if (boot_continuation_active) break;
       }
     }
-    if (!boot_continuation_active) {
-      std::printf("Calling HandleEvent(EVT_APP_RESUME)...\n");
+    bool is_first_party = zeebulator::compat::IsFirstPartyTitle(cls_id);
+    if (is_first_party && !boot_continuation_active) {
+      std::printf("Calling HandleEvent(EVT_APP_RESUME) for first-party title 0x%08x...\n", cls_id);
       auto resume_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
                                                    applet_ptr, kEvtAppResume, 0, kAppStartAddr,
                                                    /*trace=*/false, /*hle_trace=*/false, &display, &backend);
@@ -3084,14 +3169,17 @@ int main(int argc, char** argv) {
         return 1;
       }
       std::printf("HandleEvent(EVT_APP_RESUME) returned %u\n", resume_result.r0);
-    } else {
+    } else if (boot_continuation_active) {
       std::printf("Deferring EVT_APP_RESUME: START timer yielded with a live guest continuation.\n");
+    } else {
+      std::printf("Skipping EVT_APP_RESUME: non-first-party title 0x%08x follows standard advance/event loop.\n", cls_id);
     }
   } catch (const std::exception& e) {
     std::printf("%s threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n", stage, e.what(),
                 cpu.GetRegister(zeebulator::kPC), cpu.GetRegister(zeebulator::kPC) - kBase);
     return 1;
   }
+
 
   // Real code inside CreateInstance/HandleEvent(EVT_APP_START) writes a
   // real zero to context[0x24]+0x45000+0x3d8 once, presumably its own
@@ -3962,6 +4050,9 @@ int main(int argc, char** argv) {
     // plumbing draining it are kept intact as correct, real
     // infrastructure for whoever picks up real controller-driven
     // navigation next.
+    // Run any pending cooperative threads before or between timer ticks
+    run_pending_threads_fn("tick");
+
     for (const auto& timer :
          (dbg_paused || callback_continuation_active)
              ? decltype(shell_hle.Tick(kTickMs)){}

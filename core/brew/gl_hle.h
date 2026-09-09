@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <string>
 #include <vector>
 
 #include "core/brew/gl_backend.h"
@@ -90,8 +92,20 @@ class GlHle {
   uint32_t BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
                      uint32_t object_address);
 
+  // Builds IEGLSurfaceManip object
+  uint32_t BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
+                              uint32_t object_address);
+
+  void RegisterProcAddress(const std::string& name, uint32_t trap_addr) {
+    proc_addresses_[name] = trap_addr;
+  }
+
+  void SetGlObject(uint32_t gl_obj) { gl_object_ = gl_obj; }
+  void SetEglObject(uint32_t egl_obj) { egl_object_ = egl_obj; }
+
  private:
   // EGL lifecycle.
+  void EglQueryInterface(IArmCore& core);
   void EglGetError(IArmCore& core);
   void EglGetDisplay(IArmCore& core);
   void EglInitialize(IArmCore& core);
@@ -105,6 +119,7 @@ class GlHle {
   void EglCreateContext(IArmCore& core);
   void EglDestroyContext(IArmCore& core);
   void EglMakeCurrent(IArmCore& core);
+  void EglGetProcAddress(IArmCore& core);
   void EglSwapBuffers(IArmCore& core);
 
   // Core GL state / transform.
@@ -132,6 +147,7 @@ class GlHle {
   void GlColor4x(IArmCore& core);
   void GlTexEnvx(IArmCore& core);
   void GlTexEnvxv(IArmCore& core);
+  void GlDrawTexxOES(IArmCore& core);
 
   // Vertex arrays / draw calls.
   void GlVertexPointer(IArmCore& core);
@@ -172,6 +188,11 @@ class GlHle {
 
   GlBackend& backend_;
   bool context_current_ = false;
+  uint32_t gl_object_ = 0;
+  uint32_t egl_object_ = 0;
+  uint32_t surface_manip_obj_ = 0;
+  uint32_t gl_vtable_addr_ = 0;
+  std::map<std::string, uint32_t> proc_addresses_;
   ArrayState vertex_array_;
   ArrayState color_array_;
   ArrayState texcoord_array_;
