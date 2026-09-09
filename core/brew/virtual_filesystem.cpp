@@ -86,13 +86,23 @@ const std::vector<uint8_t>* VirtualFilesystem::Find(const std::string& name) con
   }
   // Lazy loose-asset fallback (2026-09-08): everything registered has missed.
   // Ask the harness-installed resolver to fetch this loose sibling from the
-  // host FS ON DEMAND (by basename). On a hit, memoize under the basename so
-  // repeat opens resolve directly. Only names the guest actually requests get
-  // registered -- unlike the old eager pass, this never pollutes the namespace
-  // for titles that don't ask for the file.
-  if (miss_resolver_ && !want.empty()) {
+  // host FS ON DEMAND. Try the canonical relative path first (`c`, e.g.
+  // "zeeboiddata/version.txt" -- some titles, like Zeeboids, ship a per-game
+  // asset subfolder next to the .mod and open files inside it by that
+  // relative path), then fall back to a bare basename match (`want`) for the
+  // flat-namespace case the resolver originally targeted. On a hit, memoize
+  // under the resolved key so repeat opens resolve directly. Only names the
+  // guest actually requests get registered -- unlike the old eager pass, this
+  // never pollutes the namespace for titles that don't ask for the file.
+  if (miss_resolver_) {
     std::vector<uint8_t> loaded;
-    if (miss_resolver_(want, loaded)) {
+    if (!c.empty() && miss_resolver_(c, loaded)) {
+      if (files_.find(c) == files_.end()) names_.push_back(c);
+      auto& slot = files_[c];
+      slot = std::move(loaded);
+      return &slot;
+    }
+    if (!want.empty() && miss_resolver_(want, loaded)) {
       if (files_.find(want) == files_.end()) names_.push_back(want);
       auto& slot = files_[want];
       slot = std::move(loaded);

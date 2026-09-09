@@ -37,6 +37,7 @@
 #include "core/brew/media_hle.h"
 #include "core/brew/thread_hle.h"
 #include "core/brew/heap_hle.h"
+#include "core/brew/hash_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
 #include "core/brew/compat/title_quirks.h"
@@ -895,27 +896,65 @@ int main(int argc, char** argv) {
       const bool log_file = std::getenv("ZEEB_LOG_FILE") != nullptr;
       vfs.SetMissResolver([own_dir, log_file](const std::string& basename,
                                               std::vector<uint8_t>& out) -> bool {
-        // Reject empty / path-bearing names: the resolver only matches a bare
-        // sibling filename in the game's own folder (no traversal). The .mod's
+        // Reject empty / traversal names: the resolver matches a bare sibling
+        // filename OR a single-level subdirectory relative path inside the
+        // game's own folder (no `..` traversal, no absolute paths). Several
+        // titles ship a per-game asset subfolder next to the .mod named after
+        // the class ID/title (e.g. Zeeboids' `zeeboiddata/version.txt`) and
+        // request it by that relative path via IFileMgr_OpenFile. The .mod's
         // own container types are never served as loose assets.
         if (basename.empty() ||
-            basename.find('/') != std::string::npos ||
-            basename.find('\\') != std::string::npos) {
+            basename.find("..") != std::string::npos ||
+            basename[0] == '/' || basename[0] == '\\') {
           return false;
         }
         fs::path cand = own_dir / basename;
         std::error_code ec;
         if (!fs::is_regular_file(cand, ec)) {
-          // Case-insensitive match on disk in the game's directory
+          // Case-insensitive match on disk, either directly in the game's
+          // directory (bare filename) or inside a single named subdirectory
+          // (one path separator, e.g. "zeeboiddata/version.txt").
           bool found = false;
-          for (const auto& entry : fs::directory_iterator(own_dir, ec)) {
+          size_t sep = basename.find_first_of("/\\");
+          std::string subdir_name = sep == std::string::npos
+                                         ? std::string()
+                                         : basename.substr(0, sep);
+          std::string leaf_name =
+              sep == std::string::npos ? basename : basename.substr(sep + 1);
+          bool has_further_sep =
+              leaf_name.find_first_of("/\\") != std::string::npos;
+          fs::path search_root = own_dir;
+          if (!subdir_name.empty() && !has_further_sep) {
+            // Resolve the subdirectory case-insensitively too.
+            for (const auto& dir_entry : fs::directory_iterator(own_dir, ec)) {
+              if (!dir_entry.is_directory(ec)) continue;
+              std::string dn = dir_entry.path().filename().string();
+              if (dn.size() != subdir_name.size()) continue;
+              bool eq = true;
+              for (size_t i = 0; i < dn.size(); ++i) {
+                if (std::tolower(static_cast<unsigned char>(dn[i])) !=
+                    std::tolower(static_cast<unsigned char>(subdir_name[i]))) {
+                  eq = false;
+                  break;
+                }
+              }
+              if (eq) {
+                search_root = dir_entry.path();
+                break;
+              }
+            }
+          } else if (has_further_sep) {
+            // More than one separator: unsupported depth, bail out.
+            return false;
+          }
+          for (const auto& entry : fs::directory_iterator(search_root, ec)) {
             if (entry.is_regular_file(ec)) {
               std::string fn = entry.path().filename().string();
-              if (fn.size() == basename.size()) {
+              if (fn.size() == leaf_name.size()) {
                 bool eq = true;
                 for (size_t i = 0; i < fn.size(); ++i) {
                   if (std::tolower(static_cast<unsigned char>(fn[i])) !=
-                      std::tolower(static_cast<unsigned char>(basename[i]))) {
+                      std::tolower(static_cast<unsigned char>(leaf_name[i]))) {
                     eq = false;
                     break;
                   }
@@ -2543,6 +2582,14 @@ int main(int argc, char** argv) {
       [&mod_runtime]() { return mod_runtime.GetHeapUsedBytes(); });
   uint32_t heap_obj = heap_hle.Build(/*vtable=*/0x80080000, /*object=*/0x80081000);
   shell_hle.RegisterInstance(zeebulator::HeapHle::kClsidHeap, heap_obj);
+
+  // IHash / AEECLSID_MD5 (0x01001015) real implementation. Last missing API
+  // across the full 61-title zeebx reference corpus (unblocks Zeeboids).
+  zeebulator::HashHle hash_hle(
+      cpu.GetMemory(), hle,
+      [&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); });
+  uint32_t hash_obj = hash_hle.Build(/*vtable=*/0x80082000, /*object=*/0x80083000);
+  shell_hle.RegisterInstance(zeebulator::HashHle::kClsidMd5, hash_obj);
 
   auto run_pending_threads_fn = [&](const char* phase_tag) {
     std::printf("[run_pending_threads] %s check: has=%d\n", phase_tag, thread_hle.HasPendingThreads());

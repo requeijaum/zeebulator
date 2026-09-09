@@ -42,6 +42,7 @@ add_executable(zeebulator_tests
   font5x7_test.cpp
   scaffold_object_test.cpp
   heap_hle_test.cpp
+  hash_hle_test.cpp
   title_quirks_test.cpp
   bitmap_hle_test.cpp
   call_stack_tracer_test.cpp
