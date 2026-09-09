@@ -48,6 +48,7 @@ add_executable(zeebulator_tests
   call_stack_tracer_test.cpp
   atitc_test.cpp
   png_test.cpp
+  tga_test.cpp
   letterbox_test.cpp
   ${PROJECT_SOURCE_DIR}/frontends/standalone/letterbox.cpp
   save_state_test.cpp
