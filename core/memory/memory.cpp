@@ -99,14 +99,33 @@ void Memory::Write32(uint32_t address, uint32_t value) {
     } else if (value == 0) {
       auto it = media_bound_slots_.find(address);
       if (it != media_bound_slots_.end()) {
-        // Release-clear of a live HLE-owned media binding: skip it so the
-        // Play path still finds the interface. (Genuine rebinding to a
-        // different, non-zero pointer is handled by the branch above.)
-        if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
-          std::fprintf(stderr, "[mediaguard] SUPPRESS-ZERO slot[0x%08x] (keep 0x%08x)\n",
-                       address, it->second);
+        // Only suppress while the binding is still LIVE, i.e. the slot
+        // still holds the exact pointer we recorded. `media_bound_slots_`
+        // is keyed by raw guest address, and guest addresses get recycled
+        // -- most brutally on the stack. Real case found in Crash Nitro
+        // Kart 2 (cnk2.mod): a transient stack slot at 0x0039e280 once
+        // held a media pointer, the frame died, and ~95M instructions
+        // later zlib's `inflate` reused that exact address for its local
+        // `ret`. Its `ret = Z_OK` store (0x00175214 `str r1,[fp,#-64]`)
+        // was silently swallowed here, so `inflate` returned the stale 2,
+        // the .pof asset loader treated it as fatal, applet init bailed
+        // out, and the game finally wandered to PC=0. Checking liveness
+        // keeps the Double Dragon Release-clear case working (there the
+        // slot really does still hold the bound interface) while letting
+        // every recycled slot be written normally.
+        if (Read32(address) == it->second) {
+          if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
+            std::fprintf(stderr, "[mediaguard] SUPPRESS-ZERO slot[0x%08x] (keep 0x%08x)\n",
+                         address, it->second);
+          }
+          return;
         }
-        return;
+        // Slot was recycled for something else: the binding is dead.
+        if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
+          std::fprintf(stderr, "[mediaguard] STALE slot[0x%08x] (bound 0x%08x, now 0x%08x) -> allow\n",
+                       address, it->second, Read32(address));
+        }
+        media_bound_slots_.erase(it);
       }
     }
   }
