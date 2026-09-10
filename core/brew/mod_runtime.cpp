@@ -576,19 +576,28 @@ void ModRuntime::SprintfImpl(IArmCore& core) {
 }
 
 void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
-  // Real signature: char* Func(char* dest, const char* fmt, int value) --
-  // see mod_runtime.h's own doc comment (the table's thirty-third slot)
-  // for the full real derivation. A real sprintf-family formatter, same
-  // job as SprintfImpl above, but with a real single, direct integer
-  // argument instead of that one's own double-indirection ppArgs
-  // cursor -- real format strings observed so far only ever consume
-  // exactly one directive (`%d`, `%06d`, `x%d`), so this real value is
-  // substituted at the one real numeric directive found, if any; a
-  // real literal with no directive at all (`"EXTRA"`) is copied
-  // through unchanged, same as SprintfImpl's own literal-text handling.
+  // AEEHelperFuncs slot 8 (offset 0x20): `int sprintf(char* dest, const char* fmt, ...)`.
+  // Per ARM AAPCS calling convention:
+  //   r0 = dest
+  //   r1 = fmt
+  //   r2 = first vararg
+  //   r3 = second vararg
+  //   [sp + 0] = third vararg, [sp + 4] = fourth, etc.
+  // Supports %d, %i, %u, %x, %X, %c, %s, %%, width and 0-padding.
+  // Backward-compatible with ABD (which passes a single int in r2 for score/lives/shield HUD)
+  // and fixes Zeeboids (which calls sprintf with multiple %s string args to build asset paths).
   uint32_t dest = core.GetRegister(kR0);
   uint32_t fmt = core.GetRegister(kR1);
-  int32_t value = static_cast<int32_t>(core.GetRegister(kR2));
+
+  uint32_t arg_idx = 0;
+  auto read_next_arg = [&]() -> uint32_t {
+    if (arg_idx == 0) { ++arg_idx; return core.GetRegister(kR2); }
+    if (arg_idx == 1) { ++arg_idx; return core.GetRegister(kR3); }
+    uint32_t sp = core.GetRegister(kSP);
+    uint32_t val = memory_.Read32(sp + (arg_idx - 2) * 4);
+    ++arg_idx;
+    return val;
+  };
 
   uint32_t out = dest;
   for (uint32_t i = 0;; ++i) {
@@ -620,29 +629,48 @@ void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
     std::string formatted;
     switch (spec) {
       case 'd':
-      case 'i':
-        formatted = std::to_string(value);
+      case 'i': {
+        int32_t val = static_cast<int32_t>(read_next_arg());
+        formatted = std::to_string(val);
         break;
-      case 'u':
-        formatted = std::to_string(static_cast<uint32_t>(value));
+      }
+      case 'u': {
+        uint32_t val = read_next_arg();
+        formatted = std::to_string(val);
         break;
+      }
       case 'x':
       case 'X': {
-        char buf[9];
-        std::snprintf(buf, sizeof(buf), spec == 'x' ? "%x" : "%X",
-                      static_cast<uint32_t>(value));
+        uint32_t val = read_next_arg();
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), spec == 'x' ? "%x" : "%X", val);
         formatted = buf;
         break;
       }
+      case 'c': {
+        char ch = static_cast<char>(read_next_arg());
+        formatted = std::string(1, ch);
+        break;
+      }
+      case 's': {
+        uint32_t str_ptr = read_next_arg();
+        if (str_ptr != 0) {
+          for (uint32_t j = 0; ; ++j) {
+            uint8_t sc = memory_.Read8(str_ptr + j);
+            if (sc == 0) break;
+            formatted.push_back(static_cast<char>(sc));
+          }
+        }
+        break;
+      }
       default:
-        // Unknown directive: emit literally, same precedent as
-        // SprintfImpl's own fallback above.
+        // Unknown directive: emit literally.
         for (uint32_t k = spec_start; k <= i; ++k) {
           formatted.push_back(static_cast<char>(memory_.Read8(fmt + k)));
         }
         break;
     }
-    bool numeric_directive = spec == 'd' || spec == 'u' || spec == 'x' || spec == 'X';
+    bool numeric_directive = spec == 'd' || spec == 'i' || spec == 'u' || spec == 'x' || spec == 'X';
     if (numeric_directive && has_width && formatted.size() < width) {
       bool negative = numeric_directive && !formatted.empty() && formatted[0] == '-';
       std::string digits = negative ? formatted.substr(1) : formatted;
@@ -655,7 +683,7 @@ void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
     for (char ch : formatted) memory_.Write8(out++, static_cast<uint8_t>(ch));
   }
   memory_.Write8(out, 0);
-  core.SetRegister(kR0, dest);
+  core.SetRegister(kR0, out - dest);
 }
 
 void ModRuntime::GetAppContextImpl(IArmCore& core) {

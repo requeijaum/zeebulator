@@ -44,6 +44,7 @@ constexpr uint32_t kUnknownSlotOffset0xcc = 0xcc;
 constexpr uint32_t kUnknownSlotOffset0x90 = 0x90;
 constexpr uint32_t kUnknownSlotOffset0x10 = 0x10;
 constexpr uint32_t kUnknownSlotOffset0x1c = 0x1c;
+constexpr uint32_t kUnknownSlotOffset0x20 = 0x20;
 constexpr uint32_t kUnknownSlotOffset0x50 = 0x50;
 constexpr uint32_t kAppContextShellOffset = 12;
 constexpr uint32_t kAppContextDisplayOffset = 20;
@@ -1210,4 +1211,25 @@ TEST(ModRuntime, UnknownSlot0x50IsWiredAndSafelyReturnsZero) {
 
   EXPECT_NE(unknown_fn, 0u) << "slot must be wired to a real trap, not left as a null pointer";
   EXPECT_EQ(hle.CallArmFunction(unknown_fn, 0x1234, 0x5678), 0u);
+}
+
+TEST(ModRuntime, HelperSlot0x20SprintfFormatsStringAndVarargs) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t sprintf_fn = cpu.GetMemory().Read32(kTableAddress + kUnknownSlotOffset0x20);
+
+  constexpr uint32_t kDest = 0x80300100;
+  constexpr uint32_t kFmt = 0x80300200;
+  constexpr uint32_t kStr1 = 0x80300300;
+  constexpr uint32_t kStr2 = 0x80300400;
+
+  WriteCString(cpu.GetMemory(), kFmt, "%s/%s.db");
+  WriteCString(cpu.GetMemory(), kStr1, "zeeboiddata");
+  WriteCString(cpu.GetMemory(), kStr2, "zeeboid");
+
+  uint32_t written = hle.CallArmFunction(sprintf_fn, kDest, kFmt, kStr1, kStr2);
+  EXPECT_EQ(ReadCString(cpu.GetMemory(), kDest), "zeeboiddata/zeeboid.db");
+  EXPECT_EQ(written, 22u);
 }
