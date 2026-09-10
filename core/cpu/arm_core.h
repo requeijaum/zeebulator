@@ -57,6 +57,9 @@ class IArmCore {
   virtual uint32_t GetRegister(int index) const = 0;
   virtual void SetRegister(int index, uint32_t value) = 0;
 
+  // Interworking branch to a target (simulates BX/BLX, selecting ARM vs Thumb from bit 0)
+  virtual void BranchExchange(uint32_t target) { SetRegister(kPC, target); }
+
   virtual uint32_t GetCpsr() const = 0;
   virtual void SetCpsr(uint32_t value) = 0;
 

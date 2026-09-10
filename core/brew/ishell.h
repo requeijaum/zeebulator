@@ -119,6 +119,9 @@ class IShellHle {
   // immediately; the default zero dereferenced a null vtable.
   void SetLoadResObjectReturn(uint32_t object_ptr);
 
+  // Sets guest memory allocator for resource loading (LoadResData)
+  void SetAllocator(std::function<uint32_t(uint32_t)> malloc_fn) { malloc_fn_ = std::move(malloc_fn); }
+
   // Optional ThreadHle hook for cooperative threads
   void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
 
@@ -183,6 +186,7 @@ class IShellHle {
   void CancelTimerImpl(IArmCore& core);
   void ResumeImpl(IArmCore& core);
   void LoadResObjectImpl(IArmCore& core);
+  void LoadResDataImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
   void GetHandlerImpl(IArmCore& core);
   void DetectTypeImpl(IArmCore& core);
@@ -199,6 +203,7 @@ class IShellHle {
   std::unordered_map<std::string, uint32_t> interned_mimes_;
   uint32_t next_mime_addr_ = 0x0008d000;
   class ThreadHle* thread_hle_ = nullptr;
+  std::function<uint32_t(uint32_t)> malloc_fn_;
 };
 
 }  // namespace zeebulator

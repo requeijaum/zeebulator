@@ -43,7 +43,8 @@ constexpr uint32_t kUnknownSlotOffset0x144 = 0x144;
 constexpr uint32_t kUnknownSlotOffset0x14c = 0x14c;
 constexpr uint32_t kUnknownSlotOffset0x150 = 0x150;
 constexpr uint32_t kUnknownSlotOffset0x64 = 0x64;
-constexpr uint32_t kUnknownSlotOffset0xcc = 0xcc;
+constexpr uint32_t kStrtoulSlotOffset = 0xc4;
+constexpr uint32_t kStrncmpSlotOffset = 0xcc;
 constexpr uint32_t kUnknownSlotOffset0x90 = 0x90;
 constexpr uint32_t kUnknownSlotOffset0x10 = 0x10;
 constexpr uint32_t kUnknownSlotOffset0x34 = 0x34;
@@ -118,6 +119,7 @@ void ModRuntime::SetContextAddress(uint32_t context_address) {
 constexpr uint32_t kAllocNoZmem = 0x80000000u;
 
 uint32_t ModRuntime::Allocate(uint32_t size) {
+  bool zero_mem = (size & kAllocNoZmem) == 0;
   size &= ~kAllocNoZmem;
   uint32_t aligned = (size + 3) & ~3u;  // word-align every allocation
   if (aligned > heap_end_ - heap_cursor_) {
@@ -125,6 +127,11 @@ uint32_t ModRuntime::Allocate(uint32_t size) {
   }
   uint32_t result = heap_cursor_;
   heap_cursor_ += aligned;
+  if (zero_mem) {
+    for (uint32_t i = 0; i < aligned; ++i) {
+      memory_.Write8(result + i, 0);
+    }
+  }
   return result;
 }
 
@@ -390,6 +397,43 @@ void ModRuntime::StrncpyImpl(IArmCore& core) {
     memory_.Write8(dest + i, byte);
   }
   core.SetRegister(kR0, dest);  // strncpy returns its first argument
+}
+
+void ModRuntime::StrncmpImpl(IArmCore& core) {
+  // int strncmp(const char *s1, const char *s2, size_t n)
+  uint32_t s1 = core.GetRegister(kR0);
+  uint32_t s2 = core.GetRegister(kR1);
+  uint32_t n = core.GetRegister(kR2);
+  for (uint32_t i = 0; i < n; ++i) {
+    uint8_t c1 = memory_.Read8(s1 + i);
+    uint8_t c2 = memory_.Read8(s2 + i);
+    if (c1 != c2) {
+      core.SetRegister(kR0, static_cast<int32_t>(c1) - static_cast<int32_t>(c2));
+      return;
+    }
+    if (c1 == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::StrtoulImpl(IArmCore& core) {
+  // unsigned long strtoul(const char *nptr, char **endptr, int base)
+  uint32_t nptr = core.GetRegister(kR0);
+  uint32_t endptr = core.GetRegister(kR1);
+  int base = static_cast<int>(core.GetRegister(kR2));
+  std::string s;
+  for (uint32_t i = 0;; ++i) {
+    uint8_t c = memory_.Read8(nptr + i);
+    if (c == 0) break;
+    s.push_back(static_cast<char>(c));
+  }
+  char* end = nullptr;
+  unsigned long val = std::strtoul(s.c_str(), &end, base);
+  if (endptr != 0) {
+    size_t consumed = end ? static_cast<size_t>(end - s.c_str()) : 0;
+    memory_.Write32(endptr, nptr + static_cast<uint32_t>(consumed));
+  }
+  core.SetRegister(kR0, static_cast<uint32_t>(val));
 }
 
 void ModRuntime::StrchrImpl(IArmCore& core) {
@@ -802,6 +846,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t get_uptime_ms_fn = hle_.Register([this](IArmCore& core) { GetUpTimeMsImpl(core); });
   uint32_t get_app_context_fn = hle_.Register([this](IArmCore& core) { GetAppContextImpl(core); });
   uint32_t bounded_strcpy_fn = hle_.Register([this](IArmCore& core) { BoundedStrcpyImpl(core); });
+  uint32_t strtoul_fn = hle_.Register([this](IArmCore& core) { StrtoulImpl(core); });
+  uint32_t strncmp_fn = hle_.Register([this](IArmCore& core) { StrncmpImpl(core); });
   uint32_t strstr_fn = hle_.Register([this](IArmCore& core) { StrstrImpl(core); });
   uint32_t sprintf_fn = hle_.Register([this](IArmCore& core) { SprintfImpl(core); });
   uint32_t dbgprintf_fn = hle_.Register([this](IArmCore& core) {
@@ -892,7 +938,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     // observing what the caller does with the returned chunk.
     core.SetRegister(kR0, data + data_off);
   });
-  uint32_t unknown_0xcc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  // slot 0xcc is strncmp (strncmp_fn registered above)
   uint32_t unknown_0x90_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x10_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   // Real, confirmed gap: Alien Breaker Deluxe's own real per-object init
@@ -969,7 +1015,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x14c, unknown_0x14c_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x150, unknown_0x150_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x64, unknown_0x64_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0xcc, unknown_0xcc_fn);
+  memory_.Write32(table_address + kStrtoulSlotOffset, strtoul_fn);
+  memory_.Write32(table_address + kStrncmpSlotOffset, strncmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);

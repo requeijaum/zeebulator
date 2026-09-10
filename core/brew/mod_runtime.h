@@ -654,6 +654,8 @@ class ModRuntime {
   void StrcpyImpl(IArmCore& core);
   void BoundedStrcpyImpl(IArmCore& core);
   void StrncpyImpl(IArmCore& core);
+  void StrncmpImpl(IArmCore& core);
+  void StrtoulImpl(IArmCore& core);
   void StrchrImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);

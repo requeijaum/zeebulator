@@ -96,6 +96,11 @@ class GlHle {
   uint32_t BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
                               uint32_t object_address);
 
+  // Builds IGLES11 (new GLES interface returned by AEECLSID_QEGL QueryInterface)
+  uint32_t BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
+                       uint32_t object_address);
+  void SetGles11Object(uint32_t gles11_obj) { gles11_object_ = gles11_obj; }
+
   void RegisterProcAddress(const std::string& name, uint32_t trap_addr) {
     proc_addresses_[name] = trap_addr;
   }
@@ -190,6 +195,7 @@ class GlHle {
   bool context_current_ = false;
   uint32_t gl_object_ = 0;
   uint32_t egl_object_ = 0;
+  uint32_t gles11_object_ = 0;
   uint32_t surface_manip_obj_ = 0;
   uint32_t gl_vtable_addr_ = 0;
   std::map<std::string, uint32_t> proc_addresses_;

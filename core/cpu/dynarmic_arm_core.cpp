@@ -288,6 +288,18 @@ void DynarmicArmCore::SetRegister(int index, uint32_t value) {
   jit_->Regs()[static_cast<size_t>(index)] = value;
 }
 
+void DynarmicArmCore::BranchExchange(uint32_t target) {
+  bool to_thumb = (target & 1) != 0;
+  uint32_t cpsr = jit_->Cpsr();
+  if (to_thumb) {
+    cpsr |= (1u << kCpsrT);
+  } else {
+    cpsr &= ~(1u << kCpsrT);
+  }
+  jit_->SetCpsr(cpsr);
+  jit_->Regs()[15] = to_thumb ? (target & ~1u) : (target & ~3u);
+}
+
 uint32_t DynarmicArmCore::GetCpsr() const { return jit_->Cpsr(); }
 
 void DynarmicArmCore::SetCpsr(uint32_t value) { jit_->SetCpsr(value); }

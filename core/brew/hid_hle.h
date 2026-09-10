@@ -56,6 +56,8 @@ class HidHle {
   void RegisterForButtonEventImpl(IArmCore& core);
   void GetNextButtonEventImpl(IArmCore& core);
   void CreateDeviceImpl(IArmCore& core);
+  void GetDeviceInfoImpl(IArmCore& core);
+  void GetNextConnectEventImpl(IArmCore& core);
   void GetConnectedDevicesImpl(IArmCore& core);
 
   // {nButtonID, nState, nButtonUID} -- matches the subset of real

@@ -39,6 +39,7 @@
 #include "core/brew/heap_hle.h"
 #include "core/brew/hash_hle.h"
 #include "core/brew/mem_astream_hle.h"
+#include "core/brew/unzip_stream_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
 #include "core/brew/compat/title_quirks.h"
@@ -1297,6 +1298,7 @@ int main(int argc, char** argv) {
   // ISHELL_CreateInstance(AEECLSID_DISPLAY, ...), not directly -- found
   // via real disassembly of AEEApplet_New's call chain (PHASE8_LOG.md).
   zeebulator::IShellHle shell_hle(cpu.GetMemory(), hle, kWidth, kHeight);
+  shell_hle.SetAllocator([&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); });
   // Real ISHELL_LoadResDataEx(shell, "resources.bar", id, type, ...)
   // calls (real slot 41, confirmed live against Peggle -- see
   // core/brew/ishell.h) need the real file's own bytes registered
@@ -1448,7 +1450,13 @@ int main(int argc, char** argv) {
   // the full reasoning and what's still unconfirmed about it).
   uint32_t last_opened_file_proxy =
       file_hle.BuildLastOpenedFileProxy(/*vtable=*/0x80012000, /*object=*/0x80013000);
-  shell_hle.RegisterInstance(0x01001014, last_opened_file_proxy);
+
+  // ClsId 0x01001014: AEECLSID_UNZIPSTREAM (IUnzipAStream) from Qualcomm BREW SDK.
+  // Decompresses a compressed IAStream (deflate / gzip / zlib) into uncompressed bytes.
+  zeebulator::UnzipStreamHle unzip_stream_hle(cpu.GetMemory(), hle, /*object_region_start=*/0x80087000);
+  unzip_stream_hle.Build(/*vtable=*/0x80086000);
+  shell_hle.RegisterFactory(zeebulator::UnzipStreamHle::kClsidUnzipStream,
+                            [&unzip_stream_hle]() { return unzip_stream_hle.AllocateStream(); });
   // ClsId 0x0100100c: a real, still-unidentified class found bringing
   // up Disney All Star Cards -- real code calls
   // `ISHELL_CreateInstance(shell, 0x0100100c, &ppo)` and, like every
@@ -1477,9 +1485,14 @@ int main(int argc, char** argv) {
   // directly without going through `CreateInstance`) already implements
   // both real interfaces, so those replace the generic scaffolds here.
   uint32_t gl_obj = gl_hle.BuildGl(cpu.GetMemory(), hle, /*vtable=*/0x80007000, /*object=*/0x80008000);
+  gl_hle.SetGlObject(gl_obj);
   shell_hle.RegisterInstance(/*AEECLSID_GL=*/0x01014bc3, gl_obj);
   uint32_t egl_obj = gl_hle.BuildEgl(cpu.GetMemory(), hle, /*vtable=*/0x80009000, /*object=*/0x8000A000);
+  gl_hle.SetEglObject(egl_obj);
   shell_hle.RegisterInstance(/*AEECLSID_EGL=*/0x01014bc4, egl_obj);
+
+  uint32_t gles11_obj = gl_hle.BuildGles11(cpu.GetMemory(), hle, /*vtable=*/0x80088000, /*object=*/0x80089000);
+  gl_hle.SetGles11Object(gles11_obj);
   // A still-deeper gate (0x1b71c, a joystick/gamepad-init routine gating
   // the same "memory insufficient" state) calls
   // ISHELL_CreateInstance(shell, ClsId=0x0106c411, ...) then
@@ -1807,7 +1820,7 @@ int main(int argc, char** argv) {
   // work already established as "legitimately long, not a bug"
   // (TASKS.md).
   std::vector<zeebulator::HleRuntime::HleFunction> unknown_0x0103d8ec_methods(
-      40, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+      200, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
   unknown_0x0103d8ec_methods[2] = [&cpu, &hle, &display, &backend, &abd_font_atlas, &abd_text_state,
                                     kHeight](zeebulator::IArmCore& core) {
     // int QueryInterface(iname* _me, AEECLSID clsID, void** ppo) -- real
@@ -1912,6 +1925,15 @@ int main(int argc, char** argv) {
                      obj ? core.GetMemory().Read32(obj + 0) : 0,
                      obj ? core.GetMemory().Read32(obj + 44) : 0);
         ++n;
+      }
+      core.SetRegister(zeebulator::kR0, 0);
+    };
+    // Slot 65 (offset 0x104): query status / pending queue. Callers like Alpine Racer EX
+    // pass r1 = &status, polling until *r1 == 0 before proceeding with graphics setup.
+    stub_methods[65] = [](zeebulator::IArmCore& core) {
+      uint32_t out_status_addr = core.GetRegister(zeebulator::kR1);
+      if (out_status_addr != 0) {
+        core.GetMemory().Write32(out_status_addr, 0);
       }
       core.SetRegister(zeebulator::kR0, 0);
     };
@@ -2453,6 +2475,11 @@ int main(int argc, char** argv) {
     if (out_ptr != 0) {
       cpu.GetMemory().Write32(out_ptr, 1);
     }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  unknown_0x0103d8ec_methods[65] = [](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    if (out != 0) core.GetMemory().Write32(out, 0);
     core.SetRegister(zeebulator::kR0, 0);
   };
   uint32_t unknown_0x0103d8ec_obj = zeebulator::BuildInterfaceObject(
@@ -3031,6 +3058,9 @@ int main(int argc, char** argv) {
   uint32_t entry = kBase;
 
   const char* stage = "AEEMod_Load";
+  if (std::getenv("ZEEB_CALLSTACK")) {
+    zeebulator::CallStackTracer::Instance().SetEnabled(true);
+  }
   zeebulator::CallStackTracer::Instance().RegisterSymbol(kBase, "AEEMod_Load");
   uint32_t applet_ptr = 0;
   uint32_t handle_event_fn = 0;
@@ -3232,6 +3262,10 @@ int main(int argc, char** argv) {
   } catch (const std::exception& e) {
     std::printf("%s threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n", stage, e.what(),
                 cpu.GetRegister(zeebulator::kPC), cpu.GetRegister(zeebulator::kPC) - kBase);
+    std::string trace = zeebulator::CallStackTracer::Instance().FormatStackTrace(cpu);
+    if (!trace.empty()) {
+      std::printf("Stack trace:\n%s\n", trace.c_str());
+    }
     return 1;
   }
 

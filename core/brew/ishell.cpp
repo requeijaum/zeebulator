@@ -209,6 +209,51 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
   core.SetRegister(kR0, load_res_object_obj_);
 }
 
+void IShellHle::LoadResDataImpl(IArmCore& core) {
+  // void * ISHELL_LoadResData(IShell * po, const char * pszResFile, uint16 nResID, ResType nType)
+  // Real calling convention (Qualcomm BREW SDK AEE.h):
+  //   r0 = pIShell
+  //   r1 = pszResFile
+  //   r2 = nResID (uint16)
+  //   r3 = nType (ResType)
+  // Returns pointer to allocated resource buffer, or NULL on error.
+  std::string filename = ReadCString(memory_, core.GetRegister(kR1));
+  uint32_t id = core.GetRegister(kR2);
+  uint32_t type = core.GetRegister(kR3);
+
+  auto file_it = resource_files_.find(filename);
+  if (file_it == resource_files_.end()) {
+    if (std::getenv("ZEEB_LOG_FILE")) {
+      std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> NO FILE REGISTERED\n",
+                   filename.c_str(), id, type);
+    }
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  const BarEntry* entry =
+      file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
+  if (entry == nullptr) {
+    if (std::getenv("ZEEB_LOG_FILE")) {
+      std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> NO DIR ENTRY\n",
+                   filename.c_str(), id, type);
+    }
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  std::vector<uint8_t> data = file_it->second.Extract(*entry);
+  uint32_t ptr = malloc_fn_ ? malloc_fn_(static_cast<uint32_t>(data.size() + 4)) : 0;
+  if (ptr != 0) {
+    for (size_t i = 0; i < data.size(); ++i) {
+      memory_.Write8(ptr + static_cast<uint32_t>(i), data[i]);
+    }
+  }
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> OK size=%zu ptr=0x%08x\n",
+                 filename.c_str(), id, type, data.size(), ptr);
+  }
+  core.SetRegister(kR0, ptr);
+}
+
 void IShellHle::LoadResDataExImpl(IArmCore& core) {
   // AEEResult LoadResDataEx(IShell *pIShell, const char *pszResFile,
   //   uint16 wResID, AEERESTYPE resType, void *pBuffer, uint32 *pnLen)
@@ -253,11 +298,21 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
   }
 
   std::vector<uint8_t> data = file_it->second.Extract(*entry);
-  for (uint32_t i = 0; i < data.size(); ++i) {
-    memory_.Write8(buffer + i, data[i]);
+  uint32_t dest_buffer = buffer;
+  bool caller_allocated = (dest_buffer != 0);
+  if (!caller_allocated) {
+    // If pBuffer is NULL, allocate buffer in guest memory and return pointer
+    dest_buffer = malloc_fn_ ? malloc_fn_(static_cast<uint32_t>(data.size() + 4)) : 0;
+  }
+
+  if (dest_buffer != 0) {
+    for (uint32_t i = 0; i < data.size(); ++i) {
+      memory_.Write8(dest_buffer + i, data[i]);
+    }
   }
   if (len_addr != 0) memory_.Write32(len_addr, entry->size);
-  core.SetRegister(kR0, 0);  // SUCCESS
+  // When caller supplied buffer, return 0 (AEE_SUCCESS); when allocated on demand, return pointer.
+  core.SetRegister(kR0, caller_allocated ? 0 : dest_buffer);
 }
 
 void IShellHle::GetHandlerImpl(IArmCore& core) {
@@ -414,7 +469,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       Stub,  // 15 GetActiveDialog
       Stub,  // 16 EndDialog
       Stub,  // 17 LoadResString
-      Stub,  // 18 LoadResData
+      [this](IArmCore& c) { LoadResDataImpl(c); },    // 18 LoadResData
       [this](IArmCore& c) { LoadResObjectImpl(c); },  // 19 LoadResObject
       Stub,  // 20 FreeResData
       Stub,  // 21 SendEvent

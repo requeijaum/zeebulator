@@ -125,6 +125,10 @@ void ArmInterpreter::SetRegister(int index, uint32_t value) {
   regs_[index] = value;
 }
 
+void ArmInterpreter::BranchExchange(uint32_t target) {
+  SetPcInterworking(target);
+}
+
 uint32_t ArmInterpreter::GetCpsr() const { return cpsr_; }
 void ArmInterpreter::SetCpsr(uint32_t value) { cpsr_ = value; }
 
@@ -729,8 +733,9 @@ void ArmInterpreter::ExecuteThumbHiRegisterOperation(uint16_t instr) {
     }
     case 0x2: {  // MOV -- no flags affected
       if (rd == kPC) {
-        regs_[kPC] = rs_val & ~1u;  // branches, but never interworks
-        pc_updated_by_instruction_ = true;
+        // In ARMv5T+ / ARMv6, MOV to PC (e.g. `mov pc, lr`) interworks based on bit 0.
+        CallStackTracer::Instance().OnReturn(regs_[kPC], rs_val, regs_[kSP]);
+        SetPcInterworking(rs_val);
       } else {
         regs_[rd] = rs_val;
       }
@@ -971,8 +976,8 @@ void ArmInterpreter::ExecuteThumbLongBranchWithLink(uint16_t instr) {
     pc_updated_by_instruction_ = true;
   } else if (h == 0x3) {  // BL: stays in Thumb mode.
     regs_[kLR] = return_addr;
-    CallStackTracer::Instance().OnCall(caller_pc, target, return_addr, regs_[kSP]);
-    regs_[kPC] = target;
+    CallStackTracer::Instance().OnCall(caller_pc, target & ~1u, return_addr, regs_[kSP]);
+    regs_[kPC] = target & ~1u;
     pc_updated_by_instruction_ = true;
   }
 }

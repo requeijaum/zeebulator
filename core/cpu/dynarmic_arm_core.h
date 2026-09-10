@@ -41,6 +41,7 @@ class DynarmicArmCore : public IArmCore {
 
   uint32_t GetRegister(int index) const override;
   void SetRegister(int index, uint32_t value) override;
+  void BranchExchange(uint32_t target) override;
 
   uint32_t GetCpsr() const override;
   void SetCpsr(uint32_t value) override;

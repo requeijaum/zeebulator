@@ -1233,3 +1233,40 @@ TEST(ModRuntime, HelperSlot0x20SprintfFormatsStringAndVarargs) {
   EXPECT_EQ(ReadCString(cpu.GetMemory(), kDest), "zeeboiddata/zeeboid.db");
   EXPECT_EQ(written, 22u);
 }
+
+TEST(ModRuntime, HelperSlot0xc4StrtoulParsesNumbersAndUpdatesEndptr) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t strtoul_fn = cpu.GetMemory().Read32(kTableAddress + 0xc4);
+
+  constexpr uint32_t kStr = 0x80300100;
+  constexpr uint32_t kEndPtr = 0x80300200;
+  WriteCString(cpu.GetMemory(), kStr, "1234px");
+
+  uint32_t val = hle.CallArmFunction(strtoul_fn, kStr, kEndPtr, 10);
+  EXPECT_EQ(val, 1234u);
+  EXPECT_EQ(cpu.GetMemory().Read32(kEndPtr), kStr + 4u);
+}
+
+TEST(ModRuntime, HelperSlot0xccStrncmpComparesBoundedStrings) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t strncmp_fn = cpu.GetMemory().Read32(kTableAddress + 0xcc);
+
+  constexpr uint32_t kStr1 = 0x80300100;
+  constexpr uint32_t kStr2 = 0x80300200;
+  WriteCString(cpu.GetMemory(), kStr1, "apple");
+  WriteCString(cpu.GetMemory(), kStr2, "application");
+
+  // First 3 chars "app" are identical
+  EXPECT_EQ(hle.CallArmFunction(strncmp_fn, kStr1, kStr2, 3), 0u);
+  // First 4 chars "appl" vs "appl" are identical
+  EXPECT_EQ(hle.CallArmFunction(strncmp_fn, kStr1, kStr2, 4), 0u);
+  // 5 chars "apple" vs "appli" differ: 'e' < 'i'
+  int32_t diff = static_cast<int32_t>(hle.CallArmFunction(strncmp_fn, kStr1, kStr2, 5));
+  EXPECT_LT(diff, 0);
+}

@@ -89,7 +89,7 @@ void GlHle::EglQueryInterface(IArmCore& core) {
 
   uint32_t ret_obj = 0;
   if (iid == kAeeIidGles10 || iid == kAeeIidGles11) {
-    ret_obj = gl_object_;
+    ret_obj = gles11_object_ != 0 ? gles11_object_ : gl_object_;
   } else if (iid == kAeeIidEgl10 || iid == kAeeIidEgl11) {
     ret_obj = egl_object_ != 0 ? egl_object_ : core.GetRegister(kR0);
   } else if (iid == kAeeIidEglSurfaceManip || iid == kAeeIidEglSurfaceManipV1) {
@@ -908,6 +908,7 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlViewport(c); },     // 79 glViewport
   };
   gl_vtable_addr_ = vtable_address;
+  gl_object_ = object_address;
   // Pre-populate proc_addresses_ with traps for extension lookups
   for (size_t i = 3; i < methods.size(); ++i) {
     // If the method is not a stub, it will have a trap registered
@@ -949,6 +950,7 @@ uint32_t GlHle::BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_addres
       [this](IArmCore& c) { EglSwapBuffers(c); },            // 26 eglSwapBuffers
       Stub,                                                // 27 eglCopyBuffers
   };
+  egl_object_ = object_address;
   return BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
 }
 
@@ -1022,6 +1024,71 @@ uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtab
   };
   surface_manip_obj_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return surface_manip_obj_;
+}
+
+uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
+                            uint32_t object_address) {
+  // 150 slots total for IGLES11 (standard Qualcomm BREW SDK 4.0.2 / zeebx AEE slots):
+  // 0..2: AddRef, Release, QueryInterface
+  // 3..30: Float API (AlphaFunc..Translatef)
+  // 31..149: Fixed/Core API (ActiveTexture..Viewport..)
+  std::vector<HleRuntime::HleFunction> methods(150, Stub);
+  methods[0] = Stub;  // AddRef
+  methods[1] = Stub;  // Release
+  methods[2] = Stub;  // QueryInterface
+
+  // Core methods
+  methods[31] = Stub;                                                // 31 ActiveTexture
+  methods[32] = [this](IArmCore& c) { GlAlphaFuncx(c); };            // 32 AlphaFuncx
+  methods[33] = [this](IArmCore& c) { GlBindTexture(c); };           // 33 BindTexture
+  methods[34] = [this](IArmCore& c) { GlBlendFunc(c); };             // 34 BlendFunc
+  methods[35] = [this](IArmCore& c) { GlClear(c); };                 // 35 Clear
+  methods[36] = [this](IArmCore& c) { GlClearColorx(c); };           // 36 ClearColorx
+  methods[37] = [this](IArmCore& c) { GlClearDepthx(c); };           // 37 ClearDepthx
+  methods[39] = Stub;                                                // 39 ClientActiveTexture
+  methods[40] = [this](IArmCore& c) { GlColor4x(c); };               // 40 Color4x
+  methods[42] = [this](IArmCore& c) { GlColorPointer(c); };          // 42 ColorPointer
+  methods[43] = [this](IArmCore& c) { GlCompressedTexImage2D(c); }; // 43 CompressedTexImage2D
+  methods[48] = [this](IArmCore& c) { GlDeleteTextures(c); };        // 48 DeleteTextures
+  methods[49] = [this](IArmCore& c) { GlDepthFunc(c); };             // 49 DepthFunc
+  methods[50] = [this](IArmCore& c) { GlDepthMask(c); };             // 50 DepthMask
+  methods[52] = [this](IArmCore& c) { GlDisable(c); };               // 52 Disable
+  methods[53] = [this](IArmCore& c) { GlDisableClientState(c); };   // 53 DisableClientState
+  methods[54] = [this](IArmCore& c) { GlDrawArrays(c); };            // 54 DrawArrays
+  methods[55] = [this](IArmCore& c) { GlDrawElements(c); };          // 55 DrawElements
+  methods[56] = [this](IArmCore& c) { GlEnable(c); };                // 56 Enable
+  methods[57] = [this](IArmCore& c) { GlEnableClientState(c); };    // 57 EnableClientState
+  methods[64] = [this](IArmCore& c) { GlGenTextures(c); };           // 64 GenTextures
+  methods[65] = [](IArmCore& core) {
+    uint32_t out_err = core.GetRegister(kR1);
+    if (out_err != 0) {
+      core.GetMemory().Write32(out_err, 0);
+    }
+    core.SetRegister(kR0, 0);  // GL_NO_ERROR
+  };
+  methods[66] = [this](IArmCore& c) { GlGetIntegerv(c); };           // 66 GetIntegerv
+  methods[67] = [this](IArmCore& c) { GlGetString(c); };             // 67 GetString
+  methods[74] = [this](IArmCore& c) { GlLoadIdentity(c); };          // 74 LoadIdentity
+  methods[75] = [this](IArmCore& c) { GlLoadMatrixx(c); };           // 75 LoadMatrixx
+  methods[79] = [this](IArmCore& c) { GlMatrixMode(c); };            // 79 MatrixMode
+  methods[80] = [this](IArmCore& c) { GlMultMatrixx(c); };           // 80 MultMatrixx
+  methods[84] = [this](IArmCore& c) { GlNormalPointer(c); };         // 84 NormalPointer
+  methods[85] = [this](IArmCore& c) { GlOrthox(c); };                // 85 Orthox
+  methods[89] = [this](IArmCore& c) { GlPopMatrix(c); };             // 89 PopMatrix
+  methods[90] = [this](IArmCore& c) { GlPushMatrix(c); };            // 90 PushMatrix
+  methods[92] = [this](IArmCore& c) { GlRotatex(c); };               // 92 Rotatex
+  methods[95] = [this](IArmCore& c) { GlScalex(c); };                // 95 Scalex
+  methods[101] = [this](IArmCore& c) { GlTexCoordPointer(c); };      // 101 TexCoordPointer
+  methods[102] = [this](IArmCore& c) { GlTexEnvx(c); };              // 102 TexEnvx
+  methods[103] = [this](IArmCore& c) { GlTexEnvxv(c); };             // 103 TexEnvxv
+  methods[104] = [this](IArmCore& c) { GlTexImage2D(c); };           // 104 TexImage2D
+  methods[105] = [this](IArmCore& c) { GlTexParameterx(c); };        // 105 TexParameterx
+  methods[107] = [this](IArmCore& c) { GlTranslatex(c); };           // 107 Translatex
+  methods[108] = [this](IArmCore& c) { GlVertexPointer(c); };        // 108 VertexPointer
+  methods[109] = [this](IArmCore& c) { GlViewport(c); };             // 109 Viewport
+
+  gles11_object_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
+  return gles11_object_;
 }
 
 }  // namespace zeebulator

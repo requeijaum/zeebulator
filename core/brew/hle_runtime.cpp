@@ -92,7 +92,7 @@ void HleRuntime::Dispatch(IArmCore& core, uint32_t address) {
                    core.GetRegister(kLR));
     }
   }
-  core.SetRegister(kPC, core.GetRegister(kLR));  // simulate BX LR
+  core.BranchExchange(core.GetRegister(kLR));  // simulate BX LR with proper ARM/Thumb interworking
 }
 
 uint32_t HleRuntime::CallArmFunction(uint32_t target, uint32_t r0, uint32_t r1,

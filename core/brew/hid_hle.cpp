@@ -119,6 +119,37 @@ void HidHle::CreateDeviceImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);  // AEE_SUCCESS
 }
 
+void HidHle::GetDeviceInfoImpl(IArmCore& core) {
+  // AEEResult GetDeviceInfo(IHID*, int nDevHandle, AEEHIDDeviceInfo *pDevInfo)
+  // AEEHIDDeviceInfo layout:
+  //   +0x00: int nType (AEEUID_HID_Joystick_Device = 0x0106c3fd)
+  //   +0x04: uint16 wProductID
+  //   +0x06: uint16 wVendorID
+  //   +0x08: boolean bBluetooth
+  uint32_t pdev_info = core.GetRegister(kR2);
+  if (pdev_info != 0) {
+    constexpr uint32_t kJoystickType = 0x0106c3fd;
+    memory_.Write32(pdev_info, kJoystickType);
+    memory_.Write16(pdev_info + 4, 0x0001);  // PID
+    memory_.Write16(pdev_info + 6, 0x0001);  // VID
+    memory_.Write32(pdev_info + 8, 0);       // bBluetooth
+  }
+  core.SetRegister(kR0, 0);  // AEE_SUCCESS
+}
+
+void HidHle::GetNextConnectEventImpl(IArmCore& core) {
+  // AEEResult GetNextConnectEvent(IHID*, int *pnDevHandle, int *pnStatus, boolean *pbDropped)
+  // Zero out returned parameters so callers (e.g. Alpine Racer EX) know the connect
+  // queue is drained rather than reading uninitialized stack memory.
+  uint32_t pdev_handle = core.GetRegister(kR1);
+  uint32_t pstatus = core.GetRegister(kR2);
+  uint32_t pdropped = core.GetRegister(kR3);
+  if (pdev_handle != 0) memory_.Write32(pdev_handle, 0);
+  if (pstatus != 0) memory_.Write32(pstatus, 0);
+  if (pdropped != 0) memory_.Write32(pdropped, 0);
+  core.SetRegister(kR0, 0);  // AEE_SUCCESS
+}
+
 void HidHle::GetConnectedDevicesImpl(IArmCore& core) {
   // AEEResult GetConnectedDevices(IHID*, int nDeviceType, int *pnDevHandles,
   //   int pnDevHandlesLen, int *pnDevHandlesLenReq)
@@ -156,6 +187,8 @@ uint32_t HidHle::Build(uint32_t hid_vtable_address, uint32_t hid_object_address,
   // source research/samples/conftest_source/conftest/GamepadMgr.c.
   std::vector<HleRuntime::HleFunction> hid_methods(10, Stub);
   hid_methods[3] = [this](IArmCore& core) { CreateDeviceImpl(core); };
+  hid_methods[4] = [this](IArmCore& core) { GetDeviceInfoImpl(core); };
+  hid_methods[5] = [this](IArmCore& core) { GetNextConnectEventImpl(core); };
   hid_methods[7] = [this](IArmCore& core) { GetConnectedDevicesImpl(core); };
   return BuildInterfaceObject(memory_, hle_, hid_vtable_address, hid_object_address,
                               hid_methods);
