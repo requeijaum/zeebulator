@@ -34,10 +34,44 @@ uint16_t Memory::Read16(uint32_t address) const {
 }
 
 uint32_t Memory::Read32(uint32_t address) const {
-  uint32_t v = static_cast<uint32_t>(Read8(address)) |
-               (static_cast<uint32_t>(Read8(address + 1)) << 8) |
-               (static_cast<uint32_t>(Read8(address + 2)) << 16) |
-               (static_cast<uint32_t>(Read8(address + 3)) << 24);
+  // Caminho rapido: uma unica busca de pagina em vez de quatro.
+  //
+  // Read32 chamava Read8 quatro vezes, e cada Read8 faz um `pages_.find()`
+  // numa unordered_map -- ou seja, TODO acesso de 32 bits custava quatro
+  // buscas em tabela hash. Num interpretador, acesso a memoria e o caminho
+  // mais quente que existe, e a leitura de instrucao sozinha ja e um Read32
+  // por instrucao executada.
+  //
+  // Um acesso de 4 bytes que nao cruza a fronteira da pagina pode resolver a
+  // pagina uma vez e ler os quatro bytes direto. A condicao e verificada, nao
+  // assumida: se o acesso cruzar a pagina (desalinhado no fim dela), cai no
+  // caminho antigo byte a byte, que continua correto.
+  //
+  // As chamadas de DebugHooks sao preservadas byte a byte de proposito -- os
+  // watchpoints (ZEEB_WWATCH) registram por byte, e agrupa-las mudaria o que
+  // as ferramentas de depuracao mostram.
+  uint32_t v;
+  const uint32_t offset = address & kPageMask;
+  if (offset <= kPageSize - 4) {
+    DebugHooks& hooks = DebugHooks::Instance();
+    hooks.OnMemRead(address, 1);
+    hooks.OnMemRead(address + 1, 1);
+    hooks.OnMemRead(address + 2, 1);
+    hooks.OnMemRead(address + 3, 1);
+    const Page* page = FindPage(address / kPageSize);
+    if (page == nullptr) {
+      v = 0;
+    } else {
+      const uint8_t* p = page->data() + offset;
+      v = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+          (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+    }
+  } else {
+    v = static_cast<uint32_t>(Read8(address)) |
+        (static_cast<uint32_t>(Read8(address + 1)) << 8) |
+        (static_cast<uint32_t>(Read8(address + 2)) << 16) |
+        (static_cast<uint32_t>(Read8(address + 3)) << 24);
+  }
   // Persistent +0x63c optional-callback seed: if this exact word is the
   // (impossible-on-hardware) 0 and a seed is armed for it, substitute the
   // seed value so the guard's `blx r3` targets a valid no-op instead of 0.
@@ -96,7 +130,12 @@ void Memory::Write32(uint32_t address, uint32_t value) {
         std::fprintf(stderr, "[mediaguard] BIND slot[0x%08x]=0x%08x\n",
                      address, value);
       }
-    } else if (value == 0) {
+    } else if (value == 0 && !media_bound_slots_.empty()) {
+      // A checagem de vazio evita uma busca em tabela hash a CADA escrita de
+      // zero. Jogos zeram memoria o tempo todo (limpar buffers, inicializar
+      // estruturas), e a maioria dos titulos nunca liga um ponteiro de midia --
+      // para esses o mapa fica vazio a execucao inteira e a busca era puro
+      // custo no caminho mais quente do emulador.
       auto it = media_bound_slots_.find(address);
       if (it != media_bound_slots_.end()) {
         // Only suppress while the binding is still LIVE, i.e. the slot
@@ -129,6 +168,22 @@ void Memory::Write32(uint32_t address, uint32_t value) {
         media_bound_slots_.erase(it);
       }
     }
+  }
+  // Mesmo caminho rapido do Read32: uma busca de pagina em vez de quatro,
+  // com a condicao de nao cruzar a fronteira verificada e nao assumida.
+  const uint32_t offset = address & kPageMask;
+  if (offset <= kPageSize - 4) {
+    DebugHooks& hooks = DebugHooks::Instance();
+    hooks.OnMemWrite(address, 1);
+    hooks.OnMemWrite(address + 1, 1);
+    hooks.OnMemWrite(address + 2, 1);
+    hooks.OnMemWrite(address + 3, 1);
+    uint8_t* p = MutablePage(address / kPageSize).data() + offset;
+    p[0] = static_cast<uint8_t>(value);
+    p[1] = static_cast<uint8_t>(value >> 8);
+    p[2] = static_cast<uint8_t>(value >> 16);
+    p[3] = static_cast<uint8_t>(value >> 24);
+    return;
   }
   Write8(address, static_cast<uint8_t>(value));
   Write8(address + 1, static_cast<uint8_t>(value >> 8));
