@@ -1511,9 +1511,46 @@ int main(int argc, char** argv) {
   uint32_t egl_obj = gl_hle.BuildEgl(cpu.GetMemory(), hle, /*vtable=*/0x80009000, /*object=*/0x8000A000);
   gl_hle.SetEglObject(egl_obj);
   shell_hle.RegisterInstance(/*AEECLSID_EGL=*/0x01014bc4, egl_obj);
+  // AEECLSID_QEGL (0x0103d8ec): Qualcomm EGL/GLES unified class per zeebx machine.rs
+  shell_hle.RegisterInstance(/*AEECLSID_QEGL=*/0x0103d8ec, egl_obj);
 
   uint32_t gles11_obj = gl_hle.BuildGles11(cpu.GetMemory(), hle, /*vtable=*/0x80088000, /*object=*/0x80089000);
   gl_hle.SetGles11Object(gles11_obj);
+
+  // Surface manipulation / Imageon extension interfaces queried via EGL QueryInterface
+  uint32_t surface_manip_obj = gl_hle.BuildSurfaceManip(
+      cpu.GetMemory(), hle, /*vtable=*/0x8008A000, /*object=*/0x8008B000);
+  (void)surface_manip_obj;
+
+  // AEECLSID_SOUND (0x01001056): ISound interface from Qualcomm BREW (15 slots:
+  // AddRef, Release, RegisterNotify, Set, Get, SetDevice, PlayTone, PlayToneList,
+  // PlayFreqTone, StopTone, Vibrate, StopVibrate, SetVolume, GetVolume, GetResourceCtl).
+  // Matches zeebx machine.rs: Set/Get preserve 5 bytes of AEESoundInfo.
+  struct SoundInfoState {
+    uint8_t info[5] = {0, 0, 0, 0, 0};
+  };
+  auto sound_state = std::make_shared<SoundInfoState>();
+  std::vector<zeebulator::HleRuntime::HleFunction> sound_methods(
+      15, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  sound_methods[3] = [sound_state, &cpu](zeebulator::IArmCore& core) {
+    // int Set(ISound*, const AEESoundInfo *pInfo)
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      for (int i = 0; i < 5; ++i) sound_state->info[i] = cpu.GetMemory().Read8(pinfo + i);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  sound_methods[4] = [sound_state, &cpu](zeebulator::IArmCore& core) {
+    // int Get(ISound*, AEESoundInfo *pInfo)
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      for (int i = 0; i < 5; ++i) cpu.GetMemory().Write8(pinfo + i, sound_state->info[i]);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  uint32_t sound_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8006E000, /*object=*/0x8006F000, sound_methods);
+  shell_hle.RegisterInstance(/*AEECLSID_SOUND=*/0x01001056, sound_obj);
   // A still-deeper gate (0x1b71c, a joystick/gamepad-init routine gating
   // the same "memory insufficient" state) calls
   // ISHELL_CreateInstance(shell, ClsId=0x0106c411, ...) then
@@ -2522,6 +2559,12 @@ int main(int argc, char** argv) {
       uint32_t draw_rect_trap = core.GetMemory().Read32(kDisplayVtable + 5 * 4);
       hle.CallArmFunction(draw_rect_trap, kDisplayObj, kRectAddr, 0, 0x00FFFFFF);
       core.SetRegister(zeebulator::kLR, saved_lr);
+    };
+    stub_methods[65] = [](zeebulator::IArmCore& core) {
+      // Slot 65: glGetError(IGLES11*, int *pError) -- out-param in R1 must be written 0 (GL_NO_ERROR)
+      uint32_t out = core.GetRegister(zeebulator::kR1);
+      if (out != 0) core.GetMemory().Write32(out, 0);
+      core.SetRegister(zeebulator::kR0, 0);
     };
     uint32_t obj = zeebulator::BuildInterfaceObjectLabeled(
         cpu.GetMemory(), hle, stub_vtable, stub_object, stub_methods,
