@@ -21,6 +21,7 @@ add_executable(zeebulator_tests
   aez_test.cpp
   fufs_test.cpp
   ggz_test.cpp
+  mif_classids_test.cpp
   mif_test.cpp
   mod_test.cpp
   obm1_test.cpp
