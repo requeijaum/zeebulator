@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(zeebulator LANGUAGES CXX)
+# C entra na lista por causa da amalgamacao do SQLite (sqlite3.c, um
+# unico arquivo C): sem a linguagem habilitada no projeto de topo o CMake
+# falha em gerar com "Missing variable is: CMAKE_C_COMPILE_OBJECT".
+project(zeebulator LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -99,6 +102,33 @@ set(XZ_DOC OFF CACHE BOOL "" FORCE)
 # noisy and unrelated to anything this project's own test suite checks.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(liblzma)
+
+# SQLite de verdade (dominio publico), para o AEECLSID_SQLMGR do console.
+# Nao e escolha de conveniencia: o proprio pacote da Z-Wheel traz
+# `tt_prefs.db` (4096 bytes) e `tt_game_info` (25600 bytes) cujos primeiros
+# bytes sao literalmente "SQLite format 3", e o tectoy.mod manda instrucoes
+# do dialeto do SQLite ("PRAGMA integrity_check", "SELECT version,
+# subversion FROM DBINFO" -- ambas medidas em vtable trace, ver
+# core/brew/sql_hle.h). Vendorizado por FetchContent como zlib/liblzma
+# porque esta maquina tem apenas libsqlite3.so.0 em runtime, sem headers
+# de desenvolvimento, e o projeto nao pode depender de um pacote de
+# sistema que nao existe em toda parte. A amalgamacao oficial e um unico
+# .c + .h, sem build system proprio.
+FetchContent_Declare(
+  sqlite3_amalgamation
+  URL https://sqlite.org/2024/sqlite-amalgamation-3460100.zip
+  URL_HASH SHA256=77823cb110929c2bcb0f5d48e4833b5c59a8a6e40cdea3936b99e199dbbe5784
+)
+FetchContent_MakeAvailable(sqlite3_amalgamation)
+add_library(sqlite3 STATIC ${sqlite3_amalgamation_SOURCE_DIR}/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC ${sqlite3_amalgamation_SOURCE_DIR})
+# Sem extensoes carregaveis e sem threads de mais: o unico consumidor e o
+# HLE do console, single-thread, com arquivos locais.
+target_compile_definitions(sqlite3 PUBLIC
+  SQLITE_OMIT_LOAD_EXTENSION=1
+  SQLITE_THREADSAFE=0
+  SQLITE_DEFAULT_MEMSTATUS=0
+)
 
 FetchContent_Declare(
   tinysoundfont

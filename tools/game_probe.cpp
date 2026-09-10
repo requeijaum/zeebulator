@@ -42,6 +42,7 @@
 #include "core/brew/unzip_stream_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
+#include "core/brew/sql_hle.h"
 #include "core/brew/compat/title_quirks.h"
 #include "core/control/control_server.h"
 #include "core/control/debug_hooks.h"
@@ -839,8 +840,33 @@ int main(int argc, char** argv) {
   zeebulator::VirtualFilesystem vfs;
   // A title that doesn't ship a given ggz passes '-' for that slot (ABD is
   // BAR-only). Skip the merge rather than aborting in GgzArchive::Parse.
-  if (std::string(argv[2]) != "-") MergeGgzInto(vfs, argv[2]);
-  if (std::string(argv[3]) != "-") MergeGgzInto(vfs, argv[3]);
+  // Um arquivo de assets que NAO e um ggz nao pode derrubar o emulador. Medido:
+  // passar mod/274214/data.vfs (FUFS, container do Crash Nitro Kart 2 que este
+  // projeto ainda nao parseia) fazia GgzArchive::Parse lancar
+  // "GGZ: invalid table length", ninguem capturava, e o processo abortava com
+  // core dump antes mesmo de carregar o modulo -- comportamento pior que o do
+  // caminho BAR/PAKZ, que ja pula com uma mensagem clara.
+  //
+  // Agora a falha e contida e os bytes crus entram no VFS sob o proprio nome do
+  // arquivo, exatamente como MergeGgzInto faz no fim para um ggz valido: um
+  // jogo que abra o container por conta propria ainda o encontra, e quem
+  // depende do indice descobre a ausencia pelo log em vez de por um sinal.
+  auto merge_asset_arg = [&vfs](const char* path) {
+    if (std::string(path) == "-") return;
+    try {
+      MergeGgzInto(vfs, path);
+    } catch (const std::exception& e) {
+      std::printf("skipped %s: nao e um GGZ parseavel (%s); bytes crus ainda no "
+                  "VFS como %s\n", path, e.what(), BaseName(path).c_str());
+      try {
+        vfs.AddFile(BaseName(path), ReadFile(path));
+      } catch (const std::exception& inner) {
+        std::printf("  e nem os bytes crus puderam ser lidos: %s\n", inner.what());
+      }
+    }
+  };
+  merge_asset_arg(argv[2]);
+  merge_asset_arg(argv[3]);
   if (argc >= 6) MergeBootPkgInto(vfs, argv[5]);
   // Sibling per-game .pkg auto-discovery (2026-09-02): arcade-core ports
   // (spinmast/strhoop/cninja/...) ship their content in a per-game <name>.pkg
@@ -1586,9 +1612,51 @@ int main(int argc, char** argv) {
   // chame, que e o que revela a forma de verdade da interface. As chamadas de
   // slot ficam visiveis em ZEEB_HLE_PROFILE, entao o proximo passo e medido,
   // nao adivinhado.
-  uint32_t sqlmgr_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x8006A000, /*object=*/0x8006B000,
-      /*slot_count=*/32);
+  // ISQLMgr de verdade, sobre SQLite (core/brew/sql_hle.h). O scaffold
+  // generico que estava aqui foi instrumentado antes de ser substituido:
+  // logando indice de slot, r0-r3 e LR, o tectoy.mod mostrou chamar
+  // exatamente slot 3 do ISQLMgr com "tt_prefs.db" + ponteiro de saida,
+  // e depois slot 3 do objeto devolvido com "PRAGMA integrity_check" e
+  // "SELECT version, subversion FROM DBINFO". Com o stub devolvendo
+  // sempre 0 e nenhuma linha, o jogo imprimia "Invalid database
+  // version..." e "Failed to init Preferences database". Os bancos que
+  // ele quer sao arquivos SQLite reais que vem no proprio pacote do
+  // jogo (tt_prefs.db, 4096 bytes, comeca com "SQLite format 3").
+  zeebulator::SqlHle sql_hle(cpu.GetMemory(), hle, /*db_object_region_start=*/0x8006C000,
+                             /*scratch_address=*/0x8006E000, /*scratch_size=*/0x2000);
+  {
+    // Copia-para-gravavel: o banco original que veio com o jogo nunca e
+    // aberto direto, porque o SQLite grava nele (journal, PRAGMA,
+    // INSERT) e o pacote do jogo e material de pesquisa que precisa
+    // continuar intacto. A copia mora ao lado do .mod, na mesma
+    // convencao do <mod>.savestate/<mod>.userdata.
+    namespace fs = std::filesystem;
+    std::string mod_path = argv[1];
+    fs::path db_dir = fs::path(mod_path + ".sqldb");
+    fs::path mod_dir = fs::absolute(mod_path).parent_path();
+    sql_hle.SetPathResolver([db_dir, mod_dir, &vfs](const std::string& name) -> std::string {
+      std::error_code ec;
+      fs::create_directories(db_dir, ec);
+      std::string base = fs::path(name).filename().string();
+      if (base.empty()) return std::string();
+      fs::path target = db_dir / base;
+      if (!fs::exists(target)) {
+        // Semente: primeiro o VFS do proprio jogo, depois o arquivo solto
+        // ao lado do .mod. Se nao houver nenhum dos dois, o SQLite cria
+        // um banco vazio -- que e o que o console faria na primeira vez.
+        if (const std::vector<uint8_t>* data = vfs.Find(base)) {
+          std::ofstream out(target, std::ios::binary);
+          out.write(reinterpret_cast<const char*>(data->data()),
+                    static_cast<std::streamsize>(data->size()));
+        } else if (fs::exists(mod_dir / base)) {
+          fs::copy_file(mod_dir / base, target, ec);
+        }
+      }
+      return target.string();
+    });
+  }
+  uint32_t sqlmgr_obj = sql_hle.BuildManager(/*mgr_vtable=*/0x8006A000, /*mgr_object=*/0x8006B000,
+                                             /*db_vtable=*/0x8006F000);
   shell_hle.RegisterInstance(/*AEECLSID_SQLMGR=*/0x0102c4e8, sqlmgr_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on

@@ -83,6 +83,8 @@ add_library(zeebulator_core STATIC
   brew/hash_hle.h
   brew/mem_astream_hle.cpp
   brew/mem_astream_hle.h
+  brew/sql_hle.cpp
+  brew/sql_hle.h
   brew/unzip_stream_hle.cpp
   brew/unzip_stream_hle.h
   brew/mod_runtime.cpp
@@ -103,7 +105,7 @@ target_include_directories(zeebulator_core PUBLIC ${PROJECT_SOURCE_DIR})
 # zlib's CMakeLists predates modern usage-requirement propagation, so its
 # generated zconf.h (in the binary dir) needs to be added explicitly.
 target_include_directories(zeebulator_core PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
-target_link_libraries(zeebulator_core PRIVATE zlibstatic liblzma)
+target_link_libraries(zeebulator_core PRIVATE zlibstatic liblzma sqlite3)
 # dynarmic A32 JIT backend (Phase 9a): DynarmicArmCore's real JIT core. The
 # `dynarmic` target propagates its own public include dir (src/), so
 # #include "dynarmic/interface/A32/a32.h" resolves without extra wiring.
