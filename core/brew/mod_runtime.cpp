@@ -3,7 +3,11 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -45,6 +49,19 @@ constexpr uint32_t kUnknownSlotOffset0x150 = 0x150;
 constexpr uint32_t kUnknownSlotOffset0x64 = 0x64;
 constexpr uint32_t kStrtoulSlotOffset = 0xc4;
 constexpr uint32_t kStrncmpSlotOffset = 0xcc;
+// BREW stdlib floating-point helper family (see mod_runtime.h doc comment on the FOpImpl
+// declaration for why this whole family matters). Offsets confirmed against the real,
+// authoritative Qualcomm AEEHelperFuncs struct field order (117 slots total).
+constexpr uint32_t kFOpSlotOffset = 0x94;
+constexpr uint32_t kFCmpSlotOffset = 0x98;
+constexpr uint32_t kFAssignStrSlotOffset = 0x160;
+constexpr uint32_t kFAssignIntSlotOffset = 0x164;
+constexpr uint32_t kStrtodSlotOffset = 0x17c;
+constexpr uint32_t kFCalcSlotOffset = 0x180;
+constexpr uint32_t kFToIntSlotOffset = 0x1ac;
+constexpr uint32_t kFGetSlotOffset = 0x1b0;
+constexpr uint32_t kTruncSlotOffset = 0x1b8;
+constexpr uint32_t kUtruncSlotOffset = 0x1bc;
 constexpr uint32_t kUnknownSlotOffset0x90 = 0x90;
 constexpr uint32_t kUnknownSlotOffset0x10 = 0x10;
 constexpr uint32_t kUnknownSlotOffset0x34 = 0x34;
@@ -120,13 +137,14 @@ constexpr uint32_t kAllocNoZmem = 0x80000000u;
 
 uint32_t ModRuntime::Allocate(uint32_t size) {
   bool zero_mem = (size & kAllocNoZmem) == 0;
-  size &= ~kAllocNoZmem;
-  uint32_t aligned = (size + 3) & ~3u;  // word-align every allocation
+  uint32_t raw_size = size & ~kAllocNoZmem;
+  uint32_t aligned = (raw_size + 3) & ~3u;  // word-align every allocation
   if (aligned > heap_end_ - heap_cursor_) {
     return 0;  // NULL: out of (emulated) heap space
   }
   uint32_t result = heap_cursor_;
   heap_cursor_ += aligned;
+  allocation_sizes_[result] = raw_size;
   if (zero_mem) {
     for (uint32_t i = 0; i < aligned; ++i) {
       memory_.Write8(result + i, 0);
@@ -140,9 +158,15 @@ void ModRuntime::MallocImpl(IArmCore& core) {
 }
 
 uint32_t ModRuntime::Reallocate(uint32_t old_ptr, uint32_t size) {
+  uint32_t raw_size = size & ~kAllocNoZmem;
   uint32_t new_ptr = Allocate(size);
   if (new_ptr != 0 && old_ptr != 0) {
-    for (uint32_t i = 0; i < size; ++i) {
+    uint32_t copy_len = raw_size;
+    auto it = allocation_sizes_.find(old_ptr);
+    if (it != allocation_sizes_.end()) {
+      copy_len = std::min(raw_size, it->second);
+    }
+    for (uint32_t i = 0; i < copy_len; ++i) {
       memory_.Write8(new_ptr + i, memory_.Read8(old_ptr + i));
     }
   }
@@ -434,6 +458,201 @@ void ModRuntime::StrtoulImpl(IArmCore& core) {
     memory_.Write32(endptr, nptr + static_cast<uint32_t>(consumed));
   }
   core.SetRegister(kR0, static_cast<uint32_t>(val));
+}
+
+namespace {
+// AAPCS soft-float double convention: low word first, high word second (r0:r1, or r2:r3 for a
+// second double argument). Confirmed against zeebx's own fmath.rs (which anchors the word order
+// against a real Quake literal: 180.0 degrees-to-radians constant loaded via `ldrd`).
+double WordsToDouble(uint32_t low, uint32_t high) {
+  uint64_t bits = (static_cast<uint64_t>(high) << 32) | low;
+  double value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+// Writes a double return value the way every f_* helper hands one back: high word into r1,
+// low word returned via r0 (the caller does core.SetRegister(kR0, ...) with this function's
+// return value).
+uint32_t WriteDoubleReturn(IArmCore& core, double value) {
+  uint64_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  uint32_t low = static_cast<uint32_t>(bits & 0xFFFFFFFFu);
+  uint32_t high = static_cast<uint32_t>(bits >> 32);
+  core.SetRegister(kR1, high);
+  return low;
+}
+}  // namespace
+
+void ModRuntime::FOpImpl(IArmCore& core) {
+  // double f_op(double v1, double v2, int nType) -- v1 in r0:r1, v2 in r2:r3 (both doubles
+  // exhaust r0-r3), nType on the stack at [sp+0]. Real opcodes from AEEStdLib.h: 0=ADD, 1=SUB,
+  // 2=MUL, 3=DIV, 9=POW (4-8 are the f_cmp comparison codes, handled by FCmpImpl instead).
+  double v1 = WordsToDouble(core.GetRegister(kR0), core.GetRegister(kR1));
+  double v2 = WordsToDouble(core.GetRegister(kR2), core.GetRegister(kR3));
+  uint32_t kind = HleRuntime::ReadStackArg(core, 0);
+  double result = 0.0;
+  switch (kind) {
+    case 0: result = v1 + v2; break;
+    case 1: result = v1 - v2; break;
+    case 2: result = v1 * v2; break;
+    case 3: result = v1 / v2; break;
+    case 9: result = std::pow(v1, v2); break;
+    default: result = 0.0; break;
+  }
+  core.SetRegister(kR0, WriteDoubleReturn(core, result));
+}
+
+void ModRuntime::FCmpImpl(IArmCore& core) {
+  // boolean f_cmp(double v1, double v2, int nType) -- same argument layout as f_op; real
+  // opcodes 4=LESS, 5=LESS_EQUAL, 6=EQUAL, 7=GREATER, 8=GREATER_EQUAL.
+  double v1 = WordsToDouble(core.GetRegister(kR0), core.GetRegister(kR1));
+  double v2 = WordsToDouble(core.GetRegister(kR2), core.GetRegister(kR3));
+  uint32_t kind = HleRuntime::ReadStackArg(core, 0);
+  bool result = false;
+  switch (kind) {
+    case 4: result = v1 < v2; break;
+    case 5: result = v1 <= v2; break;
+    case 6: result = v1 == v2; break;
+    case 7: result = v1 > v2; break;
+    case 8: result = v1 >= v2; break;
+    default: result = false; break;
+  }
+  core.SetRegister(kR0, result ? 1u : 0u);
+}
+
+void ModRuntime::FCalcImpl(IArmCore& core) {
+  // double f_calc(double x, int calcType) -- x in r0:r1, calcType in r2. Real opcodes:
+  // 10=FLOOR, 11=CEIL, 12=SQRT, 16=SIN, 17=COS, 18=ABS, 19=TAN (13-15 are f_get's own codes).
+  double x = WordsToDouble(core.GetRegister(kR0), core.GetRegister(kR1));
+  uint32_t kind = core.GetRegister(kR2);
+  double result = 0.0;
+  switch (kind) {
+    case 10: result = std::floor(x); break;
+    case 11: result = std::ceil(x); break;
+    case 12: result = std::sqrt(x); break;
+    case 16: result = std::sin(x); break;
+    case 17: result = std::cos(x); break;
+    case 18: result = std::fabs(x); break;
+    case 19: result = std::tan(x); break;
+    default: result = 0.0; break;
+  }
+  core.SetRegister(kR0, WriteDoubleReturn(core, result));
+}
+
+void ModRuntime::FGetImpl(IArmCore& core) {
+  // double f_get(uint32 fgetType) -- the float.h limit constants (FLT_MAX/FLT_MIN, not the
+  // double ones: real games compare against these before storing a value as a 32-bit float).
+  // Real opcodes: 13=HUGEVAL (infinity), 14=FLT_MAX, 15=FLT_MIN.
+  uint32_t kind = core.GetRegister(kR0);
+  double result = 0.0;
+  switch (kind) {
+    case 13: result = std::numeric_limits<double>::infinity(); break;
+    case 14: result = static_cast<double>(std::numeric_limits<float>::max()); break;
+    case 15: result = static_cast<double>(std::numeric_limits<float>::min()); break;
+    default: result = 0.0; break;
+  }
+  core.SetRegister(kR0, WriteDoubleReturn(core, result));
+}
+
+void ModRuntime::FAssignIntImpl(IArmCore& core) {
+  // double f_assignint(int n) -- plain int-to-double conversion.
+  int32_t n = static_cast<int32_t>(core.GetRegister(kR0));
+  core.SetRegister(kR0, WriteDoubleReturn(core, static_cast<double>(n)));
+}
+
+void ModRuntime::FAssignStrImpl(IArmCore& core) {
+  // double f_assignstr(const char *psz) -- parses a leading floating-point literal, same
+  // grounding as strtod below (both are literally the same match arm in the zeebx oracle) but
+  // without the char** end-pointer.
+  uint32_t str_addr = core.GetRegister(kR0);
+  std::string s;
+  for (uint32_t i = 0; i < 64; ++i) {
+    uint8_t c = memory_.Read8(str_addr + i);
+    if (c == 0) break;
+    s.push_back(static_cast<char>(c));
+  }
+  double value = 0.0;
+  try {
+    value = std::stod(s);
+  } catch (...) {
+    value = 0.0;
+  }
+  core.SetRegister(kR0, WriteDoubleReturn(core, value));
+}
+
+void ModRuntime::StrtodImpl(IArmCore& core) {
+  // double strtod(const char *nptr, char **endptr) -- same parse as f_assignstr, but also
+  // reports where it stopped reading through the real char** out-param.
+  uint32_t str_addr = core.GetRegister(kR0);
+  uint32_t endptr_addr = core.GetRegister(kR1);
+  std::string s;
+  for (uint32_t i = 0; i < 64; ++i) {
+    uint8_t c = memory_.Read8(str_addr + i);
+    if (c == 0) break;
+    s.push_back(static_cast<char>(c));
+  }
+  const char* start = s.c_str();
+  char* end = nullptr;
+  double value = std::strtod(start, &end);
+  if (endptr_addr != 0) {
+    size_t consumed = end ? static_cast<size_t>(end - start) : 0;
+    memory_.Write32(endptr_addr, str_addr + static_cast<uint32_t>(consumed));
+  }
+  core.SetRegister(kR0, WriteDoubleReturn(core, value));
+}
+
+void ModRuntime::FToIntImpl(IArmCore& core) {
+  // int f_toint(double x) -- truncates toward zero, like a real C cast. `trunc` (offset 0x1b8)
+  // is the exact same real operation under a different real name, aliased to this same handler.
+  double x = WordsToDouble(core.GetRegister(kR0), core.GetRegister(kR1));
+  core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(std::trunc(x))));
+}
+
+void ModRuntime::UtruncImpl(IArmCore& core) {
+  // uint32 utrunc(double x) -- same truncation as FToIntImpl, unsigned result.
+  double x = WordsToDouble(core.GetRegister(kR0), core.GetRegister(kR1));
+  core.SetRegister(kR0, static_cast<uint32_t>(std::trunc(x)));
+}
+
+void ModRuntime::WstrlenImpl(IArmCore& core) {
+  // int wstrlen(const AECHAR *s) -- AECHAR is a UTF-16 code unit; length in units, not bytes.
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t len = 0;
+  while (memory_.Read16(s + len * 2) != 0) ++len;
+  core.SetRegister(kR0, len);
+}
+
+void ModRuntime::WstrchrImpl(IArmCore& core) {
+  // AECHAR *wstrchr(const AECHAR *s, AECHAR c) -- first occurrence of c, or NULL.
+  uint32_t s = core.GetRegister(kR0);
+  auto needle = static_cast<uint16_t>(core.GetRegister(kR1));
+  for (uint32_t i = 0;; ++i) {
+    uint16_t unit = memory_.Read16(s + i * 2);
+    if (unit == needle) {
+      core.SetRegister(kR0, s + i * 2);
+      return;
+    }
+    if (unit == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::WstrrchrImpl(IArmCore& core) {
+  // AECHAR *wstrrchr(const AECHAR *s, AECHAR c) -- LAST occurrence of c, or NULL.
+  uint32_t s = core.GetRegister(kR0);
+  auto needle = static_cast<uint16_t>(core.GetRegister(kR1));
+  uint32_t found = 0;
+  bool has_match = false;
+  for (uint32_t i = 0;; ++i) {
+    uint16_t unit = memory_.Read16(s + i * 2);
+    if (unit == needle) {
+      found = s + i * 2;
+      has_match = true;
+    }
+    if (unit == 0) break;
+  }
+  core.SetRegister(kR0, has_match ? found : 0);
 }
 
 void ModRuntime::StrchrImpl(IArmCore& core) {
@@ -848,6 +1067,15 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t bounded_strcpy_fn = hle_.Register([this](IArmCore& core) { BoundedStrcpyImpl(core); });
   uint32_t strtoul_fn = hle_.Register([this](IArmCore& core) { StrtoulImpl(core); });
   uint32_t strncmp_fn = hle_.Register([this](IArmCore& core) { StrncmpImpl(core); });
+  uint32_t f_op_fn = hle_.Register([this](IArmCore& core) { FOpImpl(core); });
+  uint32_t f_cmp_fn = hle_.Register([this](IArmCore& core) { FCmpImpl(core); });
+  uint32_t f_calc_fn = hle_.Register([this](IArmCore& core) { FCalcImpl(core); });
+  uint32_t f_get_fn = hle_.Register([this](IArmCore& core) { FGetImpl(core); });
+  uint32_t f_assignint_fn = hle_.Register([this](IArmCore& core) { FAssignIntImpl(core); });
+  uint32_t f_assignstr_fn = hle_.Register([this](IArmCore& core) { FAssignStrImpl(core); });
+  uint32_t strtod_fn = hle_.Register([this](IArmCore& core) { StrtodImpl(core); });
+  uint32_t f_toint_fn = hle_.Register([this](IArmCore& core) { FToIntImpl(core); });
+  uint32_t utrunc_fn = hle_.Register([this](IArmCore& core) { UtruncImpl(core); });
   uint32_t strstr_fn = hle_.Register([this](IArmCore& core) { StrstrImpl(core); });
   uint32_t sprintf_fn = hle_.Register([this](IArmCore& core) { SprintfImpl(core); });
   uint32_t dbgprintf_fn = hle_.Register([this](IArmCore& core) {
@@ -877,7 +1105,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t strchr_fn = hle_.Register([this](IArmCore& core) { StrchrImpl(core); });
   uint32_t unknown_0x140_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x138_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0x30_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t unknown_0x30_fn = hle_.Register([this](IArmCore& core) { WstrlenImpl(core); });
   // CONFIRMED 2026-09-02 via live byte dump: AccelMenu (AirRacez/Boiaz/Bajaz) call
   // [table+0xd8] as STRCMP for asset-name lookup (e.g. "audio/xui/count_down" vs
   // "menu_select", "sfx_04.wav"). AEEHelperFuncs offset 0xd8 = STRCMP (case-sensitive;
@@ -894,7 +1122,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
       }
     }
   });
-  uint32_t unknown_0x34_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t unknown_0x34_fn = hle_.Register([this](IArmCore& core) { WstrchrImpl(core); });
+  uint32_t wstrrchr_fn = hle_.Register([this](IArmCore& core) { WstrrchrImpl(core); });
   uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x14c_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x150_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
@@ -1017,9 +1246,20 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x64, unknown_0x64_fn);
   memory_.Write32(table_address + kStrtoulSlotOffset, strtoul_fn);
   memory_.Write32(table_address + kStrncmpSlotOffset, strncmp_fn);
+  memory_.Write32(table_address + kFOpSlotOffset, f_op_fn);
+  memory_.Write32(table_address + kFCmpSlotOffset, f_cmp_fn);
+  memory_.Write32(table_address + kFAssignStrSlotOffset, f_assignstr_fn);
+  memory_.Write32(table_address + kFAssignIntSlotOffset, f_assignint_fn);
+  memory_.Write32(table_address + kStrtodSlotOffset, strtod_fn);
+  memory_.Write32(table_address + kFCalcSlotOffset, f_calc_fn);
+  memory_.Write32(table_address + kFToIntSlotOffset, f_toint_fn);
+  memory_.Write32(table_address + kFGetSlotOffset, f_get_fn);
+  memory_.Write32(table_address + kTruncSlotOffset, f_toint_fn);  // trunc aliases f_toint (same real op)
+  memory_.Write32(table_address + kUtruncSlotOffset, utrunc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);
+  memory_.Write32(table_address + 0x38, wstrrchr_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xd8, unknown_0xd8_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x1c, unknown_0x1c_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x20, unknown_0x20_fn);

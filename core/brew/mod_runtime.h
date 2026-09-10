@@ -657,6 +657,33 @@ class ModRuntime {
   void StrncmpImpl(IArmCore& core);
   void StrtoulImpl(IArmCore& core);
   void StrchrImpl(IArmCore& core);
+  // BREW stdlib floating-point helper family (AEEStdLib.h f_op/f_cmp/f_calc/f_get/f_assignint/
+  // f_assignstr/strtod/f_toint/trunc/utrunc). Modules are compiled without an FPU available to
+  // the runtime library, so ALL floating-point math (trig, sqrt, add/sub/mul/div, comparisons)
+  // routes through this single-entry-point family with an opcode selecting the operation.
+  // Missing this entirely (confirmed via Quake: static-base slot 0x180/f_calc read back a null
+  // function pointer and an indirect `blx` through it sent PC to address 0, which the CPU then
+  // silently "executed" as zeroed no-op instructions forever) is a likely root cause behind
+  // several other titles' own unexplained infinite loops during boot (any 3D/physics-heavy
+  // title -- Alpine Racer EX, Rally Master Pro, Ridge Racer, CNK2, Armageddon Squadron, Tekken 2
+  // -- calls this family extensively for basic arithmetic on doubles).
+  void FOpImpl(IArmCore& core);
+  void FCmpImpl(IArmCore& core);
+  void FCalcImpl(IArmCore& core);
+  void FGetImpl(IArmCore& core);
+  void FAssignIntImpl(IArmCore& core);
+  void FAssignStrImpl(IArmCore& core);
+  void StrtodImpl(IArmCore& core);
+  void FToIntImpl(IArmCore& core);
+  void UtruncImpl(IArmCore& core);
+  // AECHAR (UTF-16 code unit) string family -- wstrlen/wstrchr/wstrrchr. wstrrchr (offset 0x38)
+  // was completely unwired (not even a safe stub), so an indirect call through it read back a
+  // null function pointer -- confirmed root cause of a second Quake wander, right after the
+  // f_calc fix let it get past module init into real WAD/file-loading code that also uses this
+  // family for its own string parsing.
+  void WstrlenImpl(IArmCore& core);
+  void WstrchrImpl(IArmCore& core);
+  void WstrrchrImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
@@ -674,6 +701,7 @@ class ModRuntime {
   uint32_t heap_start_ = 0;
   uint32_t heap_cursor_;
   uint32_t heap_end_;
+  std::unordered_map<uint32_t, uint32_t> allocation_sizes_;
   uint32_t context_address_;
   uint32_t pp_obj_address_ = 0;
   uint32_t shell_ptr_ = 0;

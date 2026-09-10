@@ -2,6 +2,7 @@
 
 #include <zlib.h>
 
+#include <cstring>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1269,4 +1270,92 @@ TEST(ModRuntime, HelperSlot0xccStrncmpComparesBoundedStrings) {
   // 5 chars "apple" vs "appli" differ: 'e' < 'i'
   int32_t diff = static_cast<int32_t>(hle.CallArmFunction(strncmp_fn, kStr1, kStr2, 5));
   EXPECT_LT(diff, 0);
+}
+
+TEST(ModRuntime, HelperSlot0x94FOpPerformsBasicArithmetic) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t f_op_fn = cpu.GetMemory().Read32(kTableAddress + 0x94);
+
+  auto to_words = [](double v, uint32_t& lo, uint32_t& hi) {
+    uint64_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    lo = static_cast<uint32_t>(bits & 0xFFFFFFFFu);
+    hi = static_cast<uint32_t>(bits >> 32);
+  };
+  auto from_words = [](uint32_t lo, uint32_t hi) {
+    uint64_t bits = (static_cast<uint64_t>(hi) << 32) | lo;
+    double v;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+  };
+
+  uint32_t v1_lo, v1_hi, v2_lo, v2_hi;
+  to_words(3.0, v1_lo, v1_hi);
+  to_words(4.0, v2_lo, v2_hi);
+  constexpr uint32_t kSp = 0x80300400;
+  cpu.SetRegister(zeebulator::kSP, kSp);
+  cpu.GetMemory().Write32(kSp, 0);  // FO_ADD
+  cpu.GetRegister(zeebulator::kSP);
+  cpu.SetRegister(zeebulator::kR0, v1_lo);
+  cpu.SetRegister(zeebulator::kR1, v1_hi);
+  cpu.SetRegister(zeebulator::kR2, v2_lo);
+  cpu.SetRegister(zeebulator::kR3, v2_hi);
+  hle.CallArmFunction(f_op_fn, v1_lo, v1_hi, v2_lo, v2_hi);
+  double result = from_words(cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1));
+  EXPECT_DOUBLE_EQ(result, 7.0);
+}
+
+TEST(ModRuntime, HelperSlot0x180FCalcComputesSqrtAndSin) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t f_calc_fn = cpu.GetMemory().Read32(kTableAddress + 0x180);
+
+  auto to_words = [](double v, uint32_t& lo, uint32_t& hi) {
+    uint64_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    lo = static_cast<uint32_t>(bits & 0xFFFFFFFFu);
+    hi = static_cast<uint32_t>(bits >> 32);
+  };
+  auto from_words = [](uint32_t lo, uint32_t hi) {
+    uint64_t bits = (static_cast<uint64_t>(hi) << 32) | lo;
+    double v;
+    std::memcpy(&v, &bits, sizeof(v));
+    return v;
+  };
+
+  uint32_t lo, hi;
+  to_words(9.0, lo, hi);
+  hle.CallArmFunction(f_calc_fn, lo, hi, /*FCALC_SQRT=*/12);
+  double sqrt_result = from_words(cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1));
+  EXPECT_DOUBLE_EQ(sqrt_result, 3.0);
+
+  to_words(0.0, lo, hi);
+  hle.CallArmFunction(f_calc_fn, lo, hi, /*FCALC_SIN=*/16);
+  double sin_result = from_words(cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1));
+  EXPECT_DOUBLE_EQ(sin_result, 0.0);
+}
+
+TEST(ModRuntime, HelperSlot0x1acFToIntTruncatesTowardZero) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  uint32_t f_toint_fn = cpu.GetMemory().Read32(kTableAddress + 0x1ac);
+
+  auto to_words = [](double v, uint32_t& lo, uint32_t& hi) {
+    uint64_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    lo = static_cast<uint32_t>(bits & 0xFFFFFFFFu);
+    hi = static_cast<uint32_t>(bits >> 32);
+  };
+
+  uint32_t lo, hi;
+  to_words(-2.7, lo, hi);
+  uint32_t result = hle.CallArmFunction(f_toint_fn, lo, hi);
+  EXPECT_EQ(static_cast<int32_t>(result), -2);
 }
