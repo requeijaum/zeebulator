@@ -302,6 +302,11 @@ void MediaHle::SetMediaParmImpl(IArmCore& core) {
       std::string name = ReadCString(memory_, data_ptr);
       const std::vector<uint8_t>* file_data = vfs_.Find(name);
       if (!file_data) {
+        // Antes isto falhava calado. Um arquivo de audio que o jogo pede e o
+        // VFS nao resolve e indistinguivel, no log, de um codec faltando --
+        // e as duas causas exigem correcoes completamente diferentes.
+        MediaLog("obj=0x%08x SetData FILE '%s' -> RECUSADO: nao esta no VFS",
+                 core.GetRegister(kR0), name.c_str());
         core.SetRegister(kR0, 1);
         return;
       }
@@ -321,10 +326,35 @@ void MediaHle::SetMediaParmImpl(IArmCore& core) {
         decoded = DecodeAudioBuffer(raw, mixer_.OutputSampleRate(), soundfont_synth_);
       }
     } else {
+      MediaLog("obj=0x%08x SetData -> RECUSADO: MMD_ISOURCE (cls_data=%u) nao implementado",
+               core.GetRegister(kR0), cls_data);
       core.SetRegister(kR0, 1);  // MMD_ISOURCE not supported yet
       return;
     }
     if (!decoded) {
+      // Um codec que nao reconhecemos so era visivel como silencio. Registrar
+      // os primeiros bytes torna o formato identificavel direto do log, sem
+      // precisar extrair o asset e adivinhar: RIFF/MThd/ID3/0xFFEx ja sao
+      // tratados, entao o que aparecer aqui e exatamente a lista do que falta
+      // implementar (QCP, AMR, ADPCM e afins).
+      // 32 bytes cobrem o cabecalho inteiro de um RIFF/WAVE ("RIFF" + tamanho
+      // + "WAVEfmt " + tamanho do bloco + o format tag em +20), que e o que
+      // distingue PCM e IMA-ADPCM (ja suportados) de MS-ADPCM, A-law, mu-law
+      // ou MP3-dentro-de-WAV. Com 8 bytes so daria para ver "RIFF" e concluir
+      // nada.
+      uint8_t head[32] = {};
+      size_t head_n = 0;
+      if (cls_data == kMmdBuffer) {
+        head_n = std::min<size_t>(32, data_size);
+        for (size_t i = 0; i < head_n; ++i) head[i] = memory_.Read8(data_ptr + static_cast<uint32_t>(i));
+      }
+      char hex[3 * 32 + 1] = {};
+      for (size_t i = 0; i < head_n; ++i) std::snprintf(hex + i * 3, 4, "%02x ", head[i]);
+      char ascii[33] = {};
+      for (size_t i = 0; i < head_n; ++i)
+        ascii[i] = (head[i] >= 0x20 && head[i] < 0x7f) ? static_cast<char>(head[i]) : '.';
+      MediaLog("obj=0x%08x SetData %u bytes -> RECUSADO: formato nao reconhecido [%s| %s]",
+               core.GetRegister(kR0), data_size, hex, ascii);
       core.SetRegister(kR0, 1);  // corrupt, or a codec we don't support yet (e.g. IMA-ADPCM/MP3)
       return;
     }
@@ -475,12 +505,33 @@ void MediaHle::StopImpl(IArmCore& core) {
     return;
   }
   Media& media = it->second;
+  const bool was_playing = media.has_voice;
   if (media.has_voice) {
     mixer_.Stop(media.voice);
     media.has_voice = false;
   }
   media.state = media.has_data ? kStateReady : kStateIdle;
   MediaLog("obj=0x%08x STOP", core.GetRegister(kR0));
+  // IMEDIA_Stop no BREW real avisa o callback registrado que a reproducao
+  // terminou; so parar a voz e devolver 0 nao fecha o ciclo. Um gerenciador
+  // de audio que troca de faixa espera essa notificacao para saber que a
+  // anterior acabou e que pode seguir -- sem ela a maquina de estados dele
+  // fica parada e a proxima faixa nunca comeca.
+  //
+  // Medido no cnk2: o jogo toca a musica de menu (obj 0x80200000, loop),
+  // chama Stop nela, carrega a faixa seguinte de 642010 bytes em outro
+  // objeto, registra notify... e nunca chama Play. Que e exatamente o
+  // "entro em partida e nao toca nada" relatado ao vivo.
+  //
+  // Mesma convencao ja usada em PlayImpl quando ele substitui uma voz que
+  // ainda tocava: MM_CMD_PLAY + MM_STATUS_ABORT no scratch de notificacao.
+  if (was_playing && media.notify_fn != 0) {
+    constexpr uint32_t kMmCmdPlay = 4;
+    constexpr uint32_t kMmStatusAbort = 3;
+    memory_.Write32(notify_scratch_address_ + 8, kMmCmdPlay);
+    memory_.Write32(notify_scratch_address_ + 16, kMmStatusAbort);
+    hle_.CallArmFunction(media.notify_fn, media.notify_user, notify_scratch_address_);
+  }
   core.SetRegister(kR0, 0);
 }
 
