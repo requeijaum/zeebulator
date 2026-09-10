@@ -21,6 +21,7 @@ add_library(zeebulator_core STATIC
   cpu/dynarmic_arm_core.h
   loader/bar.cpp
   loader/bar.h
+  loader/aez.cpp
   loader/ggz.cpp
   loader/ggz.h
   loader/mif.cpp
