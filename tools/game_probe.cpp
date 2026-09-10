@@ -3402,21 +3402,41 @@ int main(int argc, char** argv) {
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
   shell_hle.RegisterFactory(0x01005501,
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
-  // 0x01005502 e 0x01005503 seguem a mesma regra das irmas acima, mas foram
-  // encontradas por medicao no corpus inteiro em vez de por LR-capture num
-  // titulo so: uma varredura de 60 titulos com ZEEB_LOG_CREATEINSTANCE
-  // registrou 8 pedidos de 0x01005502 e 1 de 0x01005503, TODOS recusados com
-  // ECLASSNOTSUPPORT, enquanto a irma AEECLSID_MEDIAPCM (0x01005511) passava
-  // 22 vezes. No BREW esses dois IDs sao as variantes MIDI/MP3 do handler de
-  // midia -- e as 12 faixas de fundo do Double Dragon dentro de sound.ggz sao
-  // exatamente .mid (bgm_1_0/bgm_1_l ... pares intro+loop), entao recusar
-  // 0x01005502 e recusar a musica. Mesma fabrica generica das demais: o
-  // MediaHle deste projeto nao despacha por identidade de classe, ele fareja
-  // os magic bytes do container.
-  shell_hle.RegisterFactory(0x01005502,
-                             [&media_hle]() { return media_hle.CreateMediaObject(); });
-  shell_hle.RegisterFactory(0x01005503,
-                             [&media_hle]() { return media_hle.CreateMediaObject(); });
+  // Familia AEECLSID_MULTIMEDIA completa, com os nomes vindos do proprio SDK
+  // BREW (testkit/shadow_inc/AEEClassIDs.h), nao de adivinhacao:
+  //   #define AEECLSID_MULTIMEDIA (QVERSION + 0x5500)   -> 0x01005500
+  //   +0 MEDIA  +1 MIDI  +2 MP3  +3 QCP  +4 PMD  +5 MIDIOUTMSG  +6 MIDIOUTQCP
+  //   +7 MPEG4  +8 MMF  +9 PHR  +10 ADPCM  +11 AAC  +12 IMELODY  +13 UTIL
+  //   +14 AMR  +15 HVS  +16 SAF  +17 PCM  +18 XMF  +19 DLS  +20 SVG
+  //
+  // Correcao de um erro anterior deste mesmo arquivo: 0x01005502 e 0x01005503
+  // tinham sido registradas como "as variantes MIDI/MP3". O SDK mostra que sao
+  // MP3 e QCP. O efeito medido estava certo, o nome estava errado -- e o nome
+  // importa, porque foi ele que revelou o codec faltante: chessbots.mod pede
+  // 0x01005503 (QCP) e passa um buffer cujo cabecalho e
+  // "RIFF....QLCMfmt " -- QCP (Qualcomm PureVoice), container RIFF com voz em
+  // QCELP/EVRC, que este projeto ainda nao decodifica. Ver as variantes em
+  // AEEMediaFormats.h (MM_QCP_FORMAT_FIXED_FULL_13K, _EVRC, _AMR, ...).
+  //
+  // Registrar toda a familia e melhor que recusar: com ECLASSNOTSUPPORT um
+  // jogo pode ficar repetindo o pedido para sempre (o tectoy fazia isso 50230
+  // vezes com o SQLMGR). Recebendo o objeto, ele segue e a falha aparece no
+  // SetMediaData, que agora diz exatamente qual formato recusou.
+  for (uint32_t sibling : {0x01005502u,  // MP3
+                            0x01005503u,  // QCP  (PureVoice, ainda sem decoder)
+                            0x01005504u,  // PMD
+                            0x01005505u,  // MIDIOUTMSG
+                            0x01005506u,  // MIDIOUTQCP
+                            0x01005508u,  // MMF
+                            0x01005509u,  // PHR
+                            0x0100550bu,  // AAC
+                            0x0100550cu,  // IMELODY
+                            0x0100550eu,  // AMR
+                            0x01005512u,  // XMF
+                            0x01005513u}) {  // DLS
+    shell_hle.RegisterFactory(sibling,
+                               [&media_hle]() { return media_hle.CreateMediaObject(); });
+  }
 
   auto& mem = cpu.GetMemory();
   // A real stack, well past the loaded module -- ArmInterpreter::Reset()
