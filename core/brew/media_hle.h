@@ -180,7 +180,14 @@ class MediaHle {
     int state = kStateIdle;
     uint32_t notify_fn = 0;
     uint32_t notify_user = 0;
+    // Nasce em 1: quem recebe o objeto de CreateInstance ja detem uma
+    // referencia. Ver AddRefImpl/ReleaseImpl.
+    uint32_t ref_count = 1;
   };
+
+  void AddRefImpl(IArmCore& core);
+
+  void ReleaseImpl(IArmCore& core);
 
   void RegisterNotifyImpl(IArmCore& core);
   void SetMediaParmImpl(IArmCore& core);
@@ -205,6 +212,9 @@ class MediaHle {
   SoundFontSynth* soundfont_synth_;
   uint32_t vtable_address_ = 0;
   uint32_t next_object_address_;
+  // Enderecos de objetos ja liberados por Release, prontos para reuso. Ver
+  // AllocateMediaObject: sem isto a regiao de objetos so anda para a frente.
+  std::vector<uint32_t> free_object_addresses_;
   uint32_t notify_scratch_address_;
   std::unordered_map<uint32_t, Media> media_by_object_;
 };

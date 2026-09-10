@@ -198,8 +198,19 @@ uint32_t MediaHle::AllocateMediaObject() {
   // land on adjacent garbage → BX NULL wander. Allocate a proper
   // 0x40-byte guest object: vtable at +0, +8 self-references so the
   // Play fallback's vtable[6] resolves to our Play trap, rest zeroed.
-  uint32_t obj_addr = next_object_address_;
-  next_object_address_ += 0x40;
+  // Reusar endereco de objeto ja solto antes de avancar o ponteiro. A regiao
+  // de objetos e finita, e um jogo que cria e solta IMedia em laco a esgota:
+  // sem reuso o ponteiro so anda para a frente ate bater no fim, e a partir
+  // dai TODA criacao falha. Com AddRef/Release de verdade (slots 0 e 1, que
+  // eram Stub e nunca liberavam nada) o endereco volta para esta lista.
+  uint32_t obj_addr;
+  if (!free_object_addresses_.empty()) {
+    obj_addr = free_object_addresses_.back();
+    free_object_addresses_.pop_back();
+  } else {
+    obj_addr = next_object_address_;
+    next_object_address_ += 0x40;
+  }
   memory_.Write32(obj_addr, vtable_address_);
   memory_.Write32(obj_addr + 8, obj_addr);  // media source = self
   for (uint32_t off = 0x0c; off < 0x40; off += 4) {
@@ -210,6 +221,50 @@ uint32_t MediaHle::AllocateMediaObject() {
 }
 
 uint32_t MediaHle::CreateMediaObject() { return AllocateMediaObject(); }
+
+void MediaHle::AddRefImpl(IArmCore& core) {
+  // Contagem de referencias honesta: o objeto nasce com 1 em
+  // AllocateMediaObject, e cada AddRef soma. Devolve a contagem nova, que e
+  // o contrato real de IBase_AddRef.
+  auto it = media_by_object_.find(core.GetRegister(kR0));
+  if (it == media_by_object_.end()) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  ++it->second.ref_count;
+  MediaLog("obj=0x%08x AddRef -> %u", core.GetRegister(kR0), it->second.ref_count);
+  core.SetRegister(kR0, it->second.ref_count);
+}
+
+void MediaHle::ReleaseImpl(IArmCore& core) {
+  // Antes isto era um Stub que nao fazia nada, entao nenhum objeto de midia
+  // era liberado em toda a execucao. Alem do vazamento, isso e o que faz um
+  // jogo que reabre midia em laco esgotar a regiao de objetos e passar a
+  // falhar em tudo.
+  const uint32_t obj = core.GetRegister(kR0);
+  auto it = media_by_object_.find(obj);
+  if (it == media_by_object_.end()) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  if (it->second.ref_count > 0) --it->second.ref_count;
+  const uint32_t remaining = it->second.ref_count;
+  MediaLog("obj=0x%08x Release -> %u", obj, remaining);
+  if (remaining == 0) {
+    // Uma voz ainda tocando precisa parar junto: o dono dela acabou de
+    // desaparecer, e deixar o mixer somando um clipe orfao e exatamente o
+    // tipo de som fantasma que nao se rastreia depois.
+    if (it->second.has_voice) {
+      mixer_.Stop(it->second.voice);
+      it->second.has_voice = false;
+    }
+    media_by_object_.erase(it);
+    memory_.Write32(obj, 0);
+    free_object_addresses_.push_back(obj);
+  }
+  core.SetRegister(kR0, remaining);
+}
+
 
 void MediaHle::RegisterNotifyImpl(IArmCore& core) {
   // int RegisterNotify(IMedia *po, PFNMEDIANOTIFY pfnNotify, void *pUser)
@@ -489,8 +544,8 @@ void MediaHle::Build(uint32_t vtable_address) {
 
   // Slot order verified against real AEEIMedia.h -- see class doc.
   std::vector<HleRuntime::HleFunction> methods = {
-      Stub,                                              // 0  AddRef
-      Stub,                                              // 1  Release
+      [this](IArmCore& c) { AddRefImpl(c); },             // 0  AddRef
+      [this](IArmCore& c) { ReleaseImpl(c); },            // 1  Release
       Stub,                                              // 2  QueryInterface
       [this](IArmCore& c) { RegisterNotifyImpl(c); },     // 3  RegisterNotify
       [this](IArmCore& c) { SetMediaParmImpl(c); },       // 4  SetMediaParm
