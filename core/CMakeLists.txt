@@ -22,6 +22,8 @@ add_library(zeebulator_core STATIC
   loader/bar.cpp
   loader/bar.h
   loader/aez.cpp
+  loader/fufs.cpp
+  loader/fufs.h
   loader/ggz.cpp
   loader/ggz.h
   loader/mif.cpp

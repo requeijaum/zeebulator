@@ -19,6 +19,7 @@ add_executable(zeebulator_tests
   thumb_test.cpp
   bar_test.cpp
   aez_test.cpp
+  fufs_test.cpp
   ggz_test.cpp
   mif_test.cpp
   mod_test.cpp
