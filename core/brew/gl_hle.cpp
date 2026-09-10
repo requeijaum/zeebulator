@@ -303,6 +303,20 @@ void GlHle::EglMakeCurrent(IArmCore& core) {
   core.SetRegister(kR0, kEglTrue);
 }
 
+void GlHle::EglGetColorBufferQualcomm(IArmCore& core) {
+  // Forma ainda nao confirmada -- medir pelo uso. Registra os quatro
+  // registradores de argumento AAPCS e dois da pilha; o chamador real dira
+  // quantos parametros existem de fato (ver a tecnica de reconstituicao de
+  // ABI em zeebo-lle/notes/MORE_INFO.md 5.4).
+  std::fprintf(stderr,
+               "[eglColorBuf] r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
+               "sp0=0x%08x sp1=0x%08x lr=0x%08x\n",
+               core.GetRegister(kR0), core.GetRegister(kR1), core.GetRegister(kR2),
+               core.GetRegister(kR3), HleRuntime::ReadStackArg(core, 0),
+               HleRuntime::ReadStackArg(core, 1), core.GetRegister(kLR));
+  core.SetRegister(kR0, 0);
+}
+
 void GlHle::EglGetProcAddress(IArmCore& core) {
   // void (*eglGetProcAddress(const char *procname))()
   // R0 is procname (const char*).
@@ -952,6 +966,11 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
   };
   gl_vtable_addr_ = vtable_address;
   gl_object_ = object_address;
+  // Funcoes de extensao alcancaveis so por eglGetProcAddress (nao tem slot
+  // proprio na vtable). Medido: ddragonz.mod:0x11d864 pede
+  // "eglGetColorBufferQUALCOMM"; devolver 0 fazia o jogo desistir do GL.
+  RegisterProcAddress("eglGetColorBufferQUALCOMM",
+                      hle.Register([this](IArmCore& c) { EglGetColorBufferQualcomm(c); }));
   // Pre-populate proc_addresses_ with traps for extension lookups
   for (size_t i = 3; i < methods.size(); ++i) {
     // If the method is not a stub, it will have a trap registered

@@ -101,6 +101,14 @@ class GlHle {
                        uint32_t object_address);
   void SetGles11Object(uint32_t gles11_obj) { gles11_object_ = gles11_obj; }
 
+  // Extensao EGL_QUALCOMM_COLOR_BUFFER. O Double Dragon pede este ponteiro
+  // via eglGetProcAddress("eglGetColorBufferQUALCOMM") e, recebendo nulo,
+  // abandona o caminho de hardware e cai no render por software (que nao
+  // desenha nada aqui). A assinatura real nao esta em nenhum header que
+  // temos, entao esta implementacao LOGA os argumentos para que a forma seja
+  // medida a partir do uso real, em vez de adivinhada.
+  void EglGetColorBufferQualcomm(IArmCore& core);
+
   void RegisterProcAddress(const std::string& name, uint32_t trap_addr) {
     proc_addresses_[name] = trap_addr;
   }
