@@ -697,6 +697,10 @@ class ModRuntime {
   // strdup (offset 0xf4) was completely unwired -- confirmed root cause of a second chessbots
   // wander, right after the GetAEEVersion fix let it progress into EVT_APP_START.
   void StrdupImpl(IArmCore& core);
+  void StrlowerImpl(IArmCore& core);
+  void StrupperImpl(IArmCore& core);
+  void StrlcpyImpl(IArmCore& core);
+  void StrlcatImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);

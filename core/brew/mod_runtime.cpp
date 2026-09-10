@@ -713,6 +713,65 @@ void ModRuntime::StrdupImpl(IArmCore& core) {
   core.SetRegister(kR0, dst);
 }
 
+void ModRuntime::StrlowerImpl(IArmCore& core) {
+  // char *strlower(char *s) -- in-place ASCII lowercase
+  uint32_t s = core.GetRegister(kR0);
+  for (uint32_t i = 0;; ++i) {
+    uint8_t c = memory_.Read8(s + i);
+    if (c == 0) break;
+    if (c >= 'A' && c <= 'Z') memory_.Write8(s + i, c + 32);
+  }
+  core.SetRegister(kR0, s);
+}
+
+void ModRuntime::StrupperImpl(IArmCore& core) {
+  // char *strupper(char *s) -- in-place ASCII uppercase
+  uint32_t s = core.GetRegister(kR0);
+  for (uint32_t i = 0;; ++i) {
+    uint8_t c = memory_.Read8(s + i);
+    if (c == 0) break;
+    if (c >= 'a' && c <= 'z') memory_.Write8(s + i, c - 32);
+  }
+  core.SetRegister(kR0, s);
+}
+
+void ModRuntime::StrlcpyImpl(IArmCore& core) {
+  // size_t strlcpy(char *dst, const char *src, size_t siz)
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t siz = core.GetRegister(kR2);
+  uint32_t src_len = 0;
+  while (memory_.Read8(src + src_len) != 0) ++src_len;
+  if (siz > 0) {
+    uint32_t copy_len = (src_len >= siz) ? (siz - 1) : src_len;
+    for (uint32_t i = 0; i < copy_len; ++i) {
+      memory_.Write8(dst + i, memory_.Read8(src + i));
+    }
+    memory_.Write8(dst + copy_len, 0);
+  }
+  core.SetRegister(kR0, src_len);
+}
+
+void ModRuntime::StrlcatImpl(IArmCore& core) {
+  // size_t strlcat(char *dst, const char *src, size_t siz)
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t siz = core.GetRegister(kR2);
+  uint32_t dst_len = 0;
+  while (dst_len < siz && memory_.Read8(dst + dst_len) != 0) ++dst_len;
+  uint32_t src_len = 0;
+  while (memory_.Read8(src + src_len) != 0) ++src_len;
+  if (dst_len < siz) {
+    uint32_t remain = siz - dst_len - 1;
+    uint32_t copy_len = (src_len < remain) ? src_len : remain;
+    for (uint32_t i = 0; i < copy_len; ++i) {
+      memory_.Write8(dst + dst_len + i, memory_.Read8(src + i));
+    }
+    memory_.Write8(dst + dst_len + copy_len, 0);
+  }
+  core.SetRegister(kR0, dst_len + src_len);
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1189,8 +1248,10 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0x34_fn = hle_.Register([this](IArmCore& core) { WstrchrImpl(core); });
   uint32_t wstrrchr_fn = hle_.Register([this](IArmCore& core) { WstrrchrImpl(core); });
   uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0x14c_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0x150_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t strlower_fn = hle_.Register([this](IArmCore& core) { StrlowerImpl(core); });
+  uint32_t strupper_fn = hle_.Register([this](IArmCore& core) { StrupperImpl(core); });
+  uint32_t strlcpy_fn = hle_.Register([this](IArmCore& core) { StrlcpyImpl(core); });
+  uint32_t strlcat_fn = hle_.Register([this](IArmCore& core) { StrlcatImpl(core); });
   uint32_t unknown_0x64_fn = hle_.Register([this](IArmCore& core) {
     // Disney All Star Cards: BMP decode. Convention pinned down via
     // capstone disassembly of allstarcards.mod 0x10ee18-0x10ee48 (see
@@ -1305,8 +1366,10 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x138, unknown_0x138_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x30, unknown_0x30_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x144, unknown_0x144_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x14c, unknown_0x14c_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x150, unknown_0x150_fn);
+  memory_.Write32(table_address + 0x114, strlower_fn);
+  memory_.Write32(table_address + 0x118, strupper_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x14c, strlcpy_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x150, strlcat_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x64, unknown_0x64_fn);
   memory_.Write32(table_address + kStrtoulSlotOffset, strtoul_fn);
   memory_.Write32(table_address + kStrncmpSlotOffset, strncmp_fn);
