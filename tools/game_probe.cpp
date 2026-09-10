@@ -1417,19 +1417,69 @@ int main(int argc, char** argv) {
   // since the scaffold is generic regardless of the class's real name.
   uint32_t unknown_0x01001045_obj = zeebulator::BuildGenericStubObject(
       cpu.GetMemory(), hle, /*vtable=*/0x80018000, /*object=*/0x80019000, /*slot_count=*/20);
-  uint32_t device_bitmap_obj = zeebulator::BuildStubObjectWithOverride(
-      cpu.GetMemory(), hle, /*vtable=*/0x8000E000, /*object=*/0x8000F000, /*slot_count=*/20,
-      /*override_slot=*/2,
-      [&cpu, unknown_0x01001045_obj](zeebulator::IArmCore& core) {
-        uint32_t requested_cls = core.GetRegister(zeebulator::kR1);
-        uint32_t ppo = core.GetRegister(zeebulator::kR2);
-        if (requested_cls == 0x01001045) {
-          cpu.GetMemory().Write32(ppo, unknown_0x01001045_obj);
-          core.SetRegister(zeebulator::kR0, 0);
-        } else {
-          core.SetRegister(zeebulator::kR0, 1);
-        }
-      });
+
+  // State for compatible bitmaps created by CreateCompatibleBitmap (slot 13)
+  struct CompatBitmapState {
+    uint32_t width = 320;
+    uint32_t height = 240;
+  };
+  auto compat_state = std::make_shared<CompatBitmapState>();
+
+  std::vector<zeebulator::HleRuntime::HleFunction> compat_bitmap_methods(
+      20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
+  compat_bitmap_methods[12] = [&cpu, compat_state](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    std::fprintf(stderr, "[compat_bitmap] GetInfo called! out=0x%08x w=%u h=%u\n",
+                 out, compat_state->width, compat_state->height);
+    if (out != 0) {
+      cpu.GetMemory().Write32(out + 0, compat_state->width);
+      cpu.GetMemory().Write32(out + 4, compat_state->height);
+      cpu.GetMemory().Write32(out + 8, 16); // 16-bit color depth (RGB565)
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  uint32_t compat_bitmap_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8008C000, /*object=*/0x8008D000, compat_bitmap_methods);
+
+  std::vector<zeebulator::HleRuntime::HleFunction> device_bitmap_methods(
+      20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 2: QueryInterface(IBitmap*, AEECLSID cls, void **ppo)
+  device_bitmap_methods[2] = [&cpu, unknown_0x01001045_obj](zeebulator::IArmCore& core) {
+    uint32_t requested_cls = core.GetRegister(zeebulator::kR1);
+    uint32_t ppo = core.GetRegister(zeebulator::kR2);
+    if (requested_cls == 0x01001045) {
+      cpu.GetMemory().Write32(ppo, unknown_0x01001045_obj);
+      core.SetRegister(zeebulator::kR0, 0);
+    } else {
+      core.SetRegister(zeebulator::kR0, 1);
+    }
+  };
+  // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
+  device_bitmap_methods[12] = [&cpu, kWidth, kHeight](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    if (out != 0) {
+      cpu.GetMemory().Write32(out + 0, kWidth);
+      cpu.GetMemory().Write32(out + 4, kHeight);
+      cpu.GetMemory().Write32(out + 8, 16); // 16-bit color depth (RGB565)
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 13: CreateCompatibleBitmap(IBitmap*, IBitmap **ppIBitmap, uint16 w, uint16 h)
+  device_bitmap_methods[13] = [&cpu, compat_bitmap_obj, compat_state](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
+    uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
+    if (w != 0) compat_state->width = w;
+    if (h != 0) compat_state->height = h;
+    if (out != 0) {
+      cpu.GetMemory().Write32(out, compat_bitmap_obj);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+
+  uint32_t device_bitmap_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8000E000, /*object=*/0x8000F000, device_bitmap_methods);
   display.SetDeviceBitmapInstance(device_bitmap_obj);
   // ClsId 0x01001003: real disassembly of 0x1b2fc showed
   // ISHELL_CreateInstance gating the same "memory insufficient" state on
@@ -2590,6 +2640,50 @@ int main(int argc, char** argv) {
       cpu.GetMemory().Write32(out_ptr, 1);
     }
     core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 6: Terminate(this, dpy)
+  unknown_0x0103d8ec_methods[6] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 9: ChooseConfig(this, dpy, attribs, configs, config_size, &num_config)
+  unknown_0x0103d8ec_methods[9] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t configs = core.GetRegister(zeebulator::kR3);
+    uint32_t num_config_addr = zeebulator::HleRuntime::ReadStackArg(core, 1);
+    if (configs != 0) cpu.GetMemory().Write32(configs, 1); // config handle 1
+    if (num_config_addr != 0) cpu.GetMemory().Write32(num_config_addr, 1);
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 11: CreateWindowSurface(this, dpy, config, win, attribs, &out_surface)
+  unknown_0x0103d8ec_methods[11] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out_surface = zeebulator::HleRuntime::ReadStackArg(core, 1);
+    if (out_surface != 0) {
+      cpu.GetMemory().Write32(out_surface, 1); // surface handle 1
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 14: DestroySurface(this, dpy, surface)
+  unknown_0x0103d8ec_methods[14] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 16: CreateContext(this, dpy, config, share_ctx, attribs, &out_context)
+  unknown_0x0103d8ec_methods[16] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out_context = zeebulator::HleRuntime::ReadStackArg(core, 1);
+    if (out_context != 0) {
+      cpu.GetMemory().Write32(out_context, 1); // context handle 1
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 17: DestroyContext(this, dpy, ctx)
+  unknown_0x0103d8ec_methods[17] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 18: MakeCurrent(this, dpy, draw, read, ctx)
+  unknown_0x0103d8ec_methods[18] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 25: SwapBuffers(this, dpy, surface)
+  unknown_0x0103d8ec_methods[25] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   unknown_0x0103d8ec_methods[65] = [](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);

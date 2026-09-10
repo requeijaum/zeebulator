@@ -925,7 +925,9 @@ void ArmInterpreter::ExecuteThumbConditionalBranch(uint16_t instr) {
   // Format 16: 1101 Cond[4] SOffset8[8]
   uint32_t cond = (instr >> 8) & 0xF;
   if (cond == 0xF) {
-    throw UnimplementedInstruction("Thumb SWI (format 17) not supported");
+    // Format 17: SWI / semihosting
+    ExecuteSwi(instr & 0xFF);
+    return;
   }
   if (cond == 0xE) {
     throw UnimplementedInstruction(
@@ -1175,6 +1177,42 @@ void ArmInterpreter::Step() {
           int32_t rm_half = static_cast<int16_t>(x ? (rm_val >> 16) : (rm_val & 0xFFFF));
           int32_t rs_half = static_cast<int16_t>(y ? (rs_val >> 16) : (rs_val & 0xFFFF));
           regs_[rd] = static_cast<uint32_t>(rm_half * rs_half);
+        } else if ((instr & 0x0FF00090) == 0x01000080) {
+          // SMLAxy Rd, Rm, Rs, Rn: cond 0001 0000 Rd Rn Rs 1yx0 Rm -- real
+          // ARMv5TE DSP signed 16x16 multiply with 32-bit accumulate.
+          // Found live in FIFA 09 (color blending routine at 0x178ca0).
+          uint32_t rd = (instr >> 16) & 0xF;
+          uint32_t rn = (instr >> 12) & 0xF;
+          uint32_t rs = (instr >> 8) & 0xF;
+          uint32_t rm = instr & 0xF;
+          bool y = (instr >> 6) & 1;
+          bool x = (instr >> 5) & 1;
+          uint32_t rm_val = ReadOperandRegister(rm);
+          uint32_t rs_val = ReadOperandRegister(rs);
+          int32_t rm_half = static_cast<int16_t>(x ? (rm_val >> 16) : (rm_val & 0xFFFF));
+          int32_t rs_half = static_cast<int16_t>(y ? (rs_val >> 16) : (rs_val & 0xFFFF));
+          int32_t product = rm_half * rs_half;
+          uint32_t rn_val = ReadOperandRegister(rn);
+          regs_[rd] = static_cast<uint32_t>(product + static_cast<int32_t>(rn_val));
+        } else if ((instr & 0x0FF00090) == 0x01200080) {
+          // SMLAWy (bit 5 == 0) and SMULWy (bit 5 == 1): cond 0001 0010 Rd Rn Rs 1yQ0 Rm
+          // Signed 32x16 multiply returning top 32 bits of 48-bit product (optionally + Rn).
+          uint32_t rd = (instr >> 16) & 0xF;
+          uint32_t rn = (instr >> 12) & 0xF;
+          uint32_t rs = (instr >> 8) & 0xF;
+          uint32_t rm = instr & 0xF;
+          bool y = (instr >> 6) & 1;
+          bool is_smulw = (instr >> 5) & 1;
+          int64_t rm_val = static_cast<int32_t>(ReadOperandRegister(rm));
+          uint32_t rs_val = ReadOperandRegister(rs);
+          int64_t rs_half = static_cast<int16_t>(y ? (rs_val >> 16) : (rs_val & 0xFFFF));
+          int64_t product = (rm_val * rs_half) >> 16;
+          if (is_smulw) {
+            regs_[rd] = static_cast<uint32_t>(product);
+          } else {
+            uint32_t rn_val = ReadOperandRegister(rn);
+            regs_[rd] = static_cast<uint32_t>(product + static_cast<int32_t>(rn_val));
+          }
         } else {
           // MRS/MSR — the PSR access pair in this "miscellaneous" space:
           //   MRS Rd, CPSR     cond 00010 0 001111 Rd 0000 0000 0000
@@ -1233,6 +1271,9 @@ void ArmInterpreter::Step() {
             "exception return) not supported");
       }
       ExecuteBlockDataTransfer(instr);
+    } else if (((instr >> 24) & 0xF) == 0xF) {
+      // SWI / SVC (bits 27..24 == 1111) — ARM semihosting
+      ExecuteSwi(instr & 0x00FFFFFF);
     } else {
       throw UnimplementedInstruction("Coprocessor instruction / SWI");
     }
@@ -1241,6 +1282,39 @@ void ArmInterpreter::Step() {
   if (!pc_updated_by_instruction_) {
     regs_[kPC] = fetch_addr + 4;
   }
+}
+
+
+void ArmInterpreter::ExecuteSwi(uint32_t comment) {
+  // ARM semihosting / Angel ABI interface.
+  // Standard semihosting operations in r0:
+  //   0x01: SYS_OPEN
+  //   0x02: SYS_CLOSE
+  //   0x03: SYS_WRITEC
+  //   0x04: SYS_WRITE0
+  //   0x05: SYS_READ
+  //   0x06: SYS_WRITE
+  //   0x11: SYS_TIME
+  //   0x18: SYS_ANGEL_REASON
+  uint32_t op = regs_[kR0];
+  uint32_t arg = regs_[kR1];
+  if (op == 0x03) {  // SYS_WRITEC
+    char c = static_cast<char>(memory_.Read8(arg));
+    if (std::getenv("ZEEB_LOG_SEMIHOSTING")) {
+      std::fprintf(stderr, "%c", c);
+    }
+  } else if (op == 0x04) {  // SYS_WRITE0
+    std::string s;
+    for (uint32_t i = 0; i < 4096; ++i) {
+      char c = static_cast<char>(memory_.Read8(arg + i));
+      if (c == 0) break;
+      s.push_back(c);
+    }
+    if (std::getenv("ZEEB_LOG_SEMIHOSTING")) {
+      std::fprintf(stderr, "%s", s.c_str());
+    }
+  }
+  regs_[kR0] = 0;  // Returning 0 indicates success for semihosting operations
 }
 
 uint64_t ArmInterpreter::Run(uint64_t max_instructions) {
