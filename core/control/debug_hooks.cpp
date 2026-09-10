@@ -43,12 +43,12 @@ void DebugHooks::OnTraceSlow(uint32_t pc, const IArmCore& cpu) {
   // Read32 is a pure lookup; we never write).
   uint32_t opcode = const_cast<IArmCore&>(cpu).GetMemory().Read32(pc);
   std::fprintf(trace_file_,
-               "%08x %08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x "
+               "%08x %08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x r5=%08x r6=%08x "
                "sp=%08x lr=%08x cpsr=%08x\n",
                pc, opcode, cpu.GetRegister(kR0), cpu.GetRegister(kR1),
                cpu.GetRegister(kR2), cpu.GetRegister(kR3), cpu.GetRegister(kR4),
-               cpu.GetRegister(kR5), cpu.GetRegister(kSP), cpu.GetRegister(kLR),
-               cpu.GetCpsr());
+               cpu.GetRegister(kR5), cpu.GetRegister(6), cpu.GetRegister(kSP),
+               cpu.GetRegister(kLR), cpu.GetCpsr());
   ++trace_count_;
 }
 

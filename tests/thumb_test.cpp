@@ -369,11 +369,14 @@ TEST(Thumb, ConditionalBranchSkippedWhenFlagsDontMatch) {
   EXPECT_EQ(cpu.GetRegister(kPC), 0x2u) << "not taken -> normal +2 advance";
 }
 
-TEST(Thumb, ConditionalBranchSwiEncodingIsUnimplemented) {
+TEST(Thumb, ConditionalBranchSwiEncodingExecutesCleanly) {
   ArmInterpreter cpu;
   EnterThumb(cpu);
+  cpu.SetRegister(kR0, 0x18);  // semihosting op
   cpu.GetMemory().Write16(0, 0xDF00);  // cond=1111 -> real SWI encoding
-  EXPECT_THROW(cpu.Step(), UnimplementedInstruction);
+  cpu.Step();
+  EXPECT_EQ(cpu.GetRegister(kR0), 0u);
+  EXPECT_EQ(cpu.GetRegister(kPC), 2u);
 }
 
 // --- Format 18: unconditional branch ---

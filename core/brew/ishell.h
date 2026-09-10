@@ -122,6 +122,11 @@ class IShellHle {
   // Sets guest memory allocator for resource loading (LoadResData)
   void SetAllocator(std::function<uint32_t(uint32_t)> malloc_fn) { malloc_fn_ = std::move(malloc_fn); }
 
+  void SetAppletClassAndItemId(uint32_t clsid, uint32_t item_id) {
+    applet_clsid_ = clsid;
+    item_id_ = item_id;
+  }
+
   // Optional ThreadHle hook for cooperative threads
   void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
 
@@ -204,6 +209,10 @@ class IShellHle {
   uint32_t next_mime_addr_ = 0x0008d000;
   class ThreadHle* thread_hle_ = nullptr;
   std::function<uint32_t(uint32_t)> malloc_fn_;
+  uint32_t applet_clsid_ = 0;
+  uint32_t item_id_ = 0;
+  void GetClassItemIdImpl(IArmCore& core);
+  void GetDeviceInfoExImpl(IArmCore& core);
 };
 
 }  // namespace zeebulator

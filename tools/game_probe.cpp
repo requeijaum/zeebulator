@@ -544,11 +544,11 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
       last_lr = cpu.GetRegister(zeebulator::kLR);
     }
     if (trace) {
-      std::printf("[%4llu] pc=0x%08x instr=0x%08x r0=%08x r1=%08x r2=%08x r3=%08x r4=%08x\n",
-                  static_cast<unsigned long long>(steps), pc, cpu.GetMemory().Read32(pc),
+      std::printf("[%4llu] pc=0x%08x r0=%08x r1=%08x r5=%08x r6=%08x sp=%08x lr=%08x\n",
+                  static_cast<unsigned long long>(steps), pc,
                   cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1),
-                  cpu.GetRegister(zeebulator::kR2), cpu.GetRegister(zeebulator::kR3),
-                  cpu.GetRegister(zeebulator::kR4));
+                  cpu.GetRegister(5), cpu.GetRegister(6),
+                  cpu.GetRegister(zeebulator::kSP), cpu.GetRegister(zeebulator::kLR));
     }
     if (hle_trace && in_trap_range && pc != trap_base) {
       std::printf("  [hle call] trap=0x%08x r0=%08x r1=%08x r2=%08x r3=%08x\n", pc,
@@ -560,7 +560,7 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
       std::printf(
           "warning: pc=0x%08x left the loaded module's range (0x%08x-0x%08x) after %llu "
           "steps -- likely a missing loader/runtime-support gap, not real progress (see "
-          "PHASE8_LOG.md). Last in-module pc=0x00187e94 lr=0x00187e78 -- disassemble there first.\n",
+          "PHASE8_LOG.md). Last in-module pc=0x%08x lr=0x%08x -- disassemble there first.\n",
           pc, mod_base, mod_base + mod_size, static_cast<unsigned long long>(steps),
           last_in_module_pc, last_lr);
       result.wandered_outside_module = true;  // only warn once per call
@@ -1922,26 +1922,33 @@ int main(int argc, char** argv) {
   // Signal-factory pattern, not just the one whose address happened to
   // be reverse-engineered first.
   auto signal_registration_count = std::make_shared<int>(0);
+  // ISignal (4 slots) and ISignalCtl (6 slots) objects returned by CreateSignal.
+  // Covered with 10 slots each so AddRef/Release/QueryInterface/Set/Detach/Enable are safe.
+  uint32_t signal_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80065000, /*object=*/0x80065100, /*slot_count=*/10);
+  uint32_t signal_ctl_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80065200, /*object=*/0x80065300, /*slot_count=*/10);
+
   std::vector<zeebulator::HleRuntime::HleFunction> signal_cb_factory_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
-  signal_cb_factory_methods[3] = [captured_button_callback, captured_button_context,
-                                   signal_registration_count](zeebulator::IArmCore& core) {
+  signal_cb_factory_methods[3] = [&cpu, captured_button_callback, captured_button_context,
+                                   signal_registration_count, signal_obj, signal_ctl_obj](zeebulator::IArmCore& core) {
     // AEEResult CreateSignal(ISignalCBFactory*, IDLECBFUNC pfn, void *pUser,
     //   ISignal **ppISignal, ISignalCtl **ppISignalCtl)
     uint32_t callback = core.GetRegister(zeebulator::kR1);
     uint32_t user_data = core.GetRegister(zeebulator::kR2);
+    uint32_t pp_isignal = core.GetRegister(zeebulator::kR3);
     uint32_t out_signal_ctl = zeebulator::HleRuntime::ReadStackArg(core, 0);
     if (*signal_registration_count == 1) {
       *captured_button_callback = callback;
       *captured_button_context = user_data;
     }
     ++*signal_registration_count;
+    if (pp_isignal != 0) {
+      cpu.GetMemory().Write32(pp_isignal, signal_obj);
+    }
     if (out_signal_ctl != 0) {
-      // Real code only ever checks this pointer for null/non-null
-      // (RegisterFor*Event's own ISignal argument) and calls Detach/
-      // Release on it at teardown, which this dev tool's own process
-      // lifetime never reaches -- any stable nonzero token is enough.
-      core.GetMemory().Write32(out_signal_ctl, 0x80065000);
+      cpu.GetMemory().Write32(out_signal_ctl, signal_ctl_obj);
     }
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
   };

@@ -281,9 +281,9 @@ void FileHle::SeekImpl(IArmCore& core) {
   f.position = static_cast<uint32_t>(new_pos);
   core.SetRegister(kR0, kAeeSuccess);
   if (std::getenv("ZEEB_LOG_FILE")) {
-    std::fprintf(stderr, "[file] Seek handle=0x%x type=%u dist=%d -> pos=%u/%zu\n",
+    std::fprintf(stderr, "[file] Seek handle=0x%x type=%u dist=%d lr=0x%08x -> pos=%u/%zu\n",
                  core.GetRegister(kR0) == kAeeSuccess ? it->first : 0u,
-                 seek_type, move_distance, f.position, f.data->size());
+                 seek_type, move_distance, core.GetRegister(kLR), f.position, f.data->size());
   }
 }
 
