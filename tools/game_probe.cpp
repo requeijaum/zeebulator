@@ -3384,6 +3384,21 @@ int main(int argc, char** argv) {
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
   shell_hle.RegisterFactory(0x01005501,
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
+  // 0x01005502 e 0x01005503 seguem a mesma regra das irmas acima, mas foram
+  // encontradas por medicao no corpus inteiro em vez de por LR-capture num
+  // titulo so: uma varredura de 60 titulos com ZEEB_LOG_CREATEINSTANCE
+  // registrou 8 pedidos de 0x01005502 e 1 de 0x01005503, TODOS recusados com
+  // ECLASSNOTSUPPORT, enquanto a irma AEECLSID_MEDIAPCM (0x01005511) passava
+  // 22 vezes. No BREW esses dois IDs sao as variantes MIDI/MP3 do handler de
+  // midia -- e as 12 faixas de fundo do Double Dragon dentro de sound.ggz sao
+  // exatamente .mid (bgm_1_0/bgm_1_l ... pares intro+loop), entao recusar
+  // 0x01005502 e recusar a musica. Mesma fabrica generica das demais: o
+  // MediaHle deste projeto nao despacha por identidade de classe, ele fareja
+  // os magic bytes do container.
+  shell_hle.RegisterFactory(0x01005502,
+                             [&media_hle]() { return media_hle.CreateMediaObject(); });
+  shell_hle.RegisterFactory(0x01005503,
+                             [&media_hle]() { return media_hle.CreateMediaObject(); });
 
   auto& mem = cpu.GetMemory();
   // A real stack, well past the loaded module -- ArmInterpreter::Reset()
