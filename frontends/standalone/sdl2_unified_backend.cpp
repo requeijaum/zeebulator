@@ -1,5 +1,6 @@
 #include "frontends/standalone/sdl2_unified_backend.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -134,11 +135,24 @@ Sdl2UnifiedBackend::Sdl2UnifiedBackend(SDL_Window* window, int width, int height
   desired.samples = 1024;
 
   SDL_AudioSpec obtained{};
+  // Aceitar uma taxa diferente da pedida. Com allowed_changes=0 o dispositivo
+  // tinha de entregar exatamente 22050 Hz; em qualquer maquina que nao oferecesse
+  // essa taxa a abertura falhava e o emulador ficava mudo. Pior: mesmo quando
+  // abria, PushAudioSamples descartava em silencio todo bloco cuja taxa nao
+  // batesse -- som sumindo sem uma linha de log, indistinguivel de um jogo que
+  // nao toca nada. Agora a diferenca de taxa e reamostrada, nao descartada.
   audio_device_ = SDL_OpenAudioDevice(nullptr, /*iscapture=*/0, &desired, &obtained,
-                                       /*allowed_changes=*/0);
+                                       SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
   if (audio_device_ == 0) {
     std::fprintf(stderr, "SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
   } else {
+    device_sample_rate_ = obtained.freq;
+    if (obtained.freq != audio_sample_rate) {
+      std::fprintf(stderr,
+                   "[audio] dispositivo abriu a %d Hz (pedimos %d Hz); "
+                   "reamostrando na saida\n",
+                   obtained.freq, audio_sample_rate);
+    }
     SDL_PauseAudioDevice(audio_device_, 0);  // start the device unpaused
   }
 
@@ -534,9 +548,32 @@ void Sdl2UnifiedBackend::SetWindowScale(int scale) {
 
 void Sdl2UnifiedBackend::PushAudioSamples(const int16_t* interleaved_stereo, size_t frame_count,
                                            int sample_rate) {
-  if (audio_device_ == 0 || sample_rate != audio_sample_rate_) return;
-  SDL_QueueAudio(audio_device_, interleaved_stereo,
-                  static_cast<uint32_t>(frame_count * 2 * sizeof(int16_t)));
+  if (audio_device_ == 0 || frame_count == 0) return;
+  const int out_rate = device_sample_rate_ > 0 ? device_sample_rate_ : audio_sample_rate_;
+  if (sample_rate == out_rate) {
+    SDL_QueueAudio(audio_device_, interleaved_stereo,
+                    static_cast<uint32_t>(frame_count * 2 * sizeof(int16_t)));
+    return;
+  }
+  // Reamostragem linear estereo para a taxa real do dispositivo. Antes deste
+  // ramo o bloco era simplesmente descartado quando as taxas divergiam.
+  const double ratio = static_cast<double>(sample_rate) / static_cast<double>(out_rate);
+  const size_t out_frames = static_cast<size_t>(static_cast<double>(frame_count) / ratio);
+  if (out_frames == 0) return;
+  std::vector<int16_t> resampled(out_frames * 2);
+  for (size_t i = 0; i < out_frames; ++i) {
+    const double src = static_cast<double>(i) * ratio;
+    const size_t f0 = static_cast<size_t>(src);
+    const size_t f1 = std::min(f0 + 1, frame_count - 1);
+    const double frac = src - static_cast<double>(f0);
+    for (int ch = 0; ch < 2; ++ch) {
+      const double a = interleaved_stereo[f0 * 2 + ch];
+      const double b = interleaved_stereo[f1 * 2 + ch];
+      resampled[i * 2 + ch] = static_cast<int16_t>(a + (b - a) * frac);
+    }
+  }
+  SDL_QueueAudio(audio_device_, resampled.data(),
+                  static_cast<uint32_t>(resampled.size() * sizeof(int16_t)));
 }
 
 // Standard SDL_GameController button naming *should* already match an

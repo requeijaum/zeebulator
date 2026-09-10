@@ -251,6 +251,10 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
 
   SDL_AudioDeviceID audio_device_ = 0;
   int audio_sample_rate_;
+  // Taxa REAL que o dispositivo abriu. Pode diferir de audio_sample_rate_
+  // (pedimos SDL_AUDIO_ALLOW_FREQUENCY_CHANGE); PushAudioSamples reamostra
+  // para ela em vez de descartar o bloco.
+  int device_sample_rate_ = 0;
   SDL_GameController* controller_ = nullptr;
 };
 
