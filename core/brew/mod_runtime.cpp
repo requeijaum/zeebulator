@@ -896,6 +896,185 @@ void ModRuntime::WstrncmpImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+void ModRuntime::WstrcpyImpl(IArmCore& core) {
+  // AECHAR *wstrcpy(AECHAR *dst, const AECHAR *src) -- slot 9 (0x24).
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t i = 0;
+  for (;; ++i) {
+    uint16_t ch = memory_.Read16(src + i * 2);
+    memory_.Write16(dst + i * 2, ch);
+    if (ch == 0) break;
+  }
+  core.SetRegister(kR0, dst);
+}
+
+void ModRuntime::WstrcatImpl(IArmCore& core) {
+  // AECHAR *wstrcat(AECHAR *dst, const AECHAR *src) -- slot 10 (0x28).
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t end = 0;
+  while (memory_.Read16(dst + end * 2) != 0) ++end;
+  uint32_t i = 0;
+  for (;; ++i) {
+    uint16_t ch = memory_.Read16(src + i * 2);
+    memory_.Write16(dst + (end + i) * 2, ch);
+    if (ch == 0) break;
+  }
+  core.SetRegister(kR0, dst);
+}
+
+void ModRuntime::WstrcmpImpl(IArmCore& core) {
+  // int wstrcmp(const AECHAR *a, const AECHAR *b) -- slot 11 (0x2c).
+  uint32_t a = core.GetRegister(kR0);
+  uint32_t b = core.GetRegister(kR1);
+  for (uint32_t i = 0;; ++i) {
+    uint16_t ca = memory_.Read16(a + i * 2);
+    uint16_t cb = memory_.Read16(b + i * 2);
+    if (ca != cb) {
+      core.SetRegister(kR0, static_cast<uint32_t>(ca < cb ? -1 : 1));
+      return;
+    }
+    if (ca == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::WstricmpImpl(IArmCore& core) {
+  // int wstricmp(const AECHAR *a, const AECHAR *b) -- slot 71 (0x11c).
+  uint32_t a = core.GetRegister(kR0);
+  uint32_t b = core.GetRegister(kR1);
+  auto lower = [](uint16_t c) -> uint16_t {
+    return (c >= 'A' && c <= 'Z') ? static_cast<uint16_t>(c + 32) : c;
+  };
+  for (uint32_t i = 0;; ++i) {
+    uint16_t ca = lower(memory_.Read16(a + i * 2));
+    uint16_t cb = lower(memory_.Read16(b + i * 2));
+    if (ca != cb) {
+      core.SetRegister(kR0, static_cast<uint32_t>(ca < cb ? -1 : 1));
+      return;
+    }
+    if (ca == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::WstrsizeImpl(IArmCore& core) {
+  // size_t wstrsize(const AECHAR *s) -- slot 31 (0x7c). Real BREW returns
+  // the size in BYTES including the terminator, not the character count.
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t n = 0;
+  while (memory_.Read16(s + n * 2) != 0) ++n;
+  core.SetRegister(kR0, (n + 1) * 2);
+}
+
+void ModRuntime::WstrdupImpl(IArmCore& core) {
+  // AECHAR *wstrdup(const AECHAR *s) -- slot 28 (0x70).
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t n = 0;
+  while (memory_.Read16(s + n * 2) != 0) ++n;
+  uint32_t dst = Allocate((n + 1) * 2);
+  if (dst != 0) {
+    for (uint32_t i = 0; i <= n; ++i) memory_.Write16(dst + i * 2, memory_.Read16(s + i * 2));
+  }
+  core.SetRegister(kR0, dst);
+}
+
+void ModRuntime::WstrlowerImpl(IArmCore& core) {
+  // AECHAR *wstrlower(AECHAR *s) -- slot 22 (0x58).
+  uint32_t s = core.GetRegister(kR0);
+  for (uint32_t i = 0;; ++i) {
+    uint16_t c = memory_.Read16(s + i * 2);
+    if (c == 0) break;
+    if (c >= 'A' && c <= 'Z') memory_.Write16(s + i * 2, static_cast<uint16_t>(c + 32));
+  }
+  core.SetRegister(kR0, s);
+}
+
+void ModRuntime::WstrupperImpl(IArmCore& core) {
+  // AECHAR *wstrupper(AECHAR *s) -- slot 23 (0x5c).
+  uint32_t s = core.GetRegister(kR0);
+  for (uint32_t i = 0;; ++i) {
+    uint16_t c = memory_.Read16(s + i * 2);
+    if (c == 0) break;
+    if (c >= 'a' && c <= 'z') memory_.Write16(s + i * 2, static_cast<uint16_t>(c - 32));
+  }
+  core.SetRegister(kR0, s);
+}
+
+void ModRuntime::StrnicmpImpl(IArmCore& core) {
+  // int strnicmp(const char *a, const char *b, int n) -- slot 53 (0xd4).
+  uint32_t a = core.GetRegister(kR0);
+  uint32_t b = core.GetRegister(kR1);
+  uint32_t n = core.GetRegister(kR2);
+  auto lower = [](uint8_t c) -> uint8_t {
+    return (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + 32) : c;
+  };
+  for (uint32_t i = 0; i < n; ++i) {
+    uint8_t ca = lower(memory_.Read8(a + i));
+    uint8_t cb = lower(memory_.Read8(b + i));
+    if (ca != cb) {
+      core.SetRegister(kR0, static_cast<uint32_t>(ca < cb ? -1 : 1));
+      return;
+    }
+    if (ca == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::MemrchrImpl(IArmCore& core) {
+  // void *memrchr(const void *p, int ch, int len) -- slot 66 (0x108).
+  uint32_t p = core.GetRegister(kR0);
+  auto ch = static_cast<uint8_t>(core.GetRegister(kR1));
+  uint32_t len = core.GetRegister(kR2);
+  for (uint32_t i = len; i > 0; --i) {
+    if (memory_.Read8(p + i - 1) == ch) {
+      core.SetRegister(kR0, p + i - 1);
+      return;
+    }
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::MemstrImpl(IArmCore& core) {
+  // char *memstr(const char *hay, const char *needle, int len) -- slot 59 (0xec).
+  uint32_t hay = core.GetRegister(kR0);
+  uint32_t needle = core.GetRegister(kR1);
+  uint32_t len = core.GetRegister(kR2);
+  uint32_t nlen = 0;
+  while (memory_.Read8(needle + nlen) != 0) ++nlen;
+  if (nlen == 0) {
+    core.SetRegister(kR0, hay);
+    return;
+  }
+  if (nlen <= len) {
+    for (uint32_t i = 0; i + nlen <= len; ++i) {
+      uint32_t j = 0;
+      while (j < nlen && memory_.Read8(hay + i + j) == memory_.Read8(needle + j)) ++j;
+      if (j == nlen) {
+        core.SetRegister(kR0, hay + i);
+        return;
+      }
+    }
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::AeeIsBadPtrImpl(IArmCore& core) {
+  // boolean aee_IsBadPtr(int flags, const void *p, uint32 len) -- slot 101
+  // (0x194). Real BREW answers "is this range unusable?"; our guest address
+  // space has no protection bits, so only a null/near-null base is bad.
+  uint32_t p = core.GetRegister(kR1);
+  core.SetRegister(kR0, p < 0x1000 ? 1u : 0u);
+}
+
+void ModRuntime::GetLastErrorImpl(IArmCore& core) {
+  // int getlasterror(void) -- slot 98 (0x188). Nothing in this HLE records a
+  // sticky errno, and every real caller only tests it for "did the last call
+  // fail", so SUCCESS is the honest answer rather than an invented code.
+  core.SetRegister(kR0, 0);
+}
+
 void ModRuntime::WstrlcpyImpl(IArmCore& core) {
   // size_t wstrlcpy(AECHAR *dst, const AECHAR *src, size_t siz)
   uint32_t dst = core.GetRegister(kR0);
@@ -1798,6 +1977,19 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x1c, unknown_0x1c_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x20, unknown_0x20_fn);
   memory_.Write32(table_address + kCheckObjectFlagSlotOffset0xa8, check_object_flag_0xa8_fn);
+  memory_.Write32(table_address + 0x024, hle_.Register([this](IArmCore& c) { WstrcpyImpl(c); }));
+  memory_.Write32(table_address + 0x028, hle_.Register([this](IArmCore& c) { WstrcatImpl(c); }));
+  memory_.Write32(table_address + 0x02c, hle_.Register([this](IArmCore& c) { WstrcmpImpl(c); }));
+  memory_.Write32(table_address + 0x058, hle_.Register([this](IArmCore& c) { WstrlowerImpl(c); }));
+  memory_.Write32(table_address + 0x05c, hle_.Register([this](IArmCore& c) { WstrupperImpl(c); }));
+  memory_.Write32(table_address + 0x070, hle_.Register([this](IArmCore& c) { WstrdupImpl(c); }));
+  memory_.Write32(table_address + 0x07c, hle_.Register([this](IArmCore& c) { WstrsizeImpl(c); }));
+  memory_.Write32(table_address + 0x0d4, hle_.Register([this](IArmCore& c) { StrnicmpImpl(c); }));
+  memory_.Write32(table_address + 0x0ec, hle_.Register([this](IArmCore& c) { MemstrImpl(c); }));
+  memory_.Write32(table_address + 0x108, hle_.Register([this](IArmCore& c) { MemrchrImpl(c); }));
+  memory_.Write32(table_address + 0x11c, hle_.Register([this](IArmCore& c) { WstricmpImpl(c); }));
+  memory_.Write32(table_address + 0x188, hle_.Register([this](IArmCore& c) { GetLastErrorImpl(c); }));
+  memory_.Write32(table_address + 0x194, hle_.Register([this](IArmCore& c) { AeeIsBadPtrImpl(c); }));
   // Auto-stub ladder (env ZEEB_AUTOSTUB, debug harness only): fill every
   // still-unmapped static-base offset with a shared logging no-op, so a title
   // that calls an as-yet-unidentified slot resolves + logs (via Dispatch's
