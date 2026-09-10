@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace zeebulator {
 
@@ -135,7 +137,52 @@ void Mixer::Mix(Backend& backend, size_t frame_count) {
   for (size_t i = 0; i < out.size(); ++i) {
     out[i] = static_cast<int16_t>(std::clamp<int32_t>(accum[i], -32768, 32767));
   }
+  DumpAudioIfRequested(out);
   backend.PushAudioSamples(out.data(), frame_count, output_sample_rate_);
+}
+
+// Despejo do audio mixado em WAV (ZEEB_DUMP_AUDIO=caminho.wav).
+//
+// Sem isto nao da para dizer se o som "funciona": os logs de IMedia mostram
+// SetData/SetVolume/RegisterNotify, mas nada disso prova que uma amostra
+// chegou a saida. O zeebx tem --dump-audio e este projeto nao tinha
+// equivalente, entao nao havia como comparar os dois lado a lado.
+//
+// O cabecalho e escrito com tamanhos zerados na criacao e reescrito a cada
+// bloco, para que o arquivo continue valido mesmo se a execucao for
+// interrompida (que e o caso normal aqui -- os jogos rodam sob timeout).
+void Mixer::DumpAudioIfRequested(const std::vector<int16_t>& out) {
+  static const char* path = std::getenv("ZEEB_DUMP_AUDIO");
+  if (path == nullptr) return;
+  if (dump_file_ == nullptr) {
+    dump_file_ = std::fopen(path, "wb");
+    if (dump_file_ == nullptr) return;
+    unsigned char header[44] = {};
+    std::memcpy(header, "RIFF", 4);
+    std::memcpy(header + 8, "WAVEfmt ", 8);
+    header[16] = 16;                 // tamanho do bloco fmt
+    header[20] = 1;                  // PCM
+    header[22] = 2;                  // canais (estereo)
+    const uint32_t rate = static_cast<uint32_t>(output_sample_rate_);
+    const uint32_t byte_rate = rate * 2 * 2;
+    std::memcpy(header + 24, &rate, 4);
+    std::memcpy(header + 28, &byte_rate, 4);
+    header[32] = 4;                  // alinhamento de bloco
+    header[34] = 16;                 // bits por amostra
+    std::memcpy(header + 36, "data", 4);
+    std::fwrite(header, 1, sizeof(header), dump_file_);
+  }
+  std::fwrite(out.data(), sizeof(int16_t), out.size(), dump_file_);
+  dump_bytes_ += out.size() * sizeof(int16_t);
+
+  const uint32_t data_size = static_cast<uint32_t>(dump_bytes_);
+  const uint32_t riff_size = data_size + 36;
+  std::fseek(dump_file_, 4, SEEK_SET);
+  std::fwrite(&riff_size, 4, 1, dump_file_);
+  std::fseek(dump_file_, 40, SEEK_SET);
+  std::fwrite(&data_size, 4, 1, dump_file_);
+  std::fseek(dump_file_, 0, SEEK_END);
+  std::fflush(dump_file_);
 }
 
 bool Mixer::Serialize(std::ostream& out) const {

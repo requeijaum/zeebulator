@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <istream>
 #include <memory>
 #include <mutex>
@@ -71,6 +72,11 @@ class Mixer {
   // output rate. Safe to call with zero active voices (pushes silence).
   void Mix(Backend& backend, size_t frame_count);
 
+  // Ver a definicao em mixer.cpp: grava a saida mixada em WAV quando
+  // ZEEB_DUMP_AUDIO aponta um caminho, para que "tem som?" vire uma
+  // pergunta verificavel em vez de uma leitura de log.
+  void DumpAudioIfRequested(const std::vector<int16_t>& out);
+
   // Real, live-reproduced bug this fixes: a save state only ever
   // captured guest CPU/memory (see core/save_state.h's own doc
   // comment), never this class's own voices_ -- so after loading one,
@@ -100,6 +106,10 @@ class Mixer {
     double position_frames = 0.0;  // in source frames, not bytes/samples
     bool finished = false;
   };
+
+  // ZEEB_DUMP_AUDIO: ver DumpAudioIfRequested em mixer.cpp.
+  std::FILE* dump_file_ = nullptr;
+  size_t dump_bytes_ = 0;
 
   mutable std::mutex mutex_;
   std::vector<Voice> voices_;
