@@ -113,7 +113,8 @@ void Memory::Write32(uint32_t address, uint32_t value) {
         // keeps the Double Dragon Release-clear case working (there the
         // slot really does still hold the bound interface) while letting
         // every recycled slot be written normally.
-        if (Read32(address) == it->second) {
+        static const bool legacy_guard = std::getenv("ZEEB_MEDIAGUARD_LEGACY") != nullptr;
+        if (legacy_guard || Read32(address) == it->second) {
           if (std::getenv("ZEEB_LOG_MEDIAGUARD")) {
             std::fprintf(stderr, "[mediaguard] SUPPRESS-ZERO slot[0x%08x] (keep 0x%08x)\n",
                          address, it->second);
