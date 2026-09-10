@@ -160,8 +160,11 @@ void FileHle::ReadFromHandle(IArmCore& core, uint32_t handle) {
   f.position += n;
   core.SetRegister(kR0, n);
   if (std::getenv("ZEEB_LOG_FILE")) {
-    std::fprintf(stderr, "[file] Read handle=0x%x want=%u got=%u newpos=%u/%zu\n",
-                 handle, want, n, f.position, f.data->size());
+    // lr identifica o chamador -- mesmo motivo do log de Seek: sem ele nao da
+    // para saber QUAL rotina do jogo esta lendo, e num laco de carregamento
+    // travado essa e a informacao que importa.
+    std::fprintf(stderr, "[file] Read handle=0x%x want=%u got=%u newpos=%u/%zu lr=0x%08x\n",
+                 handle, want, n, f.position, f.data->size(), core.GetRegister(kLR));
   }
 }
 
