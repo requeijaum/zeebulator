@@ -1055,6 +1055,46 @@ void ModRuntime::ErrStrdupImpl(IArmCore& core) {
   }
 }
 
+void ModRuntime::StrtowstrImpl(IArmCore& core) {
+  // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize)
+  // nSize is in BYTES, not characters (per Qualcomm SDK / zeebx machine.rs:10156).
+  uint32_t in = core.GetRegister(kR0);
+  uint32_t dest = core.GetRegister(kR1);
+  auto size_bytes = static_cast<int32_t>(core.GetRegister(kR2));
+  if (dest != 0 && size_bytes >= 2) {
+    size_t max_chars = static_cast<size_t>(size_bytes / 2) - 1;
+    size_t i = 0;
+    while (i < max_chars) {
+      uint8_t c = memory_.Read8(in + static_cast<uint32_t>(i));
+      if (c == 0) break;
+      memory_.Write16(dest + static_cast<uint32_t>(i * 2), static_cast<uint16_t>(c));
+      ++i;
+    }
+    memory_.Write16(dest + static_cast<uint32_t>(i * 2), 0);
+  }
+  core.SetRegister(kR0, dest);
+}
+
+void ModRuntime::WstrtostrImpl(IArmCore& core) {
+  // char *wstrtostr(const AECHAR *pIn, char *pszDest, int nSize)
+  // Converts UTF-16/AECHAR string to C-string. nSize is in bytes.
+  uint32_t in = core.GetRegister(kR0);
+  uint32_t dest = core.GetRegister(kR1);
+  auto size_bytes = static_cast<int32_t>(core.GetRegister(kR2));
+  if (dest != 0 && size_bytes > 0) {
+    size_t max_bytes = static_cast<size_t>(size_bytes - 1);
+    size_t i = 0;
+    while (i < max_bytes) {
+      uint16_t u = memory_.Read16(in + static_cast<uint32_t>(i * 2));
+      if (u == 0) break;
+      memory_.Write8(dest + static_cast<uint32_t>(i), static_cast<uint8_t>(u & 0xFF));
+      ++i;
+    }
+    memory_.Write8(dest + static_cast<uint32_t>(i), 0);
+  }
+  core.SetRegister(kR0, dest);
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1498,7 +1538,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     core.SetRegister(kR0, 0);
   });
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
-  uint32_t unknown_0x40_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t strtowstr_fn = hle_.Register([this](IArmCore& core) { StrtowstrImpl(core); });
+  uint32_t wstrtostr_fn = hle_.Register([this](IArmCore& core) { WstrtostrImpl(core); });
   uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0xc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
@@ -1658,7 +1699,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kGetAppContextSlotOffset, get_app_context_fn);
   memory_.Write32(table_address + kDbgPrintfSlotOffset, dbgprintf_fn);
   memory_.Write32(table_address + kReallocSlotOffset, realloc_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x40, unknown_0x40_fn);
+  memory_.Write32(table_address + 0x40, strtowstr_fn);
+  memory_.Write32(table_address + 0x44, wstrtostr_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);

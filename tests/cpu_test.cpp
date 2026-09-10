@@ -706,3 +706,28 @@ TEST(Cpu, DeserializeFromAnEmptyStreamFailsWithoutCrashing) {
   std::stringstream empty_stream;
   EXPECT_FALSE(cpu.Deserialize(empty_stream));
 }
+
+TEST(Cpu, Cp15TestAndCleanSetsZFlagWithoutThrowing) {
+  ArmInterpreter cpu;
+  // mrc p15, 0, APSR_nzcv, c7, c14, 3 (opcode: 0xee17ff7e)
+  // Exclusive ARM926 instruction used by Zeebo titles and firmware to clean DCache
+  cpu.GetMemory().Write32(0x1000, 0xee17ff7eu);
+  cpu.SetRegister(kPC, 0x1000);
+  cpu.SetCpsr(0); // clear all flags
+
+  cpu.Step();
+  EXPECT_EQ(cpu.GetRegister(kPC), 0x1004u);
+  // Z flag (bit 30) must be set so the wait loop terminates immediately
+  EXPECT_TRUE((cpu.GetCpsr() & (1u << kCpsrZ)) != 0);
+}
+
+TEST(Cpu, Cp15CacheAndBarrierOperationsAreBenignNoOps) {
+  ArmInterpreter cpu;
+  // mcr p15, 0, r2, c7, c10, 4 (DSB: 0xee072f9au)
+  cpu.GetMemory().Write32(0x1000, 0xee072f9au);
+  cpu.SetRegister(kPC, 0x1000);
+  cpu.SetRegister(kR2, 0);
+
+  cpu.Step();
+  EXPECT_EQ(cpu.GetRegister(kPC), 0x1004u);
+}

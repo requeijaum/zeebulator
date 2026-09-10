@@ -720,6 +720,8 @@ class ModRuntime {
   void WwritelongImpl(IArmCore& core);
   void ErrReallocImpl(IArmCore& core);
   void ErrStrdupImpl(IArmCore& core);
+  void StrtowstrImpl(IArmCore& core);
+  void WstrtostrImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);

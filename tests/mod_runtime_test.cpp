@@ -646,19 +646,28 @@ TEST(ModRuntime, MemcpyCopiesExactlyTheRequestedRangeAndReturnsDest) {
   EXPECT_EQ(cpu.GetMemory().Read8(kDest + 4), 0xAA) << "wrote past the requested range";
 }
 
-TEST(ModRuntime, MemcpyAliasSlotBehavesIdenticallyToMemcpy) {
+TEST(ModRuntime, WstrtostrSlotConvertsUtf16ToCString) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, 0xF0000000, 0x1000);
   ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
   mod_runtime.Install(kModuleBase, kTableAddress);
-  uint32_t memcpy_alias_fn = cpu.GetMemory().Read32(kTableAddress + kMemcpyAliasSlotOffset);
+  // Slot 17 (offset 0x44) is wstrtostr per Qualcomm AEEStdLib and zeebx oracle
+  uint32_t wstrtostr_fn = cpu.GetMemory().Read32(kTableAddress + 0x44);
 
   constexpr uint32_t kSrc = 0x80300100;
   constexpr uint32_t kDest = 0x80300200;
-  cpu.GetMemory().Write32(kSrc, 0xCAFEF00D);
+  // Write "test" in UTF-16
+  cpu.GetMemory().Write16(kSrc + 0, 't');
+  cpu.GetMemory().Write16(kSrc + 2, 'e');
+  cpu.GetMemory().Write16(kSrc + 4, 's');
+  cpu.GetMemory().Write16(kSrc + 6, 't');
+  cpu.GetMemory().Write16(kSrc + 8, 0);
 
-  EXPECT_EQ(hle.CallArmFunction(memcpy_alias_fn, kDest, kSrc, /*n=*/4), kDest);
-  EXPECT_EQ(cpu.GetMemory().Read32(kDest), 0xCAFEF00Du);
+  EXPECT_EQ(hle.CallArmFunction(wstrtostr_fn, kSrc, kDest, /*nSize=*/10), kDest);
+  std::string s;
+  for (uint32_t i = 0; i < 4; ++i) s.push_back(static_cast<char>(cpu.GetMemory().Read8(kDest + i)));
+  EXPECT_EQ(s, "test");
+  EXPECT_EQ(cpu.GetMemory().Read8(kDest + 4), 0);
 }
 
 TEST(ModRuntime, StrcpyCopiesThroughTheNullTerminatorAndReturnsDest) {

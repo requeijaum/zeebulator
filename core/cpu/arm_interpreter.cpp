@@ -1274,6 +1274,9 @@ void ArmInterpreter::Step() {
     } else if (((instr >> 24) & 0xF) == 0xF) {
       // SWI / SVC (bits 27..24 == 1111) — ARM semihosting
       ExecuteSwi(instr & 0x00FFFFFF);
+    } else if (((instr >> 24) & 0xE) == 0xE) {
+      // Coprocessor space (bits 27..25 == 110 or 111): CDP/MCR/MRC/LDC/STC
+      ExecuteCoprocessor(instr);
     } else {
       throw UnimplementedInstruction("Coprocessor instruction / SWI");
     }
@@ -1315,6 +1318,53 @@ void ArmInterpreter::ExecuteSwi(uint32_t comment) {
     }
   }
   regs_[kR0] = 0;  // Returning 0 indicates success for semihosting operations
+}
+
+void ArmInterpreter::ExecuteCoprocessor(uint32_t instr) {
+  // ARM Coprocessor instructions (MCR, MRC, CDP, LDC, STC, MRRC, MCRR).
+  // In userspace BREW games on Qualcomm MSM7k (ARM1136/ARM926), games
+  // occasionally invoke CP15 operations for cache flushing, barriers (DMB/DSB),
+  // thread ID reads, or ARM9 dcache test-and-clean loops.
+  uint32_t cp_num = (instr >> 8) & 0xF;
+  if (cp_num == 15) {
+    bool is_mrc = ((instr >> 20) & 1) != 0;
+    uint32_t opc1 = (instr >> 21) & 0x7;
+    uint32_t crn = (instr >> 16) & 0xF;
+    uint32_t rd = (instr >> 12) & 0xF;
+    uint32_t opc2 = (instr >> 5) & 0x7;
+    uint32_t crm = instr & 0xF;
+
+    if (is_mrc) {
+      // MRC p15, opc1, Rd, CRn, CRm, opc2
+      if (crn == 7 && crm == 14 && opc2 == 3) {
+        // Test and clean DCache (ARM926EJ-S specific: 'mrc p15,0,apsr_nzcv,c7,c14,3').
+        // Sets Z flag when cache clean is finished. Setting Z=1 ensures the test loop
+        // terminates immediately without spinning (matching zeebo-lle commit 395685f).
+        if (rd == 15) {
+          SetFlag(kCpsrZ, true);
+        } else {
+          regs_[rd] = 0x40000000u; // Z bit in bit 30
+        }
+        return;
+      }
+      if (crn == 0 && crm == 0) {
+        // CPU ID / Cache type: return ARM1136J-S / ARM926 compatible ID
+        if (rd != 15) {
+          regs_[rd] = (opc2 == 1) ? 0x1d152152u : 0x4107b364u;
+        }
+        return;
+      }
+      // Any other CP15 read: return 0
+      if (rd != 15) regs_[rd] = 0;
+      return;
+    } else {
+      // MCR p15: cache invalidate, flush, DMB, DSB, ISB, branch predictor flush.
+      // All are benign memory/cache management hints on an emulator -- safe no-op.
+      return;
+    }
+  }
+
+  // Non-CP15 coprocessor (e.g. VFP/CDP) -- benign no-op if no hardware FPU
 }
 
 uint64_t ArmInterpreter::Run(uint64_t max_instructions) {
