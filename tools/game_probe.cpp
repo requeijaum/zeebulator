@@ -1771,10 +1771,21 @@ int main(int argc, char** argv) {
   // Registrada com scaffold generico por enquanto; nenhum slot dela foi medido
   // ainda, entao qualquer forma especifica seria adivinhacao. O objetivo aqui e
   // so parar de recusar a classe, ja que uma recusa faz o jogo desistir.
-  // A/B: colecao DESLIGADA por enquanto -- ver medicao abaixo.
-  // uint32_t collection_obj = zeebulator::BuildGenericStubObject(
-  //     cpu.GetMemory(), hle, /*vtable=*/0x8006E000, /*object=*/0x8006F000, /*slot_count=*/24);
-  // shell_hle.RegisterInstance(/*colecao da Z-Wheel=*/0x0100104f, collection_obj);
+  // 0x0100104f -- a colecao generica da Z-Wheel: guarda itens e e percorrida.
+  //
+  // ATENCAO AO ENDERECO: a primeira tentativa registrou esta classe em
+  // vtable=0x8006E000/object=0x8006F000, que sao EXATAMENTE os enderecos do
+  // AEECLSID_SOUND alguns blocos abaixo. O resultado foi EVT_APP_START estourar
+  // em pc=0x8006e008 -- e a leitura obvia ("o stub generico da colecao quebra o
+  // jogo") estava ERRADA: o que quebrava era a vtable do ISOUND sendo
+  // sobrescrita. Registrada aqui numa faixa livre, 0x80071000/0x80072000.
+  //
+  // Continua um scaffold: nenhum slot desta classe foi medido ainda. O objetivo
+  // e so parar de recusar a classe, ja que a recusa faz o jogo desistir. Se um
+  // slot for exercitado, aparece no ZEEB_HLE_PROFILE.
+  uint32_t collection_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80071000, /*object=*/0x80072000, /*slot_count=*/24);
+  shell_hle.RegisterInstance(/*colecao da Z-Wheel=*/0x0100104f, collection_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
   // the literal pool addresses its own `ldr r1,[pc,#N]` instructions
