@@ -1015,10 +1015,21 @@ int main(int argc, char** argv) {
       std::vector<fs::path> search;
       if (fs::exists(own_dir / "boot.pkg")) search.push_back(own_dir / "boot.pkg");
       if (search.empty() && own_dir.has_parent_path()) {
-        for (const auto& sib : fs::directory_iterator(own_dir.parent_path())) {
-          if (!sib.is_directory()) continue;
-          fs::path cand = sib.path() / "boot.pkg";
-          if (fs::exists(cand)) { search.push_back(cand); break; }
+        // Non-throwing iteration: a single unreadable/unrelated sibling directory (e.g. an
+        // apt temp dir when the .mod happens to live under /tmp, as with an ad-hoc probe run)
+        // must not abort the whole scan and hide a real boot.pkg sitting in another sibling.
+        std::error_code iter_ec;
+        fs::directory_iterator it(own_dir.parent_path(), iter_ec);
+        fs::directory_iterator end;
+        for (; !iter_ec && it != end; it.increment(iter_ec)) {
+          std::error_code is_dir_ec;
+          if (!it->is_directory(is_dir_ec) || is_dir_ec) continue;
+          fs::path cand = it->path() / "boot.pkg";
+          std::error_code exists_ec;
+          if (fs::exists(cand, exists_ec) && !exists_ec) {
+            search.push_back(cand);
+            break;
+          }
         }
       }
       if (!search.empty()) {
@@ -1299,6 +1310,16 @@ int main(int argc, char** argv) {
   // via real disassembly of AEEApplet_New's call chain (PHASE8_LOG.md).
   zeebulator::IShellHle shell_hle(cpu.GetMemory(), hle, kWidth, kHeight);
   shell_hle.SetAllocator([&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); });
+  // Extract folder ID (Item ID) from mod path, e.g. /.../mod/279712/zumar.mod -> 279712
+  uint32_t item_id = 0;
+  {
+    std::filesystem::path p(argv[1]);
+    std::string folder_name = p.parent_path().filename().string();
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(folder_name.c_str(), &end, 10);
+    if (end && *end == '\0' && parsed != 0) item_id = static_cast<uint32_t>(parsed);
+  }
+  shell_hle.SetAppletClassAndItemId(cls_id, item_id);
   // Real ISHELL_LoadResDataEx(shell, "resources.bar", id, type, ...)
   // calls (real slot 41, confirmed live against Peggle -- see
   // core/brew/ishell.h) need the real file's own bytes registered
@@ -1552,6 +1573,18 @@ int main(int argc, char** argv) {
       std::make_shared<std::vector<std::array<int32_t, 3>>>();
   std::vector<zeebulator::HleRuntime::HleFunction> hid_device_methods(
       40, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  hid_device_methods[4] = [](zeebulator::IArmCore& core) {
+    // AEEResult GetDeviceStatus(IHIDDevice*, int *pnStatus)
+    uint32_t pstatus = core.GetRegister(zeebulator::kR1);
+    if (pstatus != 0) core.GetMemory().Write32(pstatus, 1);  // 1 = CONNECTED
+    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+  };
+  hid_device_methods[7] = [](zeebulator::IArmCore& core) {
+    // AEEResult GetNumberOfButtons(IHIDDevice*, int *pnButtons)
+    uint32_t pbuttons = core.GetRegister(zeebulator::kR1);
+    if (pbuttons != 0) core.GetMemory().Write32(pbuttons, 16);
+    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+  };
   hid_device_methods[8] = [](zeebulator::IArmCore& core) {
     // AEEResult RegisterForButtonEvent(IHIDDevice*, ISignal *piSignal)
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
@@ -1579,6 +1612,44 @@ int main(int argc, char** argv) {
     uint32_t dropped_addr = core.GetRegister(zeebulator::kR3);
     if (dropped_addr != 0) core.GetMemory().Write32(dropped_addr, 0);
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+  };
+  // Slot 10: GetPositionState(IHIDDevice*, AEEHIDPositionInfo *pPositionInfo)
+  hid_device_methods[10] = [](zeebulator::IArmCore& core) {
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      for (uint32_t i = 0; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 0);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 11: GetMinPositionInfo(IHIDDevice*, AEEHIDPositionInfo *pMinInfo)
+  hid_device_methods[11] = [](zeebulator::IArmCore& core) {
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      core.GetMemory().Write32(pinfo, 0);  // bRelativeAxes = false
+      for (uint32_t i = 1; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, static_cast<uint32_t>(-32768));
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 12: GetMaxPositionInfo(IHIDDevice*, AEEHIDPositionInfo *pMaxInfo)
+  hid_device_methods[12] = [](zeebulator::IArmCore& core) {
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      core.GetMemory().Write32(pinfo, 0);  // bRelativeAxes = false
+      for (uint32_t i = 1; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 32767);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 13: GetAxesInfo(IHIDDevice*, AEEHIDPositionInfo *pAxesInfo)
+  hid_device_methods[13] = [](zeebulator::IArmCore& core) {
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      for (uint32_t i = 0; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 0);
+      core.GetMemory().Write32(pinfo + 1 * 4, 0x0106c40c);  // X
+      core.GetMemory().Write32(pinfo + 2 * 4, 0x0106c4d1);  // Y
+      core.GetMemory().Write32(pinfo + 3 * 4, 0x0106c4ce);  // Z
+      core.GetMemory().Write32(pinfo + 6 * 4, 0x0106c4cf);  // RZ
+    }
+    core.SetRegister(zeebulator::kR0, 0);
   };
   uint32_t hid_device_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, kHidDeviceVtable, kHidDeviceObject, hid_device_methods);
