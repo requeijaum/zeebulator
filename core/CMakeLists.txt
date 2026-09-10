@@ -70,6 +70,7 @@ add_library(zeebulator_core STATIC
   brew/font5x7.h
   brew/virtual_filesystem.cpp
   brew/virtual_filesystem.h
+  brew/brew_platform.cpp
   brew/file_hle.cpp
   brew/file_hle.h
   brew/media_hle.cpp
