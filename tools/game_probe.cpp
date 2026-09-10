@@ -1658,6 +1658,74 @@ int main(int argc, char** argv) {
   uint32_t sqlmgr_obj = sql_hle.BuildManager(/*mgr_vtable=*/0x8006A000, /*mgr_object=*/0x8006B000,
                                              /*db_vtable=*/0x8006F000);
   shell_hle.RegisterInstance(/*AEECLSID_SQLMGR=*/0x0102c4e8, sqlmgr_obj);
+
+  // 0x01028e51 -- o widget da interface da Z-Wheel, inclusive o formulario raiz.
+  //
+  // O nome "ROOTFORM" que este projeto usava vem da mensagem de erro do proprio
+  // jogo ("Could not create root form"), nao de um header: e um apelido, nao a
+  // identidade da classe.
+  //
+  // O QUE IMPORTA AQUI E A CONVENCAO DE RETORNO, QUE E INVERTIDA. Medido no
+  // guest: tectoy.mod chama o slot 3 com r1=0x800, e os dois inv�lucros que o
+  // envolvem fazem `cmp r0,#0; moveq r0,#3`, ou seja, transformam ZERO em
+  // EBADCLASS. Neste acessador, portanto, DIFERENTE DE ZERO E SUCESSO -- o
+  // oposto do resto do BREW. O scaffold generico devolvia 0, que aqui significa
+  // "falhou", e era exatamente isso que fazia tectoymain.c imprimir
+  // "Could not create root form(20)" e morrer logo depois num ponteiro nulo.
+  //
+  // A inversao vale SO para o acessador. O slot 2 e um QueryInterface comum, e
+  // ali zero e sucesso (o jogo faz `movs r5,r0; bne <erro>`). O slot 12 segue a
+  // convencao do 2. Misturar as duas seria facil, por isso estao lado a lado.
+  //
+  // Seletores do acessador `slot3(this, seletor, id, valor)`:
+  //   0x800 -> PEGA O FILHO de numero `id` e escreve o ponteiro em [valor]
+  //   0x801 -> GRAVA a propriedade `id` com `valor`
+  constexpr uint32_t kWidgetVtable = 0x8006C000;
+  constexpr uint32_t kWidgetObject = 0x8006D000;
+  constexpr uint32_t kWidgetChildBase = 0x8006D100;  // filhos entregues pelo 0x800
+  auto widget_props = std::make_shared<std::map<uint32_t, uint32_t>>();
+  auto widget_children = std::make_shared<std::map<uint32_t, uint32_t>>();
+  std::vector<zeebulator::HleRuntime::HleFunction> widget_methods(
+      13, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  widget_methods[3] = [&cpu, widget_props, widget_children](zeebulator::IArmCore& core) {
+    const uint32_t selector = core.GetRegister(zeebulator::kR1);
+    const uint32_t id = core.GetRegister(zeebulator::kR2);
+    const uint32_t value = core.GetRegister(zeebulator::kR3);
+    if (selector == 0x800) {
+      // Cada `id` recebe um objeto proprio e estavel: o jogo guarda o ponteiro
+      // e volta a usa-lo, entao devolver um endereco novo a cada chamada faria
+      // referencias antigas apontarem para outro widget.
+      auto it = widget_children->find(id);
+      if (it == widget_children->end()) {
+        const uint32_t child = kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
+        cpu.GetMemory().Write32(child, kWidgetVtable);  // filho e outro widget
+        it = widget_children->emplace(id, child).first;
+      }
+      if (value != 0) cpu.GetMemory().Write32(value, it->second);
+      core.SetRegister(zeebulator::kR0, 1);  // != 0 = sucesso NESTE acessador
+      return;
+    }
+    if (selector == 0x801) {
+      (*widget_props)[id] = value;
+      core.SetRegister(zeebulator::kR0, 1);
+      return;
+    }
+    // Seletor ainda nao visto: sucesso, para nao inventar uma falha que o jogo
+    // trataria como fatal. Aparece no ZEEB_HLE_PROFILE se for exercitado.
+    core.SetRegister(zeebulator::kR0, 1);
+  };
+  uint32_t widget_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, kWidgetVtable, kWidgetObject, widget_methods);
+  shell_hle.RegisterInstance(/*widget da Z-Wheel=*/0x01028e51, widget_obj);
+
+  // 0x0100104f -- a colecao generica da Z-Wheel: guarda itens e e percorrida.
+  // Registrada com scaffold generico por enquanto; nenhum slot dela foi medido
+  // ainda, entao qualquer forma especifica seria adivinhacao. O objetivo aqui e
+  // so parar de recusar a classe, ja que uma recusa faz o jogo desistir.
+  // A/B: colecao DESLIGADA por enquanto -- ver medicao abaixo.
+  // uint32_t collection_obj = zeebulator::BuildGenericStubObject(
+  //     cpu.GetMemory(), hle, /*vtable=*/0x8006E000, /*object=*/0x8006F000, /*slot_count=*/24);
+  // shell_hle.RegisterInstance(/*colecao da Z-Wheel=*/0x0100104f, collection_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
   // the literal pool addresses its own `ldr r1,[pc,#N]` instructions
