@@ -72,10 +72,22 @@ Memory* g_profile_mem = nullptr;
 uint32_t g_profile_trap_base = 0;
 std::string ResolveTrapSlot(uint32_t trap_addr) {
   if (g_profile_mem == nullptr) return {};
+  // 1) vtables das interfaces HLE
   for (uint32_t a = 0x80000000u; a < 0x800A0000u; a += 4) {
     if (g_profile_mem->Read32(a) == trap_addr) {
       char b[64];
       std::snprintf(b, sizeof(b), "vt~0x%08x slot=%u", a & ~0xFFFu, (a & 0xFFFu) / 4);
+      return b;
+    }
+  }
+  // 2) tabela de helpers da stdlib BREW (AEEHelperFuncs), instalada em
+  // 0x80280000 pelo ModRuntime. O deslocamento dentro dela e o indice do
+  // helper vezes 4 -- o mesmo offset que AEEStdLib.h define.
+  for (uint32_t a = 0x80280000u; a < 0x80280400u; a += 4) {
+    if (g_profile_mem->Read32(a) == trap_addr) {
+      char b[64];
+      std::snprintf(b, sizeof(b), "helper off=0x%03x (slot %u)", a - 0x80280000u,
+                    (a - 0x80280000u) / 4);
       return b;
     }
   }

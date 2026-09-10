@@ -142,9 +142,38 @@ void GlHle::EglQueryString(IArmCore& core) {
   } else if (name == kEglVersion) {
     value = "1.1";
   } else if (name == kEglExtensions) {
-    // EGL_QUALCOMM_surface_scale is standard on Zeebo Qualcomm Adreno 130 BREW.
-    // Arcade ports and 3D titles check this substring to enable surface scaling.
-    value = "EGL_QUALCOMM_surface_scale ";
+    // Extensoes EGL da plataforma Zeebo (Qualcomm Adreno 130 + EGL do BREW).
+    // Os titulos consultam por SUBSTRING, com espaco como delimitador -- e
+    // assim que a agulha aparece no binario deles.
+    //
+    // EGL_QUALCOMM_surface_scale: escalonamento de superficie; ports de
+    // arcade e titulos 3D checam para habilitar o caminho escalado.
+    //
+    // EGL_QUALCOMM_COLOR_BUFFER: exigida pelo Double Dragon. Encontrada por
+    // medicao, nao por palpite: ZEEB_HLE_PROFILE apontou o helper slot 58
+    // (`stristr`, offset 0xe8) devolvendo 0 uma unica vez em
+    // ddragonz.mod:0x11d858, com a agulha em 0x0014fcc4 =
+    // "EGL_QUALCOMM_COLOR_BUFFER" e o palheiro vindo do slot 7 do IEGL
+    // (`eglQueryString`) via 0x123ee4. Devolvendo string vazia para essa
+    // extensao, o `beq` em 0x11d860 pulava o bloco 0x11d864-0x11d8ac, que e
+    // exatamente onde o jogo cria seu alvo de render (slot 13 + QueryInterface
+    // sobre o objeto criado). Sem alvo de render o jogo seguia chamando
+    // IDISPLAY_Update todo quadro sobre um framebuffer vazio -- a tela preta.
+    // Lista medida, nao adivinhada: `strings` sobre os 62 .mod do corpus
+    // No-Intro mostra 25-26 titulos carregando esta MESMA tabela de nomes --
+    // e a tabela do SDK/engine descrevendo o que a plataforma anuncia. Os
+    // jogos consultam por SUBSTRING com espaco como delimitador.
+    // EGL_QUALCOMM_COLOR_BUFFER e distinta de EGL_QUALCOMM_get_color_buffer
+    // (o "get_" no meio quebra a substring) e e a que o Double Dragon exige.
+    // Ajustavel por ZEEB_EGL_EXTENSIONS para A/B sem recompilar.
+    static const char* const kDefaultEglExtensions =
+        "EGL_QUALCOMM_surface_scale EGL_QUALCOMM_get_color_buffer "
+        "EGL_QUALCOMM_COLOR_BUFFER EGL_EXT_swap_control "
+        "EGL_QUALCOMM_surface_transparency EGL_QUALCOMM_surface_rotate "
+        "EGL_QUALCOMM_surface_overlay EGL_QUALCOMM_surface_color_key "
+        "EGL_QUALCOMM_get_power_level ";
+    const char* env = std::getenv("ZEEB_EGL_EXTENSIONS");
+    value = (env != nullptr) ? env : kDefaultEglExtensions;
   } else if (name == kEglClientApis) {
     value = "OpenGL_ES";
   }
@@ -610,7 +639,21 @@ void GlHle::GlGetString(IArmCore& core) {
     case kGlVendor: value = "Zeebulator"; break;
     case kGlRenderer: value = "Zeebulator Software Rasterizer"; break;
     case kGlVersion: value = "OpenGL ES-CM 1.1"; break;
-    case kGlExtensions: value = "GL_OES_draw_texture GL_ATI_imageon_misc "; break;
+    case kGlExtensions: {
+      // Mesma origem medida da lista EGL acima (varredura de `strings` no
+      // corpus). Ajustavel por ZEEB_GL_EXTENSIONS para A/B.
+      static const char* const kDefaultGlExtensions =
+          "GL_OES_draw_texture GL_ATI_imageon_misc "
+          "GL_QUALCOMM_vertex_buffer_object GL_OES_vertex_buffer_object "
+          "GL_ARB_vertex_buffer_object GL_OES_query_matrix "
+          "GL_OES_point_size_array GL_OES_blend_subtract "
+          "GL_OES_blend_func_separate GL_OES_blend_equation_separate "
+          "GL_EXT_blend_minmax GL_EXT_blend_func_separate "
+          "GL_EXT_blend_equation_separate ";
+      const char* genv = std::getenv("ZEEB_GL_EXTENSIONS");
+      value = (genv != nullptr) ? genv : kDefaultGlExtensions;
+      break;
+    }
     default: break;
   }
   WriteCString(core.GetMemory(), kQueryStringBufferAddr, value);
