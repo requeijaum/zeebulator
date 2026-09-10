@@ -772,6 +772,68 @@ void ModRuntime::StrlcatImpl(IArmCore& core) {
   core.SetRegister(kR0, dst_len + src_len);
 }
 
+void ModRuntime::AeeLocalTimeOffsetImpl(IArmCore& core) {
+  // int32 aee_LocalTimeOffset(boolean *pbDaylightSavings) -- UTC running, returns 0 offset.
+  uint32_t pb_dst = core.GetRegister(kR0);
+  if (pb_dst != 0) {
+    memory_.Write8(pb_dst, 0);
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::AeeGetSecondsImpl(IArmCore& core) {
+  // uint32 aee_GetSeconds() -- seconds since BREW epoch (1980-01-06 00:00:00 UTC).
+  // Fixed reasonable reference: 2009-01-01 00:00:00 UTC = 914803200 BREW seconds.
+  constexpr uint32_t kBaseEpochBrewSeconds = 914803200u;
+  uint32_t secs = kBaseEpochBrewSeconds + (uptime_ms_ / 1000u);
+  core.SetRegister(kR0, secs);
+}
+
+void ModRuntime::AeeGetJulianDateImpl(IArmCore& core) {
+  // void GETJULIANDATE(uint32 dwSecs, JulianType *pDate)
+  // JulianType: wYear, wMonth, wDay, wHour, wMinute, wSecond, wWeekDay (7 uint16s = 14 bytes)
+  constexpr uint32_t kBaseEpochBrewSeconds = 914803200u;
+  uint32_t dw_secs = core.GetRegister(kR0);
+  uint32_t p_date = core.GetRegister(kR1);
+  if (dw_secs == 0) {
+    dw_secs = kBaseEpochBrewSeconds + (uptime_ms_ / 1000u);
+  }
+  if (p_date != 0) {
+    const int64_t kBrewEpochInUnixDays = 3657; // 1980-01-06 - 1970-01-01
+    int64_t days = dw_secs / 86400;
+    int64_t rem = dw_secs % 86400;
+    uint16_t w_weekday = static_cast<uint16_t>(days % 7);
+
+    // Howard Hinnant civil calendar algorithm
+    int64_t z = days + kBrewEpochInUnixDays + 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int64_t doe = z - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t y = yoe + era * 400;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153;
+    int64_t d = doy - (153 * mp + 2) / 5 + 1;
+    int64_t m = mp < 10 ? mp + 3 : mp - 9;
+    if (m <= 2) ++y;
+
+    uint16_t w_year = static_cast<uint16_t>(y);
+    uint16_t w_month = static_cast<uint16_t>(m);
+    uint16_t w_day = static_cast<uint16_t>(d);
+    uint16_t w_hour = static_cast<uint16_t>(rem / 3600);
+    uint16_t w_min = static_cast<uint16_t>((rem % 3600) / 60);
+    uint16_t w_sec = static_cast<uint16_t>(rem % 60);
+
+    memory_.Write16(p_date + 0, w_year);
+    memory_.Write16(p_date + 2, w_month);
+    memory_.Write16(p_date + 4, w_day);
+    memory_.Write16(p_date + 6, w_hour);
+    memory_.Write16(p_date + 8, w_min);
+    memory_.Write16(p_date + 10, w_sec);
+    memory_.Write16(p_date + 12, w_weekday);
+  }
+  core.SetRegister(kR0, 0);
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1252,6 +1314,9 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t strupper_fn = hle_.Register([this](IArmCore& core) { StrupperImpl(core); });
   uint32_t strlcpy_fn = hle_.Register([this](IArmCore& core) { StrlcpyImpl(core); });
   uint32_t strlcat_fn = hle_.Register([this](IArmCore& core) { StrlcatImpl(core); });
+  uint32_t aee_localtimeoffset_fn = hle_.Register([this](IArmCore& core) { AeeLocalTimeOffsetImpl(core); });
+  uint32_t aee_getseconds_fn = hle_.Register([this](IArmCore& core) { AeeGetSecondsImpl(core); });
+  uint32_t aee_getjuliandate_fn = hle_.Register([this](IArmCore& core) { AeeGetJulianDateImpl(core); });
   uint32_t unknown_0x64_fn = hle_.Register([this](IArmCore& core) {
     // Disney All Star Cards: BMP decode. Convention pinned down via
     // capstone disassembly of allstarcards.mod 0x10ee18-0x10ee48 (see
@@ -1386,6 +1451,9 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0xa8, aee_getrand_fn);
   memory_.Write32(table_address + 0xac, get_uptime_ms_fn);
   memory_.Write32(table_address + 0x8c, get_aee_version_fn);
+  memory_.Write32(table_address + 0xa4, aee_localtimeoffset_fn);
+  memory_.Write32(table_address + 0xb4, aee_getseconds_fn);
+  memory_.Write32(table_address + 0xb8, aee_getjuliandate_fn);
   memory_.Write32(table_address + 0xf4, strdup_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);

@@ -701,6 +701,9 @@ class ModRuntime {
   void StrupperImpl(IArmCore& core);
   void StrlcpyImpl(IArmCore& core);
   void StrlcatImpl(IArmCore& core);
+  void AeeLocalTimeOffsetImpl(IArmCore& core);
+  void AeeGetSecondsImpl(IArmCore& core);
+  void AeeGetJulianDateImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
