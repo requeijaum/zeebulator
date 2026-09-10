@@ -655,6 +655,19 @@ void ModRuntime::WstrrchrImpl(IArmCore& core) {
   core.SetRegister(kR0, has_match ? found : 0);
 }
 
+void ModRuntime::AeeGetRandImpl(IArmCore& core) {
+  // void aee_GetRand(byte *pBuf, int nLen) -- fills nLen bytes with pseudo-random data.
+  // Same LCG constants/derivation as the zeebx oracle (glibc-style: state = state*1103515245+12345,
+  // byte taken from bits 16-23) so a recorded session's "randomness" reproduces identically.
+  uint32_t buf = core.GetRegister(kR0);
+  uint32_t count = core.GetRegister(kR1);
+  for (uint32_t i = 0; i < count; ++i) {
+    random_state_ = random_state_ * 1103515245u + 12345u;
+    memory_.Write8(buf + i, static_cast<uint8_t>((random_state_ >> 16) & 0xFFu));
+  }
+  core.SetRegister(kR0, 0);
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1076,6 +1089,10 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t strtod_fn = hle_.Register([this](IArmCore& core) { StrtodImpl(core); });
   uint32_t f_toint_fn = hle_.Register([this](IArmCore& core) { FToIntImpl(core); });
   uint32_t utrunc_fn = hle_.Register([this](IArmCore& core) { UtruncImpl(core); });
+  uint32_t aee_getrand_fn = hle_.Register([this](IArmCore& core) { AeeGetRandImpl(core); });
+  // aee_GetTimeMS is the identical real operation as aee_GetUpTimeMS (confirmed via zeebx),
+  // reusing get_uptime_ms_fn instead of registering a second, separately-drifting clock trap.
+  
   uint32_t strstr_fn = hle_.Register([this](IArmCore& core) { StrstrImpl(core); });
   uint32_t sprintf_fn = hle_.Register([this](IArmCore& core) { SprintfImpl(core); });
   uint32_t dbgprintf_fn = hle_.Register([this](IArmCore& core) {
@@ -1256,6 +1273,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kFGetSlotOffset, f_get_fn);
   memory_.Write32(table_address + kTruncSlotOffset, f_toint_fn);  // trunc aliases f_toint (same real op)
   memory_.Write32(table_address + kUtruncSlotOffset, utrunc_fn);
+  memory_.Write32(table_address + 0xa8, aee_getrand_fn);
+  memory_.Write32(table_address + 0xac, get_uptime_ms_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);

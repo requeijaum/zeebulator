@@ -684,6 +684,12 @@ class ModRuntime {
   void WstrlenImpl(IArmCore& core);
   void WstrchrImpl(IArmCore& core);
   void WstrrchrImpl(IArmCore& core);
+  // aee_GetTimeMS (offset 0xac) and aee_GetRand (offset 0xa8) were completely unwired --
+  // confirmed root cause of Rally Master Pro's own null-function-pointer wander. Per the zeebx
+  // oracle, aee_GetTimeMS is byte-for-byte the same real operation as aee_GetUpTimeMS (both
+  // return the same virtual elapsed-ms clock), so this aliases GetUpTimeMsImpl directly rather
+  // than re-deriving the clock a second way.
+  void AeeGetRandImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
@@ -711,6 +717,9 @@ class ModRuntime {
   uint32_t fifth_context_object_ = 0;
   uint32_t sixth_context_object_ = 0;
   uint32_t uptime_ms_ = 0;
+  // Deterministic LCG state for aee_GetRand (same constants/algorithm as the zeebx oracle, so a
+  // recorded session reproduces the same "random" sequence for debugging).
+  uint32_t random_state_ = 1;
   // GetUpTimeMS self-advance rate per read (see GetUpTimeMsImpl doc). Default 1;
   // ZEEB_UPTIME_ADVANCE=N overrides. Grounded in the BREW frame-deadline
   // busy-wait model (brew-sim-recon/notes): a title's per-frame loop that waits
