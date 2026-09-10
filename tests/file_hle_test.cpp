@@ -48,6 +48,7 @@ enum FileSlot {
   kFileGetInfo = 6,
   kFileSeek = 7,
   kFileTruncate = 8,
+  kFileGetInfoEx = 9,
 };
 
 struct Fixture {
@@ -446,4 +447,24 @@ TEST(FileHle, DeserializeRefusesWhenFilesAreAlreadyOpen) {
   ASSERT_TRUE(f.file_hle.Serialize(stream));
   EXPECT_FALSE(f.file_hle.Deserialize(stream))
       << "an already-open file handle would be left dangling";
+}
+
+TEST(FileHle, GetInfoExPopulatesSizeAtOffset12) {
+  Fixture f;
+  WriteCString(f.cpu.GetMemory(), kScratch, "foo.txt");
+  uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 0);
+  ASSERT_NE(handle, 0u);
+
+  uint32_t info_struct = kScratch + 0x100;
+  // Poison target memory with non-zero
+  for (uint32_t off = 0; off < 32; off += 4) {
+    f.cpu.GetMemory().Write32(info_struct + off, 0xDEADBEEF);
+  }
+
+  uint32_t res = f.hle.CallArmFunction(f.FileSlotAddr(kFileGetInfoEx), handle, info_struct);
+  EXPECT_EQ(res, 0u);  // SUCCESS
+  EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct), 0u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 4), 0u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 8), 0u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 12), 5u);  // "hello" is 5 bytes
 }

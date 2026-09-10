@@ -38,6 +38,7 @@
 #include "core/brew/thread_hle.h"
 #include "core/brew/heap_hle.h"
 #include "core/brew/hash_hle.h"
+#include "core/brew/mem_astream_hle.h"
 #include "core/brew/mod_runtime.h"
 #include "core/brew/scaffold_object.h"
 #include "core/brew/compat/title_quirks.h"
@@ -2590,6 +2591,13 @@ int main(int argc, char** argv) {
       [&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); });
   uint32_t hash_obj = hash_hle.Build(/*vtable=*/0x80082000, /*object=*/0x80083000);
   shell_hle.RegisterInstance(zeebulator::HashHle::kClsidMd5, hash_obj);
+
+  // IMemAStream / AEECLSID_MEMASTREAM (0x0100100c) real implementation.
+  // Qualcomm BREW SDK stream over guest memory blocks (image/audio decoders).
+  zeebulator::MemAStreamHle mem_astream_hle(cpu.GetMemory(), hle, /*stream_object_region_start=*/0x80085000);
+  mem_astream_hle.Build(/*vtable=*/0x80084000);
+  shell_hle.RegisterFactory(zeebulator::MemAStreamHle::kClsidMemAStream,
+                            [&mem_astream_hle]() { return mem_astream_hle.AllocateStream(); });
 
   auto run_pending_threads_fn = [&](const char* phase_tag) {
     std::printf("[run_pending_threads] %s check: has=%d\n", phase_tag, thread_hle.HasPendingThreads());

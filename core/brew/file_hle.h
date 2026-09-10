@@ -134,6 +134,7 @@ class FileHle {
   void WriteImpl(IArmCore& core);
   void FileGetInfoImpl(IArmCore& core);
   void SeekImpl(IArmCore& core);
+  void FileGetInfoExImpl(IArmCore& core);
 
   // Shared by ReadImpl (handle = R0, the real "po") and the last-
   // opened-file proxy's Read (handle = last_opened_handle_, ignoring

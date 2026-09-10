@@ -80,6 +80,8 @@ add_library(zeebulator_core STATIC
   brew/heap_hle.h
   brew/hash_hle.cpp
   brew/hash_hle.h
+  brew/mem_astream_hle.cpp
+  brew/mem_astream_hle.h
   brew/mod_runtime.cpp
   brew/mod_runtime.h
   brew/gl_types.h

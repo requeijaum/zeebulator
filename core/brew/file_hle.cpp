@@ -203,6 +203,31 @@ void FileHle::FileGetInfoImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+void FileHle::FileGetInfoExImpl(IArmCore& core) {
+  // int GetInfoEx(IFile* pIFile, AEEFileInfoEx* pInfo)
+  // Per AEEFile.h / AEEFileInfoEx layout:
+  //   +0x00: int nStructSize
+  //   +0x04: char attrib (+ 3 bytes padding)
+  //   +0x08: uint32 dwCreationDate
+  //   +0x0c: uint32 dwSize
+  // Games (e.g. Z-Wheel at 0x89068) call GetInfoEx and immediately read [sp+0xc]
+  // as the file size into malloc without checking return value. We populate the
+  // first 16 bytes: zero out offsets 0..11 and write dwSize at +0x0c.
+  uint32_t dest = core.GetRegister(kR1);
+  auto it = open_files_.find(core.GetRegister(kR0));
+  if (it == open_files_.end()) {
+    core.SetRegister(kR0, 1);
+    return;
+  }
+  const OpenFile& f = it->second;
+  uint32_t size = static_cast<uint32_t>(f.data->size());
+  for (uint32_t off = 0; off < 12; off += 4) {
+    memory_.Write32(dest + off, 0);
+  }
+  memory_.Write32(dest + 12, size);
+  core.SetRegister(kR0, 0);  // AEE_SUCCESS
+}
+
 void FileHle::SeekImpl(IArmCore& core) {
   // int32 Seek(IFile* pIFile, FileSeekType seek, int32 moveDistance)
   // FileSeekType: _SEEK_START=0, _SEEK_END=1, _SEEK_CURRENT=2 (confirmed
@@ -281,6 +306,9 @@ uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_obje
       [this](IArmCore& c) { FileGetInfoImpl(c); },    // 6  GetInfo
       [this](IArmCore& c) { SeekImpl(c); },           // 7  Seek
       StubFailed,                                    // 8  Truncate (not implemented)
+      [this](IArmCore& c) { FileGetInfoExImpl(c); },  // 9  GetInfoEx
+      Stub,                                          // 10 SetCacheSize
+      StubFailed,                                    // 11 Map (not implemented)
   };
   for (size_t i = 0; i < file_methods.size(); ++i) {
     uint32_t sentinel = hle_.Register(file_methods[i]);
