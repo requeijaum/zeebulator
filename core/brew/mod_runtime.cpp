@@ -668,6 +668,51 @@ void ModRuntime::AeeGetRandImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+void ModRuntime::GetAeeVersionImpl(IArmCore& core) {
+  // uint32 GetAEEVersion(byte *pszFormatted, int nSize, uint16 wFlags) -- real BREW 4.0.2.0
+  // version, matching the zeebx oracle's own AEE_VERSION/AEE_VERSION_TEXT constants exactly
+  // (high byte of the high word is the major version, and so on: 0x04000200 = "4.0.2.0").
+  constexpr uint32_t kAeeVersion = 0x04000200;
+  constexpr const char* kAeeVersionText = "4.0.2.0";
+  constexpr uint32_t kGavLatin1 = 0x0001;
+  uint32_t buf = core.GetRegister(kR0);
+  uint32_t size = core.GetRegister(kR1);
+  uint32_t flags = core.GetRegister(kR2);
+  size_t text_len = std::strlen(kAeeVersionText);
+  if (buf != 0 && size > 0) {
+    if (flags & kGavLatin1) {
+      size_t n = std::min(static_cast<size_t>(size - 1), text_len);
+      for (size_t i = 0; i < n; ++i) memory_.Write8(buf + static_cast<uint32_t>(i), static_cast<uint8_t>(kAeeVersionText[i]));
+      memory_.Write8(buf + static_cast<uint32_t>(n), 0);
+    } else {
+      size_t max_chars = size / 2;
+      if (max_chars > 0) {
+        size_t n = std::min(max_chars - 1, text_len);
+        for (size_t i = 0; i < n; ++i) {
+          memory_.Write16(buf + static_cast<uint32_t>(i) * 2, static_cast<uint16_t>(kAeeVersionText[i]));
+        }
+        memory_.Write16(buf + static_cast<uint32_t>(n) * 2, 0);
+      }
+    }
+  }
+  core.SetRegister(kR0, kAeeVersion);
+}
+
+void ModRuntime::StrdupImpl(IArmCore& core) {
+  // char *strdup(const char *s) -- allocates a fresh copy of a null-terminated string on the
+  // real BREW heap (same allocator as MALLOC/realloc, so it's freed the same way).
+  uint32_t src = core.GetRegister(kR0);
+  uint32_t len = 0;
+  while (memory_.Read8(src + len) != 0) ++len;
+  uint32_t dst = Allocate(len + 1);
+  if (dst != 0) {
+    for (uint32_t i = 0; i <= len; ++i) {
+      memory_.Write8(dst + i, memory_.Read8(src + i));
+    }
+  }
+  core.SetRegister(kR0, dst);
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1090,6 +1135,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t f_toint_fn = hle_.Register([this](IArmCore& core) { FToIntImpl(core); });
   uint32_t utrunc_fn = hle_.Register([this](IArmCore& core) { UtruncImpl(core); });
   uint32_t aee_getrand_fn = hle_.Register([this](IArmCore& core) { AeeGetRandImpl(core); });
+  uint32_t get_aee_version_fn = hle_.Register([this](IArmCore& core) { GetAeeVersionImpl(core); });
+  uint32_t strdup_fn = hle_.Register([this](IArmCore& core) { StrdupImpl(core); });
   // aee_GetTimeMS is the identical real operation as aee_GetUpTimeMS (confirmed via zeebx),
   // reusing get_uptime_ms_fn instead of registering a second, separately-drifting clock trap.
   
@@ -1275,6 +1322,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUtruncSlotOffset, utrunc_fn);
   memory_.Write32(table_address + 0xa8, aee_getrand_fn);
   memory_.Write32(table_address + 0xac, get_uptime_ms_fn);
+  memory_.Write32(table_address + 0x8c, get_aee_version_fn);
+  memory_.Write32(table_address + 0xf4, strdup_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);

@@ -690,6 +690,13 @@ class ModRuntime {
   // return the same virtual elapsed-ms clock), so this aliases GetUpTimeMsImpl directly rather
   // than re-deriving the clock a second way.
   void AeeGetRandImpl(IArmCore& core);
+  // GetAEEVersion (offset 0x8c) was completely unwired -- confirmed root cause of a
+  // CreateInstance-time crash in chessbots (jump through a null function pointer within 61
+  // steps of entering CreateInstance).
+  void GetAeeVersionImpl(IArmCore& core);
+  // strdup (offset 0xf4) was completely unwired -- confirmed root cause of a second chessbots
+  // wander, right after the GetAEEVersion fix let it progress into EVT_APP_START.
+  void StrdupImpl(IArmCore& core);
   void StricmpImpl(IArmCore& core);
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
