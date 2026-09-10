@@ -60,8 +60,9 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
   }
   auto it = instances_.find(cls_id);
   if (it == instances_.end()) {
-    if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> UNKNOWN (EFAILED)\n", DescribeClsid(cls_id).c_str());
-    core.SetRegister(kR0, 1);  // EFAILED-ish: unknown/unimplemented class
+    if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> UNKNOWN (ECLASSNOTSUPPORT)\n", DescribeClsid(cls_id).c_str());
+    if (ppobj != 0) memory_.Write32(ppobj, 0);
+    core.SetRegister(kR0, 20);  // ECLASSNOTSUPPORT (Qualcomm standard: 20)
     return;
   }
   if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> instance OK\n", DescribeClsid(cls_id).c_str());
@@ -429,6 +430,16 @@ void IShellHle::DetectTypeImpl(IArmCore& core) {
   }
 }
 
+void IShellHle::GetClassItemIdImpl(IArmCore& core) {
+  // uint32 GetClassItemID(IShell *po, AEECLSID cls)
+  uint32_t cls = core.GetRegister(kR1);
+  if (applet_clsid_ != 0 && cls != applet_clsid_) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  core.SetRegister(kR0, item_id_);
+}
+
 std::vector<IShellHle::ExpiredTimer> IShellHle::Tick(uint32_t elapsed_ms) {
   std::vector<ExpiredTimer> expired;
   for (auto it = timers_.begin(); it != timers_.end();) {
@@ -513,7 +524,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       // Replaces the historical alternating 35/0 heuristic for Alien Breaker Deluxe with canonical MIME detection.
       [this](IArmCore& c) { DetectTypeImpl(c); },
       Stub,  // 44 GetDeviceInfoEx
-      Stub,  // 45 GetClassItemID
+      [this](IArmCore& c) { GetClassItemIdImpl(c); },  // 45 GetClassItemID
       Stub,  // 46 Obsolete
       Stub,  // 47 GetProperty
       Stub,  // 48 SetProperty

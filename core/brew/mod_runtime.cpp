@@ -834,6 +834,227 @@ void ModRuntime::AeeGetJulianDateImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+void ModRuntime::SwaplImpl(IArmCore& core) {
+  // uint32 swapl(uint32 v)
+  uint32_t v = core.GetRegister(kR0);
+  core.SetRegister(kR0, ((v & 0x000000FFu) << 24) |
+                        ((v & 0x0000FF00u) << 8)  |
+                        ((v & 0x00FF0000u) >> 8)  |
+                        ((v & 0xFF000000u) >> 24));
+}
+
+void ModRuntime::SwapsImpl(IArmCore& core) {
+  // uint16 swaps(uint16 v)
+  uint16_t v = static_cast<uint16_t>(core.GetRegister(kR0));
+  core.SetRegister(kR0, static_cast<uint16_t>((v << 8) | (v >> 8)));
+}
+
+void ModRuntime::OEMStrLenImpl(IArmCore& core) {
+  // int OEMStrLen(const char *s)
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t len = 0;
+  while (memory_.Read8(s + len) != 0) ++len;
+  core.SetRegister(kR0, len);
+}
+
+void ModRuntime::OEMStrSizeImpl(IArmCore& core) {
+  // int OEMStrSize(const char *s)
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t len = 0;
+  while (memory_.Read8(s + len) != 0) ++len;
+  core.SetRegister(kR0, len + 1);
+}
+
+void ModRuntime::MemchrImpl(IArmCore& core) {
+  // void *memchr(const void *s, int c, size_t n)
+  uint32_t s = core.GetRegister(kR0);
+  uint8_t c = static_cast<uint8_t>(core.GetRegister(kR1));
+  uint32_t n = core.GetRegister(kR2);
+  for (uint32_t i = 0; i < n; ++i) {
+    if (memory_.Read8(s + i) == c) {
+      core.SetRegister(kR0, s + i);
+      return;
+    }
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::WstrncmpImpl(IArmCore& core) {
+  // int wstrncmp(const AECHAR *s1, const AECHAR *s2, size_t n)
+  uint32_t s1 = core.GetRegister(kR0);
+  uint32_t s2 = core.GetRegister(kR1);
+  uint32_t n = core.GetRegister(kR2);
+  for (uint32_t i = 0; i < n; ++i) {
+    uint16_t u1 = memory_.Read16(s1 + i * 2);
+    uint16_t u2 = memory_.Read16(s2 + i * 2);
+    if (u1 != u2) {
+      core.SetRegister(kR0, u1 < u2 ? static_cast<uint32_t>(-1) : 1);
+      return;
+    }
+    if (u1 == 0) break;
+  }
+  core.SetRegister(kR0, 0);
+}
+
+void ModRuntime::WstrlcpyImpl(IArmCore& core) {
+  // size_t wstrlcpy(AECHAR *dst, const AECHAR *src, size_t siz)
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t siz = core.GetRegister(kR2);
+  uint32_t src_len = 0;
+  while (memory_.Read16(src + src_len * 2) != 0) ++src_len;
+  if (siz > 0) {
+    uint32_t copy_len = (src_len >= siz) ? (siz - 1) : src_len;
+    for (uint32_t i = 0; i < copy_len; ++i) {
+      memory_.Write16(dst + i * 2, memory_.Read16(src + i * 2));
+    }
+    memory_.Write16(dst + copy_len * 2, 0);
+  }
+  core.SetRegister(kR0, src_len);
+}
+
+void ModRuntime::WstrlcatImpl(IArmCore& core) {
+  // size_t wstrlcat(AECHAR *dst, const AECHAR *src, size_t siz)
+  uint32_t dst = core.GetRegister(kR0);
+  uint32_t src = core.GetRegister(kR1);
+  uint32_t siz = core.GetRegister(kR2);
+  uint32_t dst_len = 0;
+  while (dst_len < siz && memory_.Read16(dst + dst_len * 2) != 0) ++dst_len;
+  uint32_t src_len = 0;
+  while (memory_.Read16(src + src_len * 2) != 0) ++src_len;
+  if (dst_len < siz) {
+    uint32_t remain = siz - dst_len - 1;
+    uint32_t copy_len = (src_len < remain) ? src_len : remain;
+    for (uint32_t i = 0; i < copy_len; ++i) {
+      memory_.Write16(dst + (dst_len + i) * 2, memory_.Read16(src + i * 2));
+    }
+    memory_.Write16(dst + (dst_len + copy_len) * 2, 0);
+  }
+  core.SetRegister(kR0, dst_len + src_len);
+}
+
+void ModRuntime::StrbeginsImpl(IArmCore& core) {
+  // boolean strbegins(const char *cpszWhole, const char *cpszPart)
+  // Per zeebx: a0 is part, a1 is whole
+  uint32_t part = core.GetRegister(kR0);
+  uint32_t whole = core.GetRegister(kR1);
+  for (uint32_t i = 0;; ++i) {
+    uint8_t p = memory_.Read8(part + i);
+    if (p == 0) {
+      core.SetRegister(kR0, 1);
+      return;
+    }
+    uint8_t w = memory_.Read8(whole + i);
+    if (p != w) {
+      core.SetRegister(kR0, 0);
+      return;
+    }
+  }
+}
+
+void ModRuntime::StrendsImpl(IArmCore& core) {
+  // boolean strends(const char *cpszWhole, const char *cpszPart)
+  uint32_t part = core.GetRegister(kR0);
+  uint32_t whole = core.GetRegister(kR1);
+  uint32_t part_len = 0, whole_len = 0;
+  while (memory_.Read8(part + part_len) != 0) ++part_len;
+  while (memory_.Read8(whole + whole_len) != 0) ++whole_len;
+  if (part_len > whole_len) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  uint32_t offset = whole_len - part_len;
+  for (uint32_t i = 0; i < part_len; ++i) {
+    if (memory_.Read8(part + i) != memory_.Read8(whole + offset + i)) {
+      core.SetRegister(kR0, 0);
+      return;
+    }
+  }
+  core.SetRegister(kR0, 1);
+}
+
+void ModRuntime::StrchrendImpl(IArmCore& core) {
+  // char *strchrend(const char *s, char c) -- returns pointer to c or to terminating 0
+  uint32_t s = core.GetRegister(kR0);
+  uint8_t needle = static_cast<uint8_t>(core.GetRegister(kR1));
+  for (uint32_t i = 0;; ++i) {
+    uint8_t c = memory_.Read8(s + i);
+    if (c == needle || c == 0) {
+      core.SetRegister(kR0, s + i);
+      return;
+    }
+  }
+}
+
+void ModRuntime::AeeBasenameImpl(IArmCore& core) {
+  // char *aee_basename(const char *path)
+  uint32_t s = core.GetRegister(kR0);
+  uint32_t len = 0;
+  while (memory_.Read8(s + len) != 0) ++len;
+  for (int32_t i = static_cast<int32_t>(len) - 1; i >= 0; --i) {
+    uint8_t c = memory_.Read8(s + i);
+    if (c == '/' || c == '\\') {
+      core.SetRegister(kR0, s + i + 1);
+      return;
+    }
+  }
+  core.SetRegister(kR0, s);
+}
+
+void ModRuntime::GetFSFreeImpl(IArmCore& core) {
+  // uint32 GetFSFree(uint32 *pdwTotal)
+  constexpr uint32_t kFsTotal = 0x40000000u; // 1 GiB
+  uint32_t p_total = core.GetRegister(kR0);
+  if (p_total != 0) {
+    memory_.Write32(p_total, kFsTotal);
+  }
+  core.SetRegister(kR0, kFsTotal);
+}
+
+void ModRuntime::WwritelongImpl(IArmCore& core) {
+  // AECHAR *wwritelong(AECHAR *buf, long n) -- writes number, returns pointer to terminator
+  uint32_t buf = core.GetRegister(kR0);
+  int32_t val = static_cast<int32_t>(core.GetRegister(kR1));
+  std::string s = std::to_string(val);
+  for (size_t i = 0; i < s.size(); ++i) {
+    memory_.Write16(buf + static_cast<uint32_t>(i) * 2, static_cast<uint16_t>(s[i]));
+  }
+  memory_.Write16(buf + static_cast<uint32_t>(s.size()) * 2, 0);
+  core.SetRegister(kR0, buf + static_cast<uint32_t>(s.size()) * 2);
+}
+
+void ModRuntime::ErrReallocImpl(IArmCore& core) {
+  // int err_realloc(uint32 uSize, void **pp)
+  uint32_t size = core.GetRegister(kR0);
+  uint32_t pp = core.GetRegister(kR1);
+  uint32_t current = (pp != 0) ? memory_.Read32(pp) : 0;
+  uint32_t new_ptr = Reallocate(current, size);
+  if (new_ptr == 0 && size != 0) {
+    core.SetRegister(kR0, 10); // ENOMEMORY
+  } else {
+    if (pp != 0) memory_.Write32(pp, new_ptr);
+    core.SetRegister(kR0, 0);  // SUCCESS
+  }
+}
+
+void ModRuntime::ErrStrdupImpl(IArmCore& core) {
+  // int err_strdup(const char *src, char **pp)
+  uint32_t src = core.GetRegister(kR0);
+  uint32_t pp = core.GetRegister(kR1);
+  uint32_t len = 0;
+  while (memory_.Read8(src + len) != 0) ++len;
+  uint32_t dst = Allocate(len + 1);
+  if (dst == 0) {
+    core.SetRegister(kR0, 10); // ENOMEMORY
+  } else {
+    for (uint32_t i = 0; i <= len; ++i) {
+      memory_.Write8(dst + i, memory_.Read8(src + i));
+    }
+    if (pp != 0) memory_.Write32(pp, dst);
+    core.SetRegister(kR0, 0);  // SUCCESS
+  }
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1317,6 +1538,25 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t aee_localtimeoffset_fn = hle_.Register([this](IArmCore& core) { AeeLocalTimeOffsetImpl(core); });
   uint32_t aee_getseconds_fn = hle_.Register([this](IArmCore& core) { AeeGetSecondsImpl(core); });
   uint32_t aee_getjuliandate_fn = hle_.Register([this](IArmCore& core) { AeeGetJulianDateImpl(core); });
+  uint32_t swapl_fn = hle_.Register([this](IArmCore& core) { SwaplImpl(core); });
+  uint32_t swaps_fn = hle_.Register([this](IArmCore& core) { SwapsImpl(core); });
+  uint32_t oemstrlen_fn = hle_.Register([this](IArmCore& core) { OEMStrLenImpl(core); });
+  uint32_t oemstrsize_fn = hle_.Register([this](IArmCore& core) { OEMStrSizeImpl(core); });
+  uint32_t memchr_fn = hle_.Register([this](IArmCore& core) { MemchrImpl(core); });
+  uint32_t wstrncmp_fn = hle_.Register([this](IArmCore& core) { WstrncmpImpl(core); });
+  uint32_t wstrlcpy_fn = hle_.Register([this](IArmCore& core) { WstrlcpyImpl(core); });
+  uint32_t wstrlcat_fn = hle_.Register([this](IArmCore& core) { WstrlcatImpl(core); });
+  uint32_t strbegins_fn = hle_.Register([this](IArmCore& core) { StrbeginsImpl(core); });
+  uint32_t strends_fn = hle_.Register([this](IArmCore& core) { StrendsImpl(core); });
+  uint32_t strchrend_fn = hle_.Register([this](IArmCore& core) { StrchrendImpl(core); });
+  uint32_t aee_basename_fn = hle_.Register([this](IArmCore& core) { AeeBasenameImpl(core); });
+  uint32_t getfsfree_fn = hle_.Register([this](IArmCore& core) { GetFSFreeImpl(core); });
+  uint32_t wwritelong_fn = hle_.Register([this](IArmCore& core) { WwritelongImpl(core); });
+  uint32_t err_realloc_fn = hle_.Register([this](IArmCore& core) { ErrReallocImpl(core); });
+  uint32_t err_strdup_fn = hle_.Register([this](IArmCore& core) { ErrStrdupImpl(core); });
+  uint32_t lockmem_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 1); });
+  uint32_t noop_success_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t dbgheapmark_fn = hle_.Register([](IArmCore& core) { /* returns a0 */ });
   uint32_t unknown_0x64_fn = hle_.Register([this](IArmCore& core) {
     // Disney All Star Cards: BMP decode. Convention pinned down via
     // capstone disassembly of allstarcards.mod 0x10ee18-0x10ee48 (see
@@ -1454,6 +1694,30 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0xa4, aee_localtimeoffset_fn);
   memory_.Write32(table_address + 0xb4, aee_getseconds_fn);
   memory_.Write32(table_address + 0xb8, aee_getjuliandate_fn);
+  memory_.Write32(table_address + 0x84, oemstrlen_fn);
+  memory_.Write32(table_address + 0x88, oemstrsize_fn);
+  memory_.Write32(table_address + 0xbc, free_fn); // sysfree == free
+  memory_.Write32(table_address + 0xe0, memchr_fn);
+  memory_.Write32(table_address + 0xf0, wstrncmp_fn);
+  memory_.Write32(table_address + 0xf8, strbegins_fn);
+  memory_.Write32(table_address + 0xfc, strends_fn);
+  memory_.Write32(table_address + 0x100, strchrend_fn);
+  memory_.Write32(table_address + 0x12c, swapl_fn);
+  memory_.Write32(table_address + 0x130, swaps_fn);
+  memory_.Write32(table_address + 0x134, getfsfree_fn);
+  memory_.Write32(table_address + 0x148, aee_getseconds_fn); // aee_JulianToSeconds alias
+  memory_.Write32(table_address + 0x154, wstrlcpy_fn);
+  memory_.Write32(table_address + 0x158, wstrlcat_fn);
+  memory_.Write32(table_address + 0x168, wwritelong_fn);
+  memory_.Write32(table_address + 0x16c, dbgheapmark_fn);
+  memory_.Write32(table_address + 0x170, lockmem_fn);
+  memory_.Write32(table_address + 0x174, lockmem_fn); // unlockmem == TRUE
+  memory_.Write32(table_address + 0x178, noop_success_fn); // dumpheap
+  memory_.Write32(table_address + 0x190, noop_success_fn); // dbgevent
+  memory_.Write32(table_address + 0x198, aee_basename_fn);
+  memory_.Write32(table_address + 0x1a8, get_uptime_ms_fn); // aee_GetUTCSeconds
+  memory_.Write32(table_address + 0x1c0, err_realloc_fn);
+  memory_.Write32(table_address + 0x1c4, err_strdup_fn);
   memory_.Write32(table_address + 0xf4, strdup_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);

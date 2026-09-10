@@ -130,7 +130,9 @@ TEST(IShellHle, CreateInstanceReturnsFailedForAnUnregisteredClass) {
   constexpr uint32_t kPpObjAddr = 0x90000;
   cpu.GetMemory().Write32(kPpObjAddr, 0xDEADBEEF);
   // int CreateInstance(IShell *po, AEECLSID cls, void **ppo)
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, /*cls=*/0x1234, kPpObjAddr), 1u);
+  // Real Qualcomm BREW returns ECLASSNOTSUPPORT (20) and zeroes *ppo on unknown class
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, /*cls=*/0x1234, kPpObjAddr), 20u);
+  EXPECT_EQ(cpu.GetMemory().Read32(kPpObjAddr), 0u);
 }
 
 TEST(IShellHle, CreateInstanceReturnsARegisteredInstance) {
