@@ -54,6 +54,7 @@
 #include "core/loader/png.h"
 #include "core/loader/ggz.h"
 #include "core/loader/mod.h"
+#include "core/loader/pakz.h"
 #include "core/loader/pkg.h"
 #include "core/save_state.h"
 #include "frontends/standalone/sdl2_unified_backend.h"
@@ -1362,9 +1363,39 @@ int main(int argc, char** argv) {
       std::printf("loaded resource archive %s (registered as %s)\n", bar_path.c_str(),
                   base.c_str());
     } catch (const std::exception& e) {
-      std::printf("skipped %s: not a parseable BAR resource archive (%s); "
-                  "raw bytes still in VFS as %s\n",
-                  bar_path.c_str(), e.what(), base.c_str());
+      // Not a BREW BAR archive. Before giving up, try the OTHER real
+      // container formats that ship next to a .mod. `PakzArchive` has
+      // existed in core/loader/pakz.cpp all along but was only ever
+      // reachable from tools/pakz_inspector -- so seven real titles
+      // (Rolimaz, AirRacez, Bajaz, Boiaz, JetBoardz, Alice,
+      // ActivityCenter) shipped a perfectly parseable pak0.pakz /
+      // resources.pakz whose entries never reached the VFS, and every
+      // one of them sat in its tick loop with an empty asset set.
+      bool mounted = false;
+      try {
+        auto pakz = zeebulator::PakzArchive::Parse(ReadFile(bar_path.c_str()));
+        size_t ok = 0;
+        for (const auto& entry : pakz.Entries()) {
+          try {
+            vfs.AddFile(entry.name, pakz.Extract(entry));
+            ++ok;
+          } catch (const std::exception&) {
+            // One bad member must not lose the rest of the archive.
+          }
+        }
+        if (ok != 0) {
+          std::printf("mounted %s as PAKZ: %zu/%zu entries into the VFS\n",
+                      bar_path.c_str(), ok, pakz.Entries().size());
+          mounted = true;
+        }
+      } catch (const std::exception&) {
+        // Not a PAKZ either -- fall through to the raw-bytes note.
+      }
+      if (!mounted) {
+        std::printf("skipped %s: not a parseable BAR/PAKZ resource archive (%s); "
+                    "raw bytes still in VFS as %s\n",
+                    bar_path.c_str(), e.what(), base.c_str());
+      }
     }
   }
   shell_hle.RegisterInstance(/*AEECLSID_DISPLAY=*/0x01001001, display_obj);
