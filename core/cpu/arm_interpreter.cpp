@@ -583,11 +583,10 @@ void ArmInterpreter::ExecuteExtend(uint32_t instr) {
 }
 
 uint32_t ArmInterpreter::ReadThumbOperandRegister(uint32_t index) const {
-  // Thumb's PC-as-operand rule (format 5 hi-register ops are the only
-  // way to read R15 in Thumb state) differs from ARM's: +4, word-
-  // aligned, not +8 unaligned -- see ReadOperandRegister and the class
-  // doc comment.
-  return index == kPC ? ((regs_[kPC] + 4) & ~3u) : regs_[index];
+  // Thumb Format 5 (ADD/MOV/CMP high registers): reading PC yields (address of current
+  // instruction + 4), halfword-aligned without bit 1 cleared. Only Format 6 (LDR literal)
+  // and Format 12 (ADD SP/PC) force word alignment (& ~3u).
+  return index == kPC ? (regs_[kPC] + 4) : regs_[index];
 }
 
 void ArmInterpreter::ExecuteThumbMoveShiftedRegister(uint16_t instr) {
@@ -1274,8 +1273,8 @@ void ArmInterpreter::Step() {
     } else if (((instr >> 24) & 0xF) == 0xF) {
       // SWI / SVC (bits 27..24 == 1111) — ARM semihosting
       ExecuteSwi(instr & 0x00FFFFFF);
-    } else if (((instr >> 24) & 0xE) == 0xE) {
-      // Coprocessor space (bits 27..25 == 110 or 111): CDP/MCR/MRC/LDC/STC
+    } else if (bits27_25 == 0b110 || bits27_25 == 0b111) {
+      // Coprocessor space (bits 27..25 == 110 or 111): CDP/MCR/MRC/LDC/STC/MCRR/MRRC
       ExecuteCoprocessor(instr);
     } else {
       throw UnimplementedInstruction("Coprocessor instruction / SWI");
