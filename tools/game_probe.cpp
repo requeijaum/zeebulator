@@ -54,6 +54,7 @@
 #include "core/loader/atitc.h"
 #include "core/loader/png.h"
 #include "core/loader/fufs.h"
+#include "core/loader/sar.h"
 #include "core/loader/ggz.h"
 #include "core/loader/mod.h"
 #include "core/loader/pakz.h"
@@ -888,6 +889,24 @@ int main(int argc, char** argv) {
                     archive->HasNames() ? "" : " (sem lista de nomes: so por hash)");
         fufs_archives.push_back(
             std::make_shared<zeebulator::FufsArchive>(std::move(*archive)));
+      } else if (auto sar = zeebulator::SarArchive::Parse(raw)) {
+        // Container SAR ("SWVARC") do chessbots. Parse devolve optional e nao
+        // lanca, igual ao FUFS. Aqui os nomes sao texto puro, entao as entradas
+        // entram direto no VFS -- nao ha resolvedor por hash a instalar.
+        //
+        // MEDIDO, e vale registrar: o chessbots NAO precisa deste caminho. Ele
+        // abre "main.sar" por IFILEMGR, faz Seek para 0x21, le o indice inteiro
+        // (0x21 ate o offset declarado em 0x0D) e depois faz Seek/Read direto no
+        // offset de cada payload -- 51 dos 52 Seek de uma sessao caem EXATAMENTE
+        // no payload_offset de uma entrada, com o tamanho pedido igual ao
+        // payload_size gravado. Ou seja: o jogo e o dono do parser do container.
+        // Montar as entradas aqui serve para quem passar um .sar como argumento
+        // de assets e para diagnostico, nao para destravar o chessbots.
+        for (const auto& entry : sar->Entries()) {
+          if (auto blob = sar->Extract(entry)) vfs.AddFile(entry.name, std::move(*blob));
+        }
+        std::printf("  mounted %s as SAR: %zu entradas no VFS\n", path,
+                    sar->Entries().size());
       }
       vfs.AddFile(BaseName(path), std::move(raw));
     }
