@@ -17,6 +17,15 @@ const char* KnownClassName(uint32_t clsid) {
     case 0x01014bc3u: return "AEECLSID_GL";         // OpenGL ES
     case 0x01014bc4u: return "AEECLSID_EGL";
     case 0x0106c411u: return "AEECLSID_HID";        // input
+    // AEECLSID_SQLMGR, AEECLSID_AppHistory e AEECLSID_RootForm sao nomes
+    // reais do SDK, nao apelidos: research/docs/sdk-extract/BrewMPSDK-7.12.5/
+    // .../platform/deprecated/inc/AEECLSID_SQLMGR.bid (0x0102c4e8),
+    // .../platform/system/inc/AEEAppHistory.bid (0x0100104f) e
+    // .../platform/ui/inc/AEECRootForm.idl (0x01028e51). As tres aparecem
+    // no ISHELL_CreateInstance do tectoy.mod (a Z-Wheel).
+    case 0x0102c4e8u: return "AEECLSID_SQLMGR";
+    case 0x0100104fu: return "AEECLSID_APPHISTORY";
+    case 0x01028e51u: return "AEECLSID_ROOTFORM";
 
     // --- Interfaces this project resolved by tracing real CreateInstance
     //     call sites / disassembly but whose public AEECLSID_* symbol is

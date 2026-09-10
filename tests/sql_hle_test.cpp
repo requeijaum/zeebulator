@@ -312,3 +312,24 @@ TEST(SqlHle, BancoRealDaZWheelResponde) {
   ASSERT_EQ(f.rows.size(), 1u);
   EXPECT_EQ(f.rows[0].values, (std::vector<std::string>{"1", "0"}));
 }
+
+
+// O 5o argumento do ISQL_Exec e `char** ppErrMsg` (documentacao real do
+// SDK, ver core/brew/sql_hle.cpp). Precisa sair zerado, nunca com lixo.
+TEST(SqlHle, ExecZeraOPonteiroDeMensagemDeErro) {
+  Fixture f;
+  auto dir = MakeTempDir("errmsg");
+  SeedPrefsDatabase(f, dir);
+  uint32_t db = f.cpu.GetMemory().Read32(kOutParam);
+
+  // Coloca o 5o argumento na pilha, como um chamador AAPCS faria.
+  const uint32_t err_slot = kOutParam + 0x100;
+  f.cpu.GetMemory().Write32(err_slot, 0xBADF00D0);
+  const uint32_t stack = 0x00390000;
+  f.cpu.SetRegister(13, stack);
+  f.cpu.GetMemory().Write32(stack, err_slot);
+
+  uint32_t sql_address = f.PutString(kScratch + 0x1100, "PRAGMA integrity_check");
+  EXPECT_EQ(f.hle.CallArmFunction(f.DbSlot(kSlotOpenOrExec), db, sql_address, 0, 0), 0u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(err_slot), 0u);
+}

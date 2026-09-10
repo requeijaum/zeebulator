@@ -64,8 +64,12 @@ uint32_t SqlHle::BuildManager(uint32_t mgr_vtable_address, uint32_t mgr_object_a
   // sozinha aqui, sem um objeto junto -- cada banco aberto ganha o seu
   // em OpenDatabase.
   for (size_t slot = 0; slot < db_methods.size(); ++slot) {
-    uint32_t sentinel = hle_.RegisterLabeled(db_methods[slot],
-                                             "ISQLDatabase::slot" + std::to_string(slot));
+    // Nomes so nos slots que a medicao provou (0/1 pela convencao IBase do
+    // BREW, 3 = Exec pelo trace); o resto fica com o indice cru de proposito.
+    static const char* kDbSlotNames[] = {"AddRef", "Release", "", "Exec"};
+    std::string label = "ISQLDatabase::slot" + std::to_string(slot);
+    if (slot < 4 && kDbSlotNames[slot][0] != '\0') label += " " + std::string(kDbSlotNames[slot]);
+    uint32_t sentinel = hle_.RegisterLabeled(db_methods[slot], label);
     memory_.Write32(db_vtable_address + static_cast<uint32_t>(slot) * 4u, sentinel);
   }
 
@@ -207,6 +211,19 @@ void SqlHle::Exec(IArmCore& core) {
   const uint32_t sql_address = core.GetRegister(1);
   const uint32_t callback = core.GetRegister(2);
   const uint32_t context = core.GetRegister(3);
+  // 5o argumento (na pilha, pela AAPCS): `char** ppErrMsg`. Vem da
+  // documentacao real do SDK -- research/docs/sdk-extract/BrewMPSDK-7.12.5/
+  // .../documentation/API Reference/Databases/Database Connect - SQL/
+  // methods/ISQL_Exec.htm: "uint32 ISQL_Exec(ISQL* piSQL, const char* pSQL,
+  // SQLExecCallBack pCallback, void* pUserData, char** ppErrMsg)". Bate com
+  // a medicao: no trace, [sp] valia 0x00390094 com sp=0x00390088, ou seja um
+  // endereco da propria pilha do chamador. Zerado sempre: o contrato diz que
+  // a string, se existir, e alocada e liberada pelo chamador, e devolver um
+  // ponteiro para memoria que o guest nao pode liberar seria pior que nao
+  // devolver mensagem nenhuma -- o proprio jogo ja imprime "(error: %d, %s)"
+  // com %s = NULL quando falha.
+  const uint32_t err_msg_out = HleRuntime::ReadStackArg(core, 0);
+  if (err_msg_out != 0 && (err_msg_out & 3u) == 0) memory_.Write32(err_msg_out, 0);
 
   auto it = databases_.find(object);
   if (it == databases_.end()) {
