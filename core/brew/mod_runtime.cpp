@@ -1738,9 +1738,18 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
       if (!c) break;
       fmt.push_back(c);
     }
-    // Print guest dbgprintf messages cleanly to stdout for game debugging
-    std::printf("[guest dbgprintf] %s (args: r1=0x%08x r2=0x%08x r3=0x%08x)\n",
-                fmt.c_str(), core.GetRegister(kR1), core.GetRegister(kR2), core.GetRegister(kR3));
+    // Mensagens de dbgprintf do guest, com o LR de quem chamou.
+    //
+    // O LR e o que transforma a mensagem em ponto de partida de investigacao.
+    // Sem ele o log diz O QUE o jogo reclamou, mas nao ONDE -- e achar o local
+    // a partir da string e trabalhoso: em bjt.mod a string
+    // "INITIALIZATION FAILED!" nao tem nenhuma referencia por literal no
+    // binario (o endereco e montado com `add rX, pc`), entao procurar por
+    // literal nao acha o sitio de chamada. Com o LR o endereco sai de graca, e
+    // vale para qualquer titulo do corpus, nao so para este caso.
+    std::printf("[guest dbgprintf] %s (args: r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x)\n",
+                fmt.c_str(), core.GetRegister(kR1), core.GetRegister(kR2),
+                core.GetRegister(kR3), core.GetRegister(kLR));
     core.SetRegister(kR0, 0);
   });
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
