@@ -1572,6 +1572,24 @@ int main(int argc, char** argv) {
   uint32_t unknown_0x0100100c_obj = zeebulator::BuildGenericStubObject(
       cpu.GetMemory(), hle, /*vtable=*/0x80048000, /*object=*/0x80049000, /*slot_count=*/40);
   shell_hle.RegisterInstance(0x0100100c, unknown_0x0100100c_obj);
+
+  // AEECLSID_SQLMGR (0x0102c4e8) -- o gerenciador de bancos do console.
+  // Identificado pela propria saida de debug do jogo, nao por adivinhacao:
+  // tectoy.mod chama CreateInstance(0x0102c4e8), recebe ECLASSNOTSUPPORT e
+  // imprime literalmente "No SQLMGR: %d" via dbgprintf, e entao TENTA DE NOVO
+  // -- 50230 vezes numa varredura de 25M passos, sem nunca chegar a
+  // EVT_APP_START. Nao e um titulo que ignora a classe ausente: ele queima o
+  // orcamento inteiro de instrucoes repetindo o mesmo pedido.
+  //
+  // Scaffold generico por enquanto: dar um objeto valido remove o laco de
+  // repeticao e deixa o jogo avancar ate o primeiro slot que ele realmente
+  // chame, que e o que revela a forma de verdade da interface. As chamadas de
+  // slot ficam visiveis em ZEEB_HLE_PROFILE, entao o proximo passo e medido,
+  // nao adivinhado.
+  uint32_t sqlmgr_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8006A000, /*object=*/0x8006B000,
+      /*slot_count=*/32);
+  shell_hle.RegisterInstance(/*AEECLSID_SQLMGR=*/0x0102c4e8, sqlmgr_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
   // the literal pool addresses its own `ldr r1,[pc,#N]` instructions
