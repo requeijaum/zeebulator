@@ -555,11 +555,12 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
                   cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1),
                   cpu.GetRegister(zeebulator::kR2), cpu.GetRegister(zeebulator::kR3));
     }
+
     if (!in_module && !in_trap_range && !result.wandered_outside_module) {
       std::printf(
           "warning: pc=0x%08x left the loaded module's range (0x%08x-0x%08x) after %llu "
           "steps -- likely a missing loader/runtime-support gap, not real progress (see "
-          "PHASE8_LOG.md). Last in-module pc=0x%08x lr=0x%08x -- disassemble there first.\n",
+          "PHASE8_LOG.md). Last in-module pc=0x00187e94 lr=0x00187e78 -- disassemble there first.\n",
           pc, mod_base, mod_base + mod_size, static_cast<unsigned long long>(steps),
           last_in_module_pc, last_lr);
       result.wandered_outside_module = true;  // only warn once per call
@@ -1572,6 +1573,96 @@ int main(int argc, char** argv) {
       cpu.GetMemory(), hle, /*vtable=*/0x8008A000, /*object=*/0x8008B000);
   (void)surface_manip_obj;
 
+  // Image decoder / ForceFeed scaffolding for AEECLSID_PNG (0x01004004),
+  // AEECLSID_WINBMP (0x01004001), AEECLSID_JPEG (0x01004005), AEECLSID_GIF (0x01004003),
+  // and AEECLSID_PNGDECODER (0x01026e23) / AEECLSID_PNGDECODER_BREW (0x01030766).
+  // Sized with 20 slots each so IImage (11 slots), IImageDecoder (5 slots),
+  // and IForceFeed (5 slots) are fully covered.
+  constexpr uint32_t kAeeIidForceFeed = 0x0101eb0b;
+  uint32_t force_feed_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80052000, /*object=*/0x80053000, /*slot_count=*/20);
+
+  std::vector<zeebulator::HleRuntime::HleFunction> image_decoder_methods(
+      20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 2: QueryInterface(IImageDecoder*, AEEIID iid, void **ppo)
+  image_decoder_methods[2] = [&cpu, force_feed_obj](zeebulator::IArmCore& core) {
+    uint32_t iid = core.GetRegister(zeebulator::kR1);
+    uint32_t ppo = core.GetRegister(zeebulator::kR2);
+    if (iid == kAeeIidForceFeed) {
+      if (ppo != 0) cpu.GetMemory().Write32(ppo, force_feed_obj);
+      core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+    } else {
+      if (ppo != 0) cpu.GetMemory().Write32(ppo, 0);
+      core.SetRegister(zeebulator::kR0, 20); // ECLASSNOTSUPPORT
+    }
+  };
+  // Slot 3: GetBitmap(IImageDecoder*, IBitmap **ppiBitmap)
+  image_decoder_methods[3] = [&cpu, compat_bitmap_obj](zeebulator::IArmCore& core) {
+    uint32_t ppi = core.GetRegister(zeebulator::kR1);
+    if (ppi != 0) cpu.GetMemory().Write32(ppi, compat_bitmap_obj);
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+
+  uint32_t image_decoder_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80054000, /*object=*/0x80055000, image_decoder_methods);
+
+  // IImage object for AEECLSID_PNG / AEECLSID_WINBMP
+  std::vector<zeebulator::HleRuntime::HleFunction> image_methods(
+      20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 4: GetInfo(IImage*, AEEImageInfo *pi)
+  image_methods[4] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t pi = core.GetRegister(zeebulator::kR1);
+    if (pi != 0) {
+      cpu.GetMemory().Write16(pi + 0, 320); // cx
+      cpu.GetMemory().Write16(pi + 2, 240); // cy
+      cpu.GetMemory().Write16(pi + 4, 0);   // nColors (>65535)
+      cpu.GetMemory().Write8(pi + 6, 0);    // bAnimated
+      cpu.GetMemory().Write16(pi + 8, 320); // cxFrame
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  uint32_t image_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80056000, /*object=*/0x80057000, image_methods);
+
+  shell_hle.RegisterInstance(0x01004004, image_obj); // AEECLSID_PNG
+  shell_hle.RegisterInstance(0x01004001, image_obj); // AEECLSID_WINBMP
+  shell_hle.RegisterInstance(0x01004003, image_obj); // AEECLSID_GIF
+  shell_hle.RegisterInstance(0x01004005, image_obj); // AEECLSID_JPEG
+  shell_hle.RegisterInstance(0x01026e23, image_decoder_obj); // AEECLSID_PNGDECODER
+  shell_hle.RegisterInstance(0x01030766, image_decoder_obj); // AEECLSID_PNGDECODER_BREW
+
+  // AEECLSID_LICENSE (0x0100100f): ILicense interface from Qualcomm BREW (6 slots).
+  // Matches zeebx machine.rs:6567 (purchased module, no expiration).
+  std::vector<zeebulator::HleRuntime::HleFunction> license_methods(
+      10, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 2: boolean IsExpired(ILicense*)
+  license_methods[2] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // FALSE
+  };
+  // Slot 3: AEELicenseType GetInfo(ILicense*, uint32 *pdwExpire)
+  license_methods[3] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t pdw_expire = core.GetRegister(zeebulator::kR1);
+    if (pdw_expire != 0) cpu.GetMemory().Write32(pdw_expire, 0xFFFFFFFFu); // BV_UNLIMITED
+    core.SetRegister(zeebulator::kR0, 0); // LT_NONE
+  };
+  // Slot 4: int SetUsesRemaining(ILicense*, uint32 nUses)
+  license_methods[4] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 1); // EFAILED
+  };
+  // Slot 5: AEEPriceType GetPurchaseInfo(ILicense*, AEELicenseType *plt, uint32 *pdwExpire, uint32 *pdSeq)
+  license_methods[5] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t plt = core.GetRegister(zeebulator::kR1);
+    uint32_t pdw_expire = core.GetRegister(zeebulator::kR2);
+    uint32_t pd_seq = core.GetRegister(zeebulator::kR3);
+    if (plt != 0) cpu.GetMemory().Write8(plt, 0); // LT_NONE
+    if (pdw_expire != 0) cpu.GetMemory().Write32(pdw_expire, 0xFFFFFFFFu); // BV_UNLIMITED
+    if (pd_seq != 0) cpu.GetMemory().Write32(pd_seq, 0);
+    core.SetRegister(zeebulator::kR0, 2); // PT_PURCHASE
+  };
+  uint32_t license_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80058000, /*object=*/0x80059000, license_methods);
+  shell_hle.RegisterInstance(0x0100100f, license_obj); // AEECLSID_LICENSE
+
   // AEECLSID_SOUND (0x01001056): ISound interface from Qualcomm BREW (15 slots:
   // AddRef, Release, RegisterNotify, Set, Get, SetDevice, PlayTone, PlayToneList,
   // PlayFreqTone, StopTone, Vibrate, StopVibrate, SetVolume, GetVolume, GetResourceCtl).
@@ -1980,8 +2071,20 @@ int main(int argc, char** argv) {
   std::vector<zeebulator::HleRuntime::HleFunction> unknown_0x0103d8ec_methods(
       200, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
   unknown_0x0103d8ec_methods[2] = [&cpu, &hle, &display, &backend, &abd_font_atlas, &abd_text_state,
-                                    kHeight](zeebulator::IArmCore& core) {
+                                    kHeight, gles11_obj](zeebulator::IArmCore& core) {
     // int QueryInterface(iname* _me, AEECLSID clsID, void** ppo) -- real
+    uint32_t req_cls = core.GetRegister(zeebulator::kR1);
+    uint32_t out_ptr_qi = core.GetRegister(zeebulator::kR2);
+    // For non-ABD titles (e.g. Zuma's Revenge, FIFA 09, Ridge Racer),
+    // AEEIID_GLES10 (0x0103d8dd) and AEEIID_GLES11 (0x0103d8ea) return
+    // the real OpenGL ES 1.1 interface object (gles11_obj).
+    if (!abd_font_atlas.has_value() && (req_cls == 0x0103d8dd || req_cls == 0x0103d8ea)) {
+      if (out_ptr_qi != 0) {
+        cpu.GetMemory().Write32(out_ptr_qi, gles11_obj);
+      }
+      core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+      return;
+    }
     // slot index (offset 8 = INHERIT_IQI's own slot 2, the standard
     // BREW/COM QueryInterface convention this whole family of scaffolds
     // already follows for its other confirmed slots). Real Alien Breaker
@@ -2629,7 +2732,7 @@ int main(int argc, char** argv) {
     uint32_t interface_ptr = core.GetRegister(zeebulator::kR1);
     uint32_t out_ptr = core.GetRegister(zeebulator::kR2);
     if (out_ptr != 0) {
-      cpu.GetMemory().Write32(out_ptr, interface_ptr);
+      cpu.GetMemory().Write32(out_ptr, (interface_ptr != 0) ? interface_ptr : 1);
     }
     core.SetRegister(zeebulator::kR0, 0);
   };

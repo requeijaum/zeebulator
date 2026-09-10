@@ -1095,6 +1095,33 @@ void ModRuntime::WstrtostrImpl(IArmCore& core) {
   core.SetRegister(kR0, dest);
 }
 
+void ModRuntime::WstrncopynImpl(IArmCore& core) {
+  // int wstrncopyn(AECHAR *dst, int cbDest, const AECHAR *src, int lenSource)
+  // cbDest counts characters; lenSource limits source (-1 = until null terminator).
+  uint32_t dst = core.GetRegister(kR0);
+  auto cb_dest = static_cast<int32_t>(core.GetRegister(kR1));
+  uint32_t src = core.GetRegister(kR2);
+  auto len_source = static_cast<int32_t>(core.GetRegister(kR3));
+
+  if (dst != 0 && cb_dest > 0) {
+    int32_t max_copy = cb_dest - 1;
+    if (len_source >= 0 && len_source < max_copy) {
+      max_copy = len_source;
+    }
+    int32_t i = 0;
+    while (i < max_copy) {
+      uint16_t u = memory_.Read16(src + static_cast<uint32_t>(i * 2));
+      if (u == 0) break;
+      memory_.Write16(dst + static_cast<uint32_t>(i * 2), u);
+      ++i;
+    }
+    memory_.Write16(dst + static_cast<uint32_t>(i * 2), 0);
+    core.SetRegister(kR0, static_cast<uint32_t>(i));
+  } else {
+    core.SetRegister(kR0, 0);
+  }
+}
+
 void ModRuntime::StrchrImpl(IArmCore& core) {
   // char *strchr(const char *s, int c) -- real standard semantics:
   // scans s for the first occurrence of c (c==0 matches the string's
@@ -1540,6 +1567,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t realloc_fn = hle_.Register([this](IArmCore& core) { ReallocImpl(core); });
   uint32_t strtowstr_fn = hle_.Register([this](IArmCore& core) { StrtowstrImpl(core); });
   uint32_t wstrtostr_fn = hle_.Register([this](IArmCore& core) { WstrtostrImpl(core); });
+  uint32_t wstrncopyn_fn = hle_.Register([this](IArmCore& core) { WstrncopynImpl(core); });
   uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0xc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
@@ -1701,6 +1729,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kReallocSlotOffset, realloc_fn);
   memory_.Write32(table_address + 0x40, strtowstr_fn);
   memory_.Write32(table_address + 0x44, wstrtostr_fn);
+  memory_.Write32(table_address + 0x80, wstrncopyn_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);

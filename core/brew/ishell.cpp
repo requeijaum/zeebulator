@@ -318,14 +318,62 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
 
 void IShellHle::GetHandlerImpl(IArmCore& core) {
   // AEECLSID GetHandler(IShell *ps, AEECLSID cls, const char *pszMIME)
-  // See this class's own doc comment for the real evidence this slot's
-  // behavior is grounded in. Real code immediately feeds the return
-  // value into ISHELL_CreateInstance, so returning `cls` itself (when
-  // recognized) rather than some other synthetic value is enough --
-  // RegisterInstance registers the real handler object under that same
-  // ClsId.
+  // Maps MIME types to their corresponding Qualcomm BREW handler ClassIDs.
+  // Standard MIME registry per Qualcomm AEEClassIDs.h and zeebx machine.rs:233.
+  constexpr uint32_t kAeeClsidPng = 0x01004004;
+  constexpr uint32_t kAeeClsidWinBmp = 0x01004001;
+  constexpr uint32_t kAeeClsidGif = 0x01004003;
+  constexpr uint32_t kAeeClsidJpeg = 0x01004005;
+  constexpr uint32_t kAeeClsidMediaMidi = 0x01005501;
+  constexpr uint32_t kAeeClsidMediaMp3 = 0x01005502;
+  constexpr uint32_t kAeeClsidMediaAdpcm = 0x0100550a;
+  constexpr uint32_t kAeeClsidMediaPcm = 0x01005511;
   constexpr uint32_t kAudioMediaCls = 0x01005500;
+
   uint32_t cls = core.GetRegister(kR1);
+  uint32_t mime_addr = core.GetRegister(kR2);
+
+  if (mime_addr != 0) {
+    std::string mime;
+    for (uint32_t i = 0; i < 64; ++i) {
+      char c = static_cast<char>(memory_.Read8(mime_addr + i));
+      if (c == ' ') break;
+      mime.push_back(c);
+    }
+    if (mime == "image/png") {
+      core.SetRegister(kR0, kAeeClsidPng);
+      return;
+    }
+    if (mime == "image/bmp" || mime == "image/x-ms-bmp") {
+      core.SetRegister(kR0, kAeeClsidWinBmp);
+      return;
+    }
+    if (mime == "image/jpeg") {
+      core.SetRegister(kR0, kAeeClsidJpeg);
+      return;
+    }
+    if (mime == "image/gif") {
+      core.SetRegister(kR0, kAeeClsidGif);
+      return;
+    }
+    if (mime == "audio/mid" || mime == "audio/midi") {
+      core.SetRegister(kR0, kAeeClsidMediaMidi);
+      return;
+    }
+    if (mime == "audio/mpeg" || mime == "audio/mp3") {
+      core.SetRegister(kR0, kAeeClsidMediaMp3);
+      return;
+    }
+    if (mime == "audio/wav" || mime == "audio/x-wav") {
+      core.SetRegister(kR0, kAeeClsidMediaPcm);
+      return;
+    }
+    if (mime == "audio/vnd.qcelp") {
+      core.SetRegister(kR0, kAeeClsidMediaAdpcm);
+      return;
+    }
+  }
+
   core.SetRegister(kR0, cls == kAudioMediaCls ? cls : 0);
 }
 
@@ -440,6 +488,62 @@ void IShellHle::GetClassItemIdImpl(IArmCore& core) {
   core.SetRegister(kR0, item_id_);
 }
 
+void IShellHle::GetDeviceInfoExImpl(IArmCore& core) {
+  // int GetDeviceInfoEx(IShell *po, AEEDeviceItem nItem, void *pBuff, int *pnSize)
+  // Per Qualcomm AEEDeviceItems.h and zeebx machine.rs:3510.
+  // pnSize is in/out: holds buffer capacity on entry, required size on exit.
+  // When pBuff is NULL, the caller is querying the required buffer size.
+  constexpr uint32_t kDeviceItemImei = 28;
+  constexpr uint32_t kEunsupported = 20;
+  constexpr uint32_t kEbadParm = 2;
+  constexpr const char* kImei = "350000000000006"; // 15-digit Luhn-valid synthetic IMEI
+  constexpr uint32_t kImeiLen = 16; // 15 digits + null terminator
+
+  uint32_t item = core.GetRegister(kR1);
+  uint32_t buffer = core.GetRegister(kR2);
+  uint32_t size_ptr = core.GetRegister(kR3);
+
+  if (size_ptr == 0) {
+    core.SetRegister(kR0, kEbadParm);
+    return;
+  }
+
+  constexpr uint32_t kDeviceItemChipId = 1;   // AEE_DEVICEITEM_CHIP_ID
+  constexpr uint32_t kDeviceItemMobileId = 2; // AEE_DEVICEITEM_MOBILE_ID (IMSI)
+  constexpr const char* kChipId = "MSM7201A";
+  constexpr uint32_t kChipIdLen = 9;
+  constexpr const char* kMobileId = "724050000000001"; // 15-digit Brazilian Claro IMSI
+  constexpr uint32_t kMobileIdLen = 16;
+
+  const char* str_val = nullptr;
+  uint32_t str_len = 0;
+
+  if (item == kDeviceItemImei) {
+    str_val = kImei;
+    str_len = kImeiLen;
+  } else if (item == kDeviceItemMobileId) {
+    str_val = kMobileId;
+    str_len = kMobileIdLen;
+  } else if (item == kDeviceItemChipId) {
+    str_val = kChipId;
+    str_len = kChipIdLen;
+  }
+
+  if (str_val != nullptr) {
+    uint32_t capacity = memory_.Read32(size_ptr);
+    memory_.Write32(size_ptr, str_len);
+    if (buffer != 0) {
+      uint32_t to_copy = std::min(capacity, str_len);
+      for (uint32_t i = 0; i < to_copy; ++i) {
+        memory_.Write8(buffer + i, static_cast<uint8_t>(str_val[i]));
+      }
+    }
+    core.SetRegister(kR0, 0); // SUCCESS
+  } else {
+    core.SetRegister(kR0, kEunsupported);
+  }
+}
+
 std::vector<IShellHle::ExpiredTimer> IShellHle::Tick(uint32_t elapsed_ms) {
   std::vector<ExpiredTimer> expired;
   for (auto it = timers_.begin(); it != timers_.end();) {
@@ -523,7 +627,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       // Confirmed by BREW SDK 4.0.2 headers and zeebx oracle (machine.rs:2209 / aee_slots.rs:55).
       // Replaces the historical alternating 35/0 heuristic for Alien Breaker Deluxe with canonical MIME detection.
       [this](IArmCore& c) { DetectTypeImpl(c); },
-      Stub,  // 44 GetDeviceInfoEx
+      [this](IArmCore& c) { GetDeviceInfoExImpl(c); },  // 44 GetDeviceInfoEx
       [this](IArmCore& c) { GetClassItemIdImpl(c); },  // 45 GetClassItemID
       Stub,  // 46 Obsolete
       Stub,  // 47 GetProperty
