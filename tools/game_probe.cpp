@@ -53,6 +53,7 @@
 #include "core/gl_texture_log.h"
 #include "core/loader/atitc.h"
 #include "core/loader/png.h"
+#include "core/loader/fufs.h"
 #include "core/loader/ggz.h"
 #include "core/loader/mod.h"
 #include "core/loader/pakz.h"
@@ -851,18 +852,44 @@ int main(int argc, char** argv) {
   // arquivo, exatamente como MergeGgzInto faz no fim para um ggz valido: um
   // jogo que abra o container por conta propria ainda o encontra, e quem
   // depende do indice descobre a ausencia pelo log em vez de por um sinal.
-  auto merge_asset_arg = [&vfs](const char* path) {
+  //
+  // Containers FUFS (".vfs") montados nesta execucao. A tabela do FUFS guarda
+  // HASH de nome, nao texto: dois dos seis .vfs reais (cnk2 274214 e 277229)
+  // nao trazem lista de nomes nenhuma. Por isso o container fica vivo aqui e e
+  // consultado por hash no resolvedor de falta do VFS mais abaixo -- e assim
+  // que um caminho pedido por string via IFILEMGR chega ao payload certo mesmo
+  // sem nome gravado. Ver core/loader/fufs.h.
+  std::vector<std::shared_ptr<zeebulator::FufsArchive>> fufs_archives;
+  auto merge_asset_arg = [&vfs, &fufs_archives](const char* path) {
     if (std::string(path) == "-") return;
     try {
       MergeGgzInto(vfs, path);
     } catch (const std::exception& e) {
       std::printf("skipped %s: nao e um GGZ parseavel (%s); bytes crus ainda no "
                   "VFS como %s\n", path, e.what(), BaseName(path).c_str());
+      std::vector<uint8_t> raw;
       try {
-        vfs.AddFile(BaseName(path), ReadFile(path));
+        raw = ReadFile(path);
       } catch (const std::exception& inner) {
         std::printf("  e nem os bytes crus puderam ser lidos: %s\n", inner.what());
+        return;
       }
+      // Antes de desistir do indice, tenta o FUFS. Parse devolve optional e
+      // nao lanca -- um container desconhecido nao pode derrubar o processo.
+      if (auto archive = zeebulator::FufsArchive::Parse(raw)) {
+        size_t named = 0;
+        for (const auto& entry : archive->Entries()) {
+          if (entry.name.empty()) continue;
+          vfs.AddFile(entry.name, archive->Extract(entry));
+          ++named;
+        }
+        std::printf("  mounted %s as FUFS: %zu entradas, %zu com nome no VFS%s\n",
+                    path, archive->Entries().size(), named,
+                    archive->HasNames() ? "" : " (sem lista de nomes: so por hash)");
+        fufs_archives.push_back(
+            std::make_shared<zeebulator::FufsArchive>(std::move(*archive)));
+      }
+      vfs.AddFile(BaseName(path), std::move(raw));
     }
   };
   merge_asset_arg(argv[2]);
@@ -919,13 +946,14 @@ int main(int argc, char** argv) {
   // that misses every in-VFS lookup. cninja asks for ding.wav → resolved on
   // demand; DD asks for none of them → namespace stays clean. Opt-out (skip the
   // host FS entirely) via ZEEB_NO_ASSET_AUTODISCOVER=1.
+  zeebulator::VirtualFilesystem::MissResolver loose_resolver;
   if (std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
     namespace fs = std::filesystem;
     try {
       fs::path own_dir = fs::absolute(argv[1]).parent_path();
       const bool log_file = std::getenv("ZEEB_LOG_FILE") != nullptr;
-      vfs.SetMissResolver([own_dir, log_file](const std::string& basename,
-                                              std::vector<uint8_t>& out) -> bool {
+      loose_resolver = [own_dir, log_file](const std::string& basename,
+                                           std::vector<uint8_t>& out) -> bool {
         // Reject empty / traversal names: the resolver matches a bare sibling
         // filename OR a single-level subdirectory relative path inside the
         // game's own folder (no `..` traversal, no absolute paths). Several
@@ -1017,10 +1045,31 @@ int main(int argc, char** argv) {
                        basename.c_str(), out.size());
         }
         return true;
-      });
+      };
     } catch (const std::exception& e) {
       std::fprintf(stderr, "loose-asset resolver not installed: %s\n", e.what());
     }
+  }
+  // Resolvedor final: FUFS primeiro, solto depois. O .vfs so pode ser servido
+  // aqui porque a chave da tabela e o hash do caminho -- o jogo pede
+  // "data/carts/chars/crash.pof" por string, o resolvedor calcula o hash e
+  // acha a entrada por busca binaria, sem precisar de nome gravado.
+  if (!fufs_archives.empty() || loose_resolver) {
+    const bool log_file = std::getenv("ZEEB_LOG_FILE") != nullptr;
+    vfs.SetMissResolver([fufs_archives, loose_resolver, log_file](
+                            const std::string& name, std::vector<uint8_t>& out) -> bool {
+      for (const auto& archive : fufs_archives) {
+        if (const zeebulator::FufsEntry* entry = archive->Find(name)) {
+          out = archive->Extract(*entry);
+          if (log_file) {
+            std::fprintf(stderr, "[file] FUFS serviu '%s' (hash %08x, %zu bytes)\n",
+                         name.c_str(), entry->name_hash, out.size());
+          }
+          return true;
+        }
+      }
+      return loose_resolver && loose_resolver(name, out);
+    });
   }
   // Data East arcade-core ports (cninja/karnovr/supbtime/... — the Wall B
   // cluster, RE'd 2026-09-02) do NOT ship the shared arcade bootstrap in
