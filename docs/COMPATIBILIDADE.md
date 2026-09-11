@@ -11,18 +11,18 @@ via `ExtractMifClassIds` e validados.
 
 | Estagio de Execucao | Titulos | Proporcao |
 |---|---|---|
-| **`EVT_APP_START = 1`** | **55** | **87,3%** |
+| **`EVT_APP_START = 1`** | **56** | **88,9%** |
 | **`EVT_APP_START` nao-zero** (`imicro3d`) | **1** | **1,6%** |
 | **Laco principal de eventos alcancado** (`tectoy`, `prey3d`, `reksio`, `rocketweb`) | **4** | **6,3%** |
-| **Total executando no laco de eventos / apos START** | **60** | **95,2%** |
+| **Total executando no laco de eventos / apos START** | **61** | **96,8%** |
 | `CreateInstance` OK (passa com orcamento expandido, ex. `fifa09`) | 1 | 1,6% |
-| `AEEMod_Load` OK (em inicializacao de recursos, ex. `nfs`, `kh`) | 2 | 3,2% |
+| `AEEMod_Load` OK (em inicializacao de recursos, ex. `nfs`) | 1 | 1,6% |
 | **Falha em carregar (`AEEMod_Load` falhou)** | **0** | **0,0%** |
 | **Total de titulos no corpus** | **63** | **100%** |
 
 - **Taxa de sucesso de carga (`AEEMod_Load`)**: **63 / 63 (100%)**
-- **Taxa de criacao de instancia (`CreateInstance`)**: **61 / 63 (96,8%)**
-- **Taxa de alcance do laco de eventos da aplicacao**: **60 / 63 (95,2%)**
+- **Taxa de criacao de instancia (`CreateInstance`)**: **62 / 63 (98,4%)**
+- **Taxa de alcance do laco de eventos da aplicacao**: **61 / 63 (96,8%)**
 - **Titulos com avanco ativo e continuo de ticks comprovado no guest**: **26 titulos**
 
 ---
@@ -77,7 +77,7 @@ via `ExtractMifClassIds` e validados.
 
 | Modulo ID | Titulo | ClassID | Status Medido |
 |---|---|---|---|
-| 11839 | kh | 19294600 | LOAD_OK |
+| 11839 | kh | 16933265 | START_1 |
 | 12875 | imicro3d | 16945859 | START_NONZERO |
 | 263019 | chessbots | 17044419 | START_1 |
 | 274214 | cnk2 | 17308036 | START_1 |
