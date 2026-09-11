@@ -72,3 +72,21 @@ TEST(UnzipStreamHle, DecompressesDeflatedStreamData) {
     EXPECT_EQ(cpu.GetMemory().Read8(dest + i), original[i]);
   }
 }
+
+TEST(UnzipStreamHle, ReadableNotifyIsDeliveredFromTickNotInline) {
+  ArmInterpreter cpu;
+  HleRuntime hle{cpu, kTrapBase, kTrapSize};
+  UnzipStreamHle unzip{cpu.GetMemory(), hle, kObjectRegion};
+  unzip.Build(kVtable);
+
+  int calls = 0;
+  uint32_t notify = hle.Register([&](zeebulator::IArmCore& core) {
+    ++calls;
+    core.SetRegister(zeebulator::kR0, 0);
+  });
+  uint32_t readable = cpu.GetMemory().Read32(kVtable + kReadable * 4);
+  hle.CallArmFunction(readable, unzip.AllocateStream(), notify, 0);
+  EXPECT_EQ(calls, 0) << "BREW must not re-enter guest code inside the call";
+  unzip.Tick();
+  EXPECT_EQ(calls, 1);
+}

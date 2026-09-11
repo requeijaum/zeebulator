@@ -23,6 +23,11 @@ namespace zeebulator {
 //   6: SetEx (IMemAStream)
 class MemAStreamHle {
  public:
+  // BREW IAStream_Readable registers an asynchronous notification. Delivering
+  // it inline would re-enter guest code inside the guest's own call. Queue it
+  // and drain here, from the host event loop.
+  void Tick();
+
   static constexpr uint32_t kClsidMemAStream = 0x0100100cu;
 
   MemAStreamHle(Memory& memory, HleRuntime& hle, uint32_t stream_object_region_start);
@@ -51,6 +56,11 @@ class MemAStreamHle {
   uint32_t vtable_address_ = 0;
   uint32_t next_object_address_;
   std::unordered_map<uint32_t, StreamState> streams_;
+  struct PendingReadable {
+    uint32_t fn;
+    uint32_t user;
+  };
+  std::vector<PendingReadable> pending_readable_;
 };
 
 }  // namespace zeebulator

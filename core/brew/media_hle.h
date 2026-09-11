@@ -216,6 +216,17 @@ class MediaHle {
   // AllocateMediaObject: sem isto a regiao de objetos so anda para a frente.
   std::vector<uint32_t> free_object_addresses_;
   uint32_t notify_scratch_address_;
+  // BREW delivers media notifications asynchronously, from the app's own
+  // event loop. Calling the guest callback inline from Play/Stop re-enters
+  // guest code while an outer guest call is still executing, which observably
+  // breaks the caller's own frame loop. Queue here; Tick() drains.
+  struct PendingNotify {
+    uint32_t fn;
+    uint32_t user;
+    uint32_t command;
+    uint32_t status;
+  };
+  std::vector<PendingNotify> pending_notifications_;
   std::unordered_map<uint32_t, Media> media_by_object_;
 };
 

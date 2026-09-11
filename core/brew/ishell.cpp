@@ -168,6 +168,10 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
       ++it;
     }
   }
+  if (std::getenv("ZEEB_LOG_TIMER")) {
+    std::fprintf(stderr, "[timer] cancel cb=0x%08x data=0x%08x -> %s (total=%zu)\n",
+                 callback, user_data, erased ? "OK" : "MISS", timers_.size());
+  }
   core.SetRegister(kR0, erased ? 0 : 1);
 }
 

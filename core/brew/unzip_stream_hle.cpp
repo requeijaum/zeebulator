@@ -115,9 +115,18 @@ void UnzipStreamHle::Readable(IArmCore& core) {
   uint32_t pfn = core.GetRegister(kR1);
   uint32_t puser = core.GetRegister(kR2);
   if (pfn != 0) {
-    hle_.CallArmFunction(pfn, puser);
+    pending_readable_.push_back({pfn, puser});
   }
   core.SetRegister(kR0, 0);
+}
+
+void UnzipStreamHle::Tick() {
+  if (pending_readable_.empty()) return;
+  std::vector<PendingReadable> deferred;
+  deferred.swap(pending_readable_);
+  for (const PendingReadable& notify : deferred) {
+    hle_.CallArmFunction(notify.fn, notify.user);
+  }
 }
 
 bool UnzipStreamHle::Expand(UnzipState& state) {

@@ -596,11 +596,17 @@ TEST(MediaHle, PlayReclaimingAnAlreadyPlayingVoiceFiresAbortNotificationFirst) {
   // Reclaim the same channel for a new sound before the first one had
   // any chance to finish naturally.
   f.hle.CallArmFunction(f.Slot(kPlay), obj);
+  EXPECT_EQ(notify_calls, 0)
+      << "BREW delivers media notifications from the event loop, never "
+         "re-entering guest code inside the IMedia_Play call itself";
+
+  // The event loop delivers it, exactly once, with the real abort status.
+  f.media_hle.Tick();
   EXPECT_EQ(notify_calls, 1);
   EXPECT_EQ(notify_status_seen, 3u) << "MM_STATUS_ABORT";
 
-  // The new voice is genuinely playing -- Tick() shouldn't immediately
-  // fire a second, spurious notification for it.
+  // The new voice is genuinely playing -- a second Tick() must not fire a
+  // spurious notification for it.
   f.media_hle.Tick();
   EXPECT_EQ(notify_calls, 1);
 }

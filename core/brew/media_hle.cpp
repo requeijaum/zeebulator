@@ -458,9 +458,8 @@ void MediaHle::PlayImpl(IArmCore& core) {
     if (media.notify_fn != 0) {
       constexpr uint32_t kMmCmdPlay = 4;
       constexpr uint32_t kMmStatusAbort = 3;
-      memory_.Write32(notify_scratch_address_ + 8, kMmCmdPlay);
-      memory_.Write32(notify_scratch_address_ + 16, kMmStatusAbort);
-      hle_.CallArmFunction(media.notify_fn, media.notify_user, notify_scratch_address_);
+      pending_notifications_.push_back(
+          {media.notify_fn, media.notify_user, kMmCmdPlay, kMmStatusAbort});
     }
   }
   media.voice =
@@ -479,6 +478,18 @@ void MediaHle::PlayImpl(IArmCore& core) {
 }
 
 void MediaHle::Tick() {
+  // Deferred Play/Stop notifications first: these were produced while guest
+  // code was running inside an HLE trap and must not re-enter it there.
+  if (!pending_notifications_.empty()) {
+    std::vector<PendingNotify> deferred;
+    deferred.swap(pending_notifications_);
+    for (const PendingNotify& notify : deferred) {
+      memory_.Write32(notify_scratch_address_ + 8, notify.command);
+      memory_.Write32(notify_scratch_address_ + 16, notify.status);
+      hle_.CallArmFunction(notify.fn, notify.user, notify_scratch_address_);
+    }
+  }
+
   // Real AEEMediaCmdNotify field values this project's own live trace of
   // the real registered callback (`ddragonz.mod` 0x11d020) confirmed it
   // actually reads -- see the class doc comment.
@@ -541,9 +552,8 @@ void MediaHle::StopImpl(IArmCore& core) {
   if (was_playing && media.notify_fn != 0) {
     constexpr uint32_t kMmCmdPlay = 4;
     constexpr uint32_t kMmStatusAbort = 3;
-    memory_.Write32(notify_scratch_address_ + 8, kMmCmdPlay);
-    memory_.Write32(notify_scratch_address_ + 16, kMmStatusAbort);
-    hle_.CallArmFunction(media.notify_fn, media.notify_user, notify_scratch_address_);
+    pending_notifications_.push_back(
+        {media.notify_fn, media.notify_user, kMmCmdPlay, kMmStatusAbort});
   }
   core.SetRegister(kR0, 0);
 }

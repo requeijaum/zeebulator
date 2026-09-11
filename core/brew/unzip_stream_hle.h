@@ -23,6 +23,11 @@ namespace zeebulator {
 //   5: SetStream (IUnzipAStream)
 class UnzipStreamHle {
  public:
+  // BREW IAStream_Readable registers an asynchronous notification. Delivering
+  // it inline would re-enter guest code inside the guest's own call. Queue it
+  // and drain here, from the host event loop.
+  void Tick();
+
   static constexpr uint32_t kClsidUnzipStream = 0x01001014u;
 
   UnzipStreamHle(Memory& memory, HleRuntime& hle, uint32_t object_region_start,
@@ -59,6 +64,11 @@ class UnzipStreamHle {
   uint32_t next_object_address_;
   StreamDrainer drainer_;
   std::unordered_map<uint32_t, UnzipState> streams_;
+  struct PendingReadable {
+    uint32_t fn;
+    uint32_t user;
+  };
+  std::vector<PendingReadable> pending_readable_;
 };
 
 }  // namespace zeebulator
