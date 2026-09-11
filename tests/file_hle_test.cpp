@@ -229,7 +229,6 @@ TEST(FileHle, ReadOnlyMethodsAllReturnAnError) {
   WriteCString(f.cpu.GetMemory(), kScratch, "foo.txt");
 
   EXPECT_NE(f.hle.CallArmFunction(f.MgrSlot(kMgrRemove), f.mgr, kScratch), 0u);
-  EXPECT_NE(f.hle.CallArmFunction(f.MgrSlot(kMgrMkDir), f.mgr, kScratch), 0u);
   EXPECT_NE(f.hle.CallArmFunction(f.MgrSlot(kMgrRmDir), f.mgr, kScratch), 0u);
   EXPECT_NE(f.hle.CallArmFunction(f.MgrSlot(kMgrRename), f.mgr, kScratch, kScratch), 0u);
 
@@ -237,6 +236,45 @@ TEST(FileHle, ReadOnlyMethodsAllReturnAnError) {
   ASSERT_NE(handle, 0u);
   EXPECT_NE(f.hle.CallArmFunction(f.FileSlotAddr(kFileWrite), handle, kScratch, 1), 0u);
   EXPECT_NE(f.hle.CallArmFunction(f.FileSlotAddr(kFileTruncate), handle, 0), 0u);
+}
+
+TEST(FileHle, MkDirCreatesProfileDirectoryAndTestFindsIt) {
+  Fixture f;
+  WriteCString(f.cpu.GetMemory(), kScratch, "udata");
+  EXPECT_NE(f.hle.CallArmFunction(f.MgrSlot(kMgrTest), f.mgr, kScratch), 0u);
+  EXPECT_EQ(f.hle.CallArmFunction(f.MgrSlot(kMgrMkDir), f.mgr, kScratch), 0u);
+  EXPECT_EQ(f.hle.CallArmFunction(f.MgrSlot(kMgrTest), f.mgr, kScratch), 0u);
+}
+
+TEST(FileHle, SerializeThenDeserializePreservesProfileDirectories) {
+  Fixture f;
+  WriteCString(f.cpu.GetMemory(), kScratch, "udata");
+  ASSERT_EQ(f.hle.CallArmFunction(f.MgrSlot(kMgrMkDir), f.mgr, kScratch), 0u);
+  std::stringstream blob;
+  ASSERT_TRUE(f.file_hle.Serialize(blob));
+
+  Fixture f2;
+  ASSERT_TRUE(f2.file_hle.Deserialize(blob));
+  WriteCString(f2.cpu.GetMemory(), kScratch, "udata");
+  EXPECT_EQ(f2.hle.CallArmFunction(f2.MgrSlot(kMgrTest), f2.mgr, kScratch), 0u);
+}
+
+TEST(FileHle, ReadWriteOpenOfSeedProfileUsesCopyOnWriteAndNormalizesSlashes) {
+  Fixture f;
+  f.vfs.AddFile("udata/option.sav", {0x10, 0x20});
+  WriteCString(f.cpu.GetMemory(), kScratch, "udata\\option.sav");
+  constexpr uint32_t kOfmReadWrite = 2;
+  uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, kOfmReadWrite);
+  ASSERT_NE(handle, 0u);
+  f.cpu.GetMemory().Write8(kScratch + 0x100, 0x7f);
+  ASSERT_EQ(f.hle.CallArmFunction(f.FileSlotAddr(kFileWrite), handle, kScratch + 0x100, 1), 1u);
+  EXPECT_EQ((*f.vfs.Find("udata/option.sav"))[0], 0x10u) << "ROM seed stays immutable";
+
+  WriteCString(f.cpu.GetMemory(), kScratch, "./UDATA/option.sav");
+  uint32_t reopened = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 0);
+  ASSERT_NE(reopened, 0u);
+  ASSERT_EQ(f.hle.CallArmFunction(f.FileSlotAddr(kFileRead), reopened, kScratch + 0x200, 1), 1u);
+  EXPECT_EQ(f.cpu.GetMemory().Read8(kScratch + 0x200), 0x7fu);
 }
 
 TEST(FileHle, OpenFileWithCreateModeMakesANewWritableFile) {

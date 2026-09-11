@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 
 #include "core/brew/interface_object.h"
 
@@ -19,6 +20,36 @@ std::string ReadCString(Memory& memory, uint32_t addr) {
     s.push_back(static_cast<char>(c));
   }
   return s;
+}
+
+// BREW user storage follows FAT-style paths. Canonicalize only the mutable
+// namespace: asset VFS lookup keeps its original resolver and spelling rules.
+std::string NormalizeWritablePath(std::string path) {
+  for (char& c : path) {
+    if (c == '\\') c = '/';
+    else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  std::vector<std::string> parts;
+  size_t pos = 0;
+  while (pos < path.size()) {
+    size_t next = path.find('/', pos);
+    std::string part = path.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+    if (!part.empty() && part != ".") {
+      if (part == "..") {
+        if (!parts.empty()) parts.pop_back();
+      } else {
+        parts.push_back(std::move(part));
+      }
+    }
+    if (next == std::string::npos) break;
+    pos = next + 1;
+  }
+  std::string normalized;
+  for (const std::string& part : parts) {
+    if (!normalized.empty()) normalized.push_back('/');
+    normalized += part;
+  }
+  return normalized;
 }
 
 }  // namespace
@@ -55,19 +86,29 @@ void FileHle::OpenFileImpl(IArmCore& core) {
   // IFile* OpenFile(IFileMgr* piname, const char* pszFile, OpenFileMode mode)
   // Real OpenFileMode bits (confirmed against AEEFile.h): _OFM_READ=1,
   // _OFM_READWRITE=2, _OFM_CREATE=4, _OFM_APPEND=8.
+  constexpr uint32_t kOfmReadWrite = 0x0002;
   constexpr uint32_t kOfmCreate = 0x0004;
   std::string name = ReadCString(memory_, core.GetRegister(kR1));
+  std::string writable_name = NormalizeWritablePath(name);
   uint32_t mode = core.GetRegister(kR2);
 
   uint32_t handle = 0;
-  auto writable_it = writable_files_.find(name);
+  auto writable_it = writable_files_.find(writable_name);
   if (writable_it != writable_files_.end()) {
-    handle = AllocateFileObject(name, &writable_it->second, &writable_it->second);
+    handle = AllocateFileObject(writable_name, &writable_it->second, &writable_it->second);
   } else if (const std::vector<uint8_t>* data = vfs_.Find(name)) {
-    handle = AllocateFileObject(name, data);
+    // ROM ships default option/profile files. A READWRITE open must get an
+    // independent mutable copy, not an immutable VFS handle that rejects
+    // IFile::Write when the game first changes an option.
+    if ((mode & kOfmReadWrite) != 0) {
+      auto [inserted, _] = writable_files_.emplace(writable_name, *data);
+      handle = AllocateFileObject(writable_name, &inserted->second, &inserted->second);
+    } else {
+      handle = AllocateFileObject(name, data);
+    }
   } else if ((mode & kOfmCreate) != 0) {
-    auto [inserted, _] = writable_files_.emplace(name, std::vector<uint8_t>{});
-    handle = AllocateFileObject(name, &inserted->second, &inserted->second);
+    auto [inserted, _] = writable_files_.emplace(writable_name, std::vector<uint8_t>{});
+    handle = AllocateFileObject(writable_name, &inserted->second, &inserted->second);
   } else if (!name.empty() && (name.back() == '/' || name.back() == '\\')) {
     // Abertura de diretorio em modo somente leitura (ex. nfs.mod abrindo "../nfsresources/").
     // No POSIX e no BREW real open(dir, O_RDONLY) tem exito; devolver um arquivo vazio
@@ -104,11 +145,29 @@ void FileHle::FileMgrGetInfoImpl(IArmCore& core) {
 void FileHle::TestImpl(IArmCore& core) {
   // int Test(IFileMgr* piname, const char* pszName)
   std::string name = ReadCString(memory_, core.GetRegister(kR1));
-  bool exists = vfs_.Exists(name) || writable_files_.count(name) != 0;
+  std::string writable_name = NormalizeWritablePath(name);
+  bool exists = vfs_.Exists(name) || writable_files_.count(writable_name) != 0 ||
+                writable_dirs_.count(writable_name) != 0;
   if (std::getenv("ZEEB_LOG_FILE")) {
     std::fprintf(stderr, "[file] Test('%s') -> %s\n", name.c_str(), exists ? "OK" : "MISS");
   }
   core.SetRegister(kR0, exists ? 0u : 1u);
+}
+
+void FileHle::MkDirImpl(IArmCore& core) {
+  // int MkDir(IFileMgr*, const char* pszDir). A profile directory is
+  // writable metadata, distinct from immutable game assets in the VFS.
+  std::string name = NormalizeWritablePath(ReadCString(memory_, core.GetRegister(kR1)));
+  if (name.empty() || vfs_.Exists(name)) {
+    core.SetRegister(kR0, 1);
+    return;
+  }
+  writable_dirs_.insert(name);
+  dirty_ = true;
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] MkDir('%s') -> OK\n", name.c_str());
+  }
+  core.SetRegister(kR0, 0);
 }
 
 void FileHle::GetFreeSpaceImpl(IArmCore& core) {
@@ -197,6 +256,9 @@ void FileHle::WriteImpl(IArmCore& core) {
   }
   f.position += want;
   dirty_ = true;
+  if (std::getenv("ZEEB_LOG_FILE")) {
+    std::fprintf(stderr, "[file] Write('%s') bytes=%u pos=%u\n", f.name.c_str(), want, f.position);
+  }
   core.SetRegister(kR0, want);
 }
 
@@ -330,7 +392,7 @@ uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_obje
       [this](IArmCore& c) { OpenFileImpl(c); },         // 2  OpenFile
       [this](IArmCore& c) { FileMgrGetInfoImpl(c); },   // 3  GetInfo
       StubFailed,                                      // 4  Remove (read-only)
-      StubFailed,                                      // 5  MkDir (read-only)
+      [this](IArmCore& c) { MkDirImpl(c); },            // 5  MkDir (writable profile dirs)
       StubFailed,                                      // 6  RmDir (read-only)
       [this](IArmCore& c) { TestImpl(c); },             // 7  Test
       [this](IArmCore& c) { GetFreeSpaceImpl(c); },     // 8  GetFreeSpace
@@ -370,6 +432,17 @@ bool FileHle::Serialize(std::ostream& out) const {
       if (!out.good()) return false;
     }
   }
+  // Append-only extension. Older userdata ends after the file list and is
+  // still accepted by Deserialize below.
+  constexpr uint32_t kDirsMagic = 0x53524944;  // "DIRS" little-endian
+  if (!WriteU32(out, kDirsMagic) || !WriteU32(out, static_cast<uint32_t>(writable_dirs_.size()))) {
+    return false;
+  }
+  for (const std::string& name : writable_dirs_) {
+    if (!WriteU32(out, static_cast<uint32_t>(name.size()))) return false;
+    out.write(name.data(), static_cast<std::streamsize>(name.size()));
+    if (!out.good()) return false;
+  }
   dirty_ = false;
   return true;
 }
@@ -398,6 +471,26 @@ bool FileHle::Deserialize(std::istream& in) {
     loaded.emplace(std::move(name), std::move(data));
   }
 
+  std::unordered_set<std::string> loaded_dirs;
+  // Legacy userdata contains only the file list. If extra bytes exist they
+  // must be the append-only directory extension written above.
+  if (in.peek() != std::char_traits<char>::eof()) {
+    constexpr uint32_t kDirsMagic = 0x53524944;  // "DIRS" little-endian
+    uint32_t magic = 0;
+    uint32_t dir_count = 0;
+    if (!ReadU32(in, magic) || magic != kDirsMagic || !ReadU32(in, dir_count)) return false;
+    for (uint32_t i = 0; i < dir_count; ++i) {
+      uint32_t name_len = 0;
+      if (!ReadU32(in, name_len)) return false;
+      std::string name(name_len, '\0');
+      if (name_len != 0) {
+        in.read(name.data(), name_len);
+        if (!in.good()) return false;
+      }
+      loaded_dirs.insert(std::move(name));
+    }
+  }
+
   // Open files reference writable_files_ entries by address
   // (mutable_data), so swapping the whole map out from under any
   // currently-open handle would leave a dangling pointer -- not a real
@@ -406,6 +499,7 @@ bool FileHle::Deserialize(std::istream& in) {
   // silently risk it.
   if (!open_files_.empty()) return false;
   writable_files_ = std::move(loaded);
+  writable_dirs_ = std::move(loaded_dirs);
   dirty_ = false;
   return true;
 }

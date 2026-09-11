@@ -5,6 +5,7 @@
 #include <ostream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/brew/hle_runtime.h"
@@ -125,6 +126,7 @@ class FileHle {
   void OpenFileImpl(IArmCore& core);
   void FileMgrGetInfoImpl(IArmCore& core);
   void TestImpl(IArmCore& core);
+  void MkDirImpl(IArmCore& core);
   void GetFreeSpaceImpl(IArmCore& core);
   void EnumInitImpl(IArmCore& core);
   void EnumNextImpl(IArmCore& core);
@@ -156,6 +158,9 @@ class FileHle {
   // the read-only GGZ-backed vfs_. Optionally persisted past this
   // process via Serialize/Deserialize -- see their own doc comments.
   std::unordered_map<std::string, std::vector<uint8_t>> writable_files_;
+  // Profile/save directories are separate objects in BREW. Keep them so
+  // IFileMgr_Test("udata") succeeds after MkDir and across cold launches.
+  std::unordered_set<std::string> writable_dirs_;
   // The handle OpenFileImpl most recently returned successfully (0 if
   // none yet) -- see BuildLastOpenedFileProxy.
   uint32_t last_opened_handle_ = 0;
