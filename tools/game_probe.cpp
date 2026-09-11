@@ -405,6 +405,7 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
 
   CallResult result;
   uint32_t last_in_module_pc = 0;
+    bool warned_wander = false;
   uint32_t last_lr = 0;
   // See IDisplayHle::RepresentLastFrame's own doc comment: a single real
   // ARM call below can run for millions of interpreted instructions
@@ -581,14 +582,33 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
                   cpu.GetRegister(zeebulator::kR2), cpu.GetRegister(zeebulator::kR3));
     }
 
-    if (!in_module && !in_trap_range && !result.wandered_outside_module) {
+    // A PC outside the module is not automatically fatal. The zero page is
+    // mapped to `bx lr` on purpose (see the landing pad near main()'s top), so
+    // guest code that calls through a NULL function pointer returns to its own
+    // caller and keeps running -- which is what the console does when an
+    // optional asset is absent. Example: Z-Wheel opens `fontsize.map`, that
+    // file exists nowhere in the NAND, the returned handle is dereferenced
+    // unguarded, and control resumes at the instruction after the call.
+    //
+    // Keep the observation, but make it recoverable: only report a wander as
+    // fatal if the guest does NOT come back to the module before the call ends.
+    // A real runaway still fails, because it never returns and hits kMaxSteps.
+    if (in_module) {
+      if (warned_wander) {
+        std::printf(
+            "note: pc returned to the module at 0x%08x after the out-of-range excursion\n", pc);
+        warned_wander = false;
+      }
+      result.wandered_outside_module = false;
+    } else if (!in_trap_range && !warned_wander) {
       std::printf(
           "warning: pc=0x%08x left the loaded module's range (0x%08x-0x%08x) after %llu "
           "steps -- likely a missing loader/runtime-support gap, not real progress (see "
           "PHASE8_LOG.md). Last in-module pc=0x%08x lr=0x%08x -- disassemble there first.\n",
           pc, mod_base, mod_base + mod_size, static_cast<unsigned long long>(steps),
           last_in_module_pc, last_lr);
-      result.wandered_outside_module = true;  // only warn once per call
+      result.wandered_outside_module = true;
+      warned_wander = true;
     }
     uint64_t retired = 1;
     if (jit_block_mode) {
@@ -624,16 +644,28 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
 // to the next four (0xe02b..0xe02e), purely so real keypresses can be
 // tried against the running game and their effect (if any) observed --
 // not a claimed-correct real key mapping.
+// Maps SDL keys to real Qualcomm BREW virtual key codes (AEEVCodes.h).
+// Official Qualcomm SDK standard:
+//   AVK_0..AVK_9 = 0xE021..0xE02A
+//   AVK_CLR      = 0xE030 (Escape / Backspace)
+//   AVK_UP       = 0xE031 (Up arrow / W)
+//   AVK_DOWN     = 0xE032 (Down arrow / S)
+//   AVK_LEFT     = 0xE033 (Left arrow / A)
+//   AVK_RIGHT    = 0xE034 (Right arrow / D)
+//   AVK_SELECT   = 0xE035 (Enter / Space)
+//   AVK_SOFT1    = 0xE036
+//   AVK_SOFT2    = 0xE037
 uint32_t SdlKeyToAvk(SDL_Keycode key) {
-  constexpr uint32_t kAvkBase = 0xe021;
   if (key >= SDLK_0 && key <= SDLK_9) {
-    return kAvkBase + static_cast<uint32_t>(key - SDLK_0);
+    return 0xE021 + static_cast<uint32_t>(key - SDLK_0);
   }
   switch (key) {
-    case SDLK_UP: return kAvkBase + 10;
-    case SDLK_DOWN: return kAvkBase + 11;
-    case SDLK_LEFT: return kAvkBase + 12;
-    case SDLK_RIGHT: return kAvkBase + 13;
+    case SDLK_UP: case SDLK_w: return 0xE031;        // AVK_UP
+    case SDLK_DOWN: case SDLK_s: return 0xE032;      // AVK_DOWN
+    case SDLK_LEFT: case SDLK_a: return 0xE033;      // AVK_LEFT
+    case SDLK_RIGHT: case SDLK_d: return 0xE034;     // AVK_RIGHT
+    case SDLK_RETURN: case SDLK_SPACE: return 0xE035;// AVK_SELECT
+    case SDLK_ESCAPE: case SDLK_BACKSPACE: return 0xE030; // AVK_CLR
     default: return 0;
   }
 }
@@ -1045,6 +1077,24 @@ int main(int argc, char** argv) {
   // that misses every in-VFS lookup. cninja asks for ding.wav → resolved on
   // demand; DD asks for none of them → namespace stays clean. Opt-out (skip the
   // host FS entirely) via ZEEB_NO_ASSET_AUTODISCOVER=1.
+  // Arquivos de ESTADO DO APARELHO: quem os cria e o proprio console, na area
+  // do usuario. Nenhum pacote os traz, entao um carregamento "solto" de pacote
+  // nao tem copia deles. A resposta fiel para um console cuja area de usuario
+  // nunca foi populada e "o arquivo existe e esta vazio" — responder "nao
+  // existe" desvia o guest para OUTRO ramo: a Z-Wheel faz
+  // IFileMgr::Test -> GetInfo -> OpenFile em `preloaded.cfg` e, com a falta do
+  // arquivo, sai do caminho da lista de pre-instalados. Ver o documento da roda
+  // da Z-Wheel, secao 2.5 (`preloaded.cfg` e estado do aparelho).
+  //
+  // `fontsize.map` NAO entra aqui: ele nao existe em lugar nenhum do dump, e a
+  // Z-Wheel convive com a ausencia (medido; o documento confirma).
+  {
+    static const char* const kDeviceStateFiles[] = {"preloaded.cfg"};
+    for (const char* device_file : kDeviceStateFiles) {
+      if (!vfs.Exists(device_file)) vfs.AddFile(device_file, {});
+    }
+  }
+
   zeebulator::VirtualFilesystem::MissResolver loose_resolver;
   if (std::getenv("ZEEB_NO_ASSET_AUTODISCOVER") == nullptr) {
     namespace fs = std::filesystem;
@@ -2062,23 +2112,44 @@ int main(int argc, char** argv) {
   constexpr uint32_t kWidgetChildBase = 0x8006D100;  // filhos entregues pelo 0x800
   auto widget_props = std::make_shared<std::map<uint32_t, uint32_t>>();
   auto widget_children = std::make_shared<std::map<uint32_t, uint32_t>>();
+  // Estrutura para armazenar tratadores de eventos de widget (slot 4) e desenho (slot 16)
+  struct WidgetHandler { uint32_t function = 0; uint32_t context = 0; };
+  auto widget_handlers = std::make_shared<std::map<uint32_t, WidgetHandler>>();
+  auto widget_draw_callbacks = std::make_shared<std::map<uint32_t, WidgetHandler>>();
+  auto registered_widget_handlers = std::make_shared<std::vector<WidgetHandler>>();
+
   std::vector<zeebulator::HleRuntime::HleFunction> widget_methods(
       24, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 2: QueryInterface / PegarInterface
+  widget_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  widget_methods[12] = widget_methods[2]; // Slot 12: PegarInterface
+
+  // Slot 3: Acessador (le/grava propriedades e filhos)
   widget_methods[3] = [&cpu, widget_props, widget_children](zeebulator::IArmCore& core) {
     const uint32_t selector = core.GetRegister(zeebulator::kR1);
     const uint32_t id = core.GetRegister(zeebulator::kR2);
     const uint32_t value = core.GetRegister(zeebulator::kR3);
+    constexpr uint32_t kPrimeiroObjeto = 0x5000;
     if (selector == 0x800) {
-      // Cada `id` recebe um objeto proprio e estavel: o jogo guarda o ponteiro
-      // e volta a usa-lo, entao devolver um endereco novo a cada chamada faria
-      // referencias antigas apontarem para outro widget.
-      auto it = widget_children->find(id);
-      if (it == widget_children->end()) {
-        const uint32_t child = kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
-        cpu.GetMemory().Write32(child, kWidgetVtable);  // filho e outro widget
-        it = widget_children->emplace(id, child).first;
+      // Itens tipados (comprovado no Zeebx e disassembly de AnimationVideo_Form):
+      // id >= 0x5000 sao objetos/widgets; abaixo de 0x5000 sao numeros/propriedades!
+      if (id >= kPrimeiroObjeto) {
+        auto it = widget_children->find(id);
+        if (it == widget_children->end()) {
+          const uint32_t child = kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
+          cpu.GetMemory().Write32(child, kWidgetVtable);  // filho e outro widget
+          it = widget_children->emplace(id, child).first;
+        }
+        if (value != 0) cpu.GetMemory().Write32(value, it->second);
+      } else {
+        auto it = widget_props->find(id);
+        uint32_t val = (it != widget_props->end()) ? it->second : 0;
+        if (value != 0) cpu.GetMemory().Write32(value, val);
       }
-      if (value != 0) cpu.GetMemory().Write32(value, it->second);
       core.SetRegister(zeebulator::kR0, 1);  // != 0 = sucesso NESTE acessador
       return;
     }
@@ -2087,15 +2158,79 @@ int main(int argc, char** argv) {
       core.SetRegister(zeebulator::kR0, 1);
       return;
     }
+    // Seletor 0x711: grava propriedade
+    if (selector == 0x711) {
+      (*widget_props)[0x711] = value;
+      core.SetRegister(zeebulator::kR0, 1);
+      return;
+    }
     // Consultas de estado/evento no root widget (0x101, 0x7b0a, 0x7b0f):
     // devolver 0 (FALSE) permite que o tratador do proprio applet as resolva.
-    if (selector == 0x101 || selector == 0x7b0a || selector == 0x7b0f) {
+    if (selector == 0x101 || selector == 0x7b0a || selector == 0x7b0e || selector == 0x7b0f) {
       core.SetRegister(zeebulator::kR0, 0);
       return;
     }
-    // Seletor ainda nao visto: sucesso, para nao inventar uma falha que o jogo
-    // trataria como fatal. Aparece no ZEEB_HLE_PROFILE se for exercitado.
     core.SetRegister(zeebulator::kR0, 1);
+  };
+  // Slot 4: DefinirTratador (SetHandler / SetCallback)
+  // Slot 4 SetHandler(this, &{fn, ctx, dtor}).
+  //
+  // BREW chains handlers: the previous registration must be written BACK into
+  // the caller's own struct, because that struct is what the new handler reads
+  // to tail-jump when it does not consume an event. Leaving the struct
+  // describing the handler that just registered makes that tail-jump recurse
+  // into itself: measured in the reference implementation as 250 million
+  // instructions in a single frame with no error logged, because there is no
+  // error, only a loop. With no previous handler, BREW writes zero and the
+  // caller checks for exactly that.
+  widget_methods[4] = [&cpu, widget_handlers, registered_widget_handlers](zeebulator::IArmCore& core) {
+    uint32_t this_obj = core.GetRegister(zeebulator::kR0);
+    uint32_t ptr = core.GetRegister(zeebulator::kR1);
+    if (ptr != 0) {
+      uint32_t fn = cpu.GetMemory().Read32(ptr + 0);
+      uint32_t ctx = cpu.GetMemory().Read32(ptr + 4);
+      WidgetHandler previous{0, 0};
+      auto it = widget_handlers->find(this_obj);
+      if (it != widget_handlers->end()) previous = it->second;
+      cpu.GetMemory().Write32(ptr + 0, previous.function);
+      cpu.GetMemory().Write32(ptr + 4, previous.context);
+      (*widget_handlers)[this_obj] = WidgetHandler{fn, ctx};
+      registered_widget_handlers->push_back(WidgetHandler{fn, ctx});
+      if (std::getenv("ZEEB_LOG_WIDGET")) {
+        std::fprintf(stderr,
+                     "[widget] SetHandler obj=0x%08x fn=0x%08x ctx=0x%08x prev=0x%08x/0x%08x\n",
+                     this_obj, fn, ctx, previous.function, previous.context);
+      }
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 5: AdicionarFilho
+  widget_methods[5] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t r2 = core.GetRegister(zeebulator::kR2);
+    if (r2 == 4) {
+      // Passo de lista pedido pelo slot 5 (medido em 0x8fa04 do tectoy.mod)
+      uint32_t out = core.GetRegister(zeebulator::kR1);
+      if (out != 0) {
+        constexpr int16_t kPasso = 18;
+        cpu.GetMemory().Write16(out + 0, static_cast<uint16_t>(kPasso));
+        cpu.GetMemory().Write16(out + 2, 0);
+      }
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 6: DefinirVisivel
+  widget_methods[6] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 7: DefinirTamanho
+  widget_methods[7] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 8: PegarPai
+  widget_methods[8] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    if (out != 0) cpu.GetMemory().Write32(out, 0);
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 13: CreateCompatibleBitmap (utilizado em 0x24100..0x24198 do tectoy.mod)
   widget_methods[13] = [&cpu, compat_bitmap_obj, compat_state](zeebulator::IArmCore& core) {
@@ -2114,7 +2249,29 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 16: OwnerDraw / RegisterDrawCallback (tectoy.mod 0x22d58)
-  widget_methods[16] = [](zeebulator::IArmCore& core) {
+  // Slot 16 SetDrawHandler(this, &{draw, ctx, dtor}) -- same chaining rule as
+  // slot 4: the trio's first two words receive the PREVIOUS entry. The drawer
+  // installed by CreateOwnerDrawWidget is a chain link that calls
+  // [ctx+0x14]([ctx+0x18], ...) first, so without the write-back it calls
+  // itself. The third word (the destructor) is not tracked here.
+  widget_methods[16] = [&cpu, widget_draw_callbacks](zeebulator::IArmCore& core) {
+    uint32_t this_obj = core.GetRegister(zeebulator::kR0);
+    uint32_t ptr = core.GetRegister(zeebulator::kR1);
+    if (ptr != 0) {
+      uint32_t fn = cpu.GetMemory().Read32(ptr + 0);
+      uint32_t ctx = cpu.GetMemory().Read32(ptr + 4);
+      WidgetHandler previous{0, 0};
+      auto it = widget_draw_callbacks->find(this_obj);
+      if (it != widget_draw_callbacks->end()) previous = it->second;
+      cpu.GetMemory().Write32(ptr + 0, previous.function);
+      cpu.GetMemory().Write32(ptr + 4, previous.context);
+      (*widget_draw_callbacks)[this_obj] = WidgetHandler{fn, ctx};
+      if (std::getenv("ZEEB_LOG_WIDGET")) {
+        std::fprintf(stderr,
+                     "[widget] SetDrawHandler obj=0x%08x fn=0x%08x ctx=0x%08x prev=0x%08x/0x%08x\n",
+                     this_obj, fn, ctx, previous.function, previous.context);
+      }
+    }
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 17: SetModel / SetFont (tectoy.mod 0x23860 e 0x23d0c: associa modelo 0x8000 / fonte ao roller)
@@ -2297,9 +2454,121 @@ int main(int argc, char** argv) {
       cpu.GetMemory(), hle, /*vtable=*/0x8009C000, /*object=*/0x8009D000, /*slot_count=*/10);
   shell_hle.RegisterInstance(/*AEECLSID_CONFIG=*/0x01001027, config_obj);
 
-  // 8) 0x01001011: ISourceUtil
-  uint32_t source_util_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x8009E000, /*object=*/0x8009F000, /*slot_count=*/10);
+  // 8) 0x01001011: ISourceUtil + ISource + IGetLine (IPeek)
+  // Essential for Z-Wheel: reads tectoy.cfg line by line (functions 0x178338 & 0x17a2f8).
+  // Without this, tectoymain.c aborts reading system preferences and halts before the boot animation.
+  constexpr uint32_t kSourceVtable = 0x800A2000;
+  constexpr uint32_t kSourceObj = 0x800A3000;
+  constexpr uint32_t kGetLineVtable = 0x800A4000;
+  constexpr uint32_t kGetLineObj = 0x800A5000;
+  constexpr uint32_t kLineBufferAddr = 0x800A6000; // Buffer de linha em memória guest
+
+  struct ActivePeekSource {
+    std::string content;
+    size_t cursor = 0;
+  };
+  auto active_source = std::make_shared<ActivePeekSource>();
+
+  // Tabela de métodos de ISource (5 slots: AddRef, Release, QueryInterface, Read, Readable)
+  std::vector<zeebulator::HleRuntime::HleFunction> source_methods(
+      10, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  source_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  uint32_t source_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, kSourceVtable, kSourceObj, source_methods);
+
+  // Tabela de métodos de IGetLine / IPeek (10 slots)
+  // Slot 8: int32 GetLine(IGetLine *po, struct GetLine *pgl, int32 nTypeEOL)
+  std::vector<zeebulator::HleRuntime::HleFunction> getline_methods(
+      12, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  getline_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  getline_methods[8] = [&cpu, active_source](zeebulator::IArmCore& core) {
+    uint32_t pgl = core.GetRegister(zeebulator::kR1);
+    if (active_source->cursor >= active_source->content.size()) {
+      // Fim do arquivo: retorna -1 (ISOURCE_END / IGETLINE_END) e nLen = 0
+      if (pgl != 0) {
+        cpu.GetMemory().Write32(pgl + 0, 0); // psz = NULL
+        cpu.GetMemory().Write32(pgl + 4, 0); // nLen = 0
+      }
+      core.SetRegister(zeebulator::kR0, static_cast<uint32_t>(-1));
+      return;
+    }
+    // Extrai a próxima linha
+    size_t next_nl = active_source->content.find('\n', active_source->cursor);
+    std::string line;
+    if (next_nl == std::string::npos) {
+      line = active_source->content.substr(active_source->cursor);
+      active_source->cursor = active_source->content.size();
+    } else {
+      line = active_source->content.substr(active_source->cursor, next_nl - active_source->cursor);
+      active_source->cursor = next_nl + 1;
+    }
+    // Remove eventual \r no final
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+
+    // Grava a linha no buffer guest
+    for (size_t i = 0; i < line.size(); ++i) {
+      cpu.GetMemory().Write8(kLineBufferAddr + static_cast<uint32_t>(i), static_cast<uint8_t>(line[i]));
+    }
+    cpu.GetMemory().Write8(kLineBufferAddr + static_cast<uint32_t>(line.size()), 0); // null terminator
+
+    if (pgl != 0) {
+      cpu.GetMemory().Write32(pgl + 0, kLineBufferAddr);
+      cpu.GetMemory().Write32(pgl + 4, static_cast<uint32_t>(line.size()));
+      cpu.GetMemory().Write8(pgl + 8, 0); // bLeftover = FALSE
+      cpu.GetMemory().Write8(pgl + 9, 0); // bTruncated = FALSE
+    }
+    constexpr uint32_t kIgetLineLf = 3;
+    core.SetRegister(zeebulator::kR0, kIgetLineLf); // Sucesso: linha lida
+  };
+  uint32_t getline_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, kGetLineVtable, kGetLineObj, getline_methods);
+
+  // Tabela de métodos de ISourceUtil (10 slots)
+  std::vector<zeebulator::HleRuntime::HleFunction> source_util_methods(
+      12, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  source_util_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 3: GetLineFromSource(po, pis, nBufSize, ppigl)
+  source_util_methods[3] = [&cpu, getline_obj](zeebulator::IArmCore& core) {
+    uint32_t out_pp = core.GetRegister(zeebulator::kR3);
+    if (out_pp != 0) cpu.GetMemory().Write32(out_pp, getline_obj);
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 5 & 6: SourceFromFile / SourceFromMemory
+  auto make_source_from_file = [&cpu, source_obj, active_source, &file_hle](zeebulator::IArmCore& core) {
+    // SourceFromFile receives the guest IFile object in R1 and creates an
+    // independent source over THAT file. Do not substitute tectoy.cfg: Z-Wheel
+    // uses this same API for a font map, and returning config text made its
+    // parser report "missing colon" then wander at pc=0.
+    uint32_t file = core.GetRegister(zeebulator::kR1);
+    uint32_t out_pp = core.GetRegister(zeebulator::kR2);
+    auto bytes = file_hle.SnapshotOpenFile(file);
+    if (!bytes.has_value()) {
+      if (out_pp != 0) cpu.GetMemory().Write32(out_pp, 0);
+      core.SetRegister(zeebulator::kR0, 1);  // EFAILED
+      return;
+    }
+    active_source->content.assign(bytes->begin(), bytes->end());
+    active_source->cursor = 0;
+    if (out_pp != 0) cpu.GetMemory().Write32(out_pp, source_obj);
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  source_util_methods[5] = make_source_from_file;
+  source_util_methods[6] = make_source_from_file;
+
+  uint32_t source_util_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8009E000, /*object=*/0x8009F000, source_util_methods);
   shell_hle.RegisterInstance(/*AEECLSID_SOURCE_UTIL=*/0x01001011, source_util_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
@@ -4276,6 +4545,96 @@ int main(int argc, char** argv) {
                                [&media_hle]() { return media_hle.CreateMediaObject(); });
   }
 
+  // AEECLSID_MEDIAUTIL = 0x0100550d (AEECLSID_MULTIMEDIA + 13).
+  //
+  // Nao e codec, e a FABRICA de objetos de midia -- por isso nao esta na lista
+  // de irmaos acima, que registra apenas classes de formato. O SDK que temos
+  // traz a interface E a implementacao de referencia:
+  //   platform/media/inc/AEEMediaUtil.h
+  //     AEEINTERFACE(IMediaUtil): AddRef, Release, QueryInterface, CreateMedia,
+  //     EncodeMedia, CreateMediaEx (6 slots)
+  //   platform/media/src/mediautil/AEEMediaUtil.c
+  //     CreateMedia: escolhe a classe (extensao -> MIME "audio/<ext>" e depois
+  //     "video/<ext>" via ISHELL_GetHandler; sem extensao, le o arquivo e usa
+  //     ISHELL_DetectType), cria com ISHELL_CreateInstance e em seguida chama
+  //     IMEDIA_SetMediaData(pMedia, pmd) -- que o proprio SDK define como
+  //     SetMediaParm(p, MM_PARM_MEDIA_DATA, (int32)pmd, 0), exatamente o
+  //     parametro 1 que o MediaHle ja implementa.
+  //
+  // Quem pede (varredura do literal nos .mod do corpus): tectoy.mod (3 sitios),
+  // rocketweb.mod (2), allstarcards.mod (1), quake.mod (1).
+  // No tectoy o pedido esta na construcao do formulario de animacao
+  // (AnimationVideo_Form.c: literal 0x0100550d em 0x101bc8, CreateInstance em
+  // 0x101ac8) e a ausencia dele ERA a causa medida de
+  // "Couldn't create animation video form (1)" (tectoymain.c:807): o registrador
+  // de retorno comeca em 1 e so vira 0 quando esse objeto existe.
+  //
+  // Escolha de codec: este projeto nao despacha por classe de formato -- o
+  // SetMediaParm fareja o conteudo (ver o comentario de classe do MediaHle).
+  // Criar o objeto e entregar o AEEMediaData ao mesmo SetMediaParm mantem UM
+  // unico caminho de decodificacao em vez de dois.
+  {
+    constexpr uint32_t kEbadParm = 14;        // AEEError.h: #define EBADPARM 14
+    constexpr uint32_t kEnomemory = 2;        // AEEError.h: #define ENOMEMORY 2
+    constexpr uint32_t kEunsupported = 20;    // AEEError.h: #define EUNSUPPORTED 20
+    std::vector<zeebulator::HleRuntime::HleFunction> media_util_methods(
+        6, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+    media_util_methods[3] = [&cpu, &media_hle](zeebulator::IArmCore& core) {
+      // int CreateMedia(IMediaUtil *po, AEEMediaData *pmd, IMedia **ppm)
+      const uint32_t pmd = core.GetRegister(zeebulator::kR1);
+      const uint32_t ppm = core.GetRegister(zeebulator::kR2);
+      auto& m = cpu.GetMemory();
+      if (pmd == 0 || ppm == 0) {
+        if (ppm != 0) m.Write32(ppm, 0);
+        core.SetRegister(zeebulator::kR0, kEbadParm);
+        return;
+      }
+      m.Write32(ppm, 0);  // o real faz *ppm = NULL antes de tentar
+      const uint32_t object = media_hle.CreateMediaObject();
+      if (object == 0) {
+        core.SetRegister(zeebulator::kR0, kEnomemory);
+        return;
+      }
+      const int err = media_hle.ApplyMediaData(core, object, pmd);
+      if (err != 0) {
+        // O real faz IMEDIA_Release e devolve o erro do SetMediaData. Nao
+        // devolvemos objeto: o jogo trata o erro (e foi assim que os codecs
+        // faltantes apareceram no log, com o nome do formato recusado).
+        if (std::getenv("ZEEB_LOG_MEDIAUTIL")) {
+          std::fprintf(stderr,
+                       "[mediautil] CreateMedia recusado: SetMediaData devolveu %d (pmd=0x%08x)\n",
+                       err, pmd);
+        }
+        core.SetRegister(zeebulator::kR0, static_cast<uint32_t>(err));
+        return;
+      }
+      if (std::getenv("ZEEB_LOG_MEDIAUTIL")) {
+        std::fprintf(stderr, "[mediautil] CreateMedia pmd=0x%08x -> IMedia 0x%08x\n", pmd, object);
+      }
+      m.Write32(ppm, object);
+      core.SetRegister(zeebulator::kR0, 0);
+    };
+    // Slots 4 e 5 (EncodeMedia, CreateMediaEx) NAO estao implementados, e
+    // recusam explicitamente em vez de devolver sucesso vazio: um factory que
+    // finge criar midia e exatamente o tipo de stub que o artigo deste projeto
+    // acusa. EncodeMedia codifica midia (nenhum titulo do corpus pede ate
+    // agora) e CreateMediaEx recebe AEEMediaCreateInfo (lista de AEEMediaDataEx),
+    // que este projeto nao decodifica.
+    for (int slot : {4, 5}) {
+      media_util_methods[slot] = [slot, kEunsupported](zeebulator::IArmCore& core) {
+        if (std::getenv("ZEEB_STUB_TRACE")) {
+          std::fprintf(stderr, "[mediautil] slot %d (%s) NAO implementado -> EUNSUPPORTED\n", slot,
+                       slot == 4 ? "EncodeMedia" : "CreateMediaEx");
+        }
+        core.SetRegister(zeebulator::kR0, kEunsupported);
+      };
+    }
+    const uint32_t media_util_obj = zeebulator::BuildInterfaceObject(
+        cpu.GetMemory(), hle, /*vtable=*/0x8000B400, /*object=*/0x8000B800, media_util_methods);
+    shell_hle.RegisterFactory(/*AEECLSID_MEDIAUTIL=*/0x0100550d,
+                              [media_util_obj]() { return media_util_obj; });
+  }
+
   auto& mem = cpu.GetMemory();
   // A real stack, well past the loaded module -- ArmInterpreter::Reset()
   // zeroes every register including SP, and the real compiled prologue's
@@ -4436,6 +4795,23 @@ int main(int argc, char** argv) {
 
     // Run any threads started during EVT_APP_START
     run_pending_threads_fn("post-start");
+
+    // Z-Wheel boot animation trigger (AnimationVideo_Form, confirmed via Zeebx & disassembly of 0x101828):
+    // The console signals (0x801, 0x5064, 1) to the root widget's handler registered via slot 4.
+    // This arms the 1000ms timer (callback 0x1014ac) which advances frames and plays sounds_loading.wav.
+    for (const auto& handler : *registered_widget_handlers) {
+      if (handler.function != 0) {
+        std::printf("[zwheel] Triggering boot animation handler fn=0x%08x ctx=0x%08x\n",
+                    handler.function, handler.context);
+        try {
+          CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handler.function,
+                                 handler.context, 0x801, 0x5064, 1,
+                                 /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+        } catch (const std::exception& e) {
+          std::printf("[zwheel] boot animation trigger threw: %s\n", e.what());
+        }
+      }
+    }
 
     stage = "HandleEvent(EVT_APP_RESUME)";
     constexpr uint32_t kEvtAppResume = 3;
@@ -5146,12 +5522,11 @@ int main(int argc, char** argv) {
         // rendering). Since every key this project maps has a real,
         // confirmed-correct HID equivalent already, there's no reason
         // to keep taking that risk here.
-        uint32_t avk = (hid_button_uid == 0) ? SdlKeyToAvk(event.key.keysym.sym) : 0;
+        // Dual-channel dispatch (matching Zeemu AppRunner & Zeebx):
+        // 1. BREW virtual key code (AVK) via IApplet_HandleEvent (or root form).
+        // 2. Physical gamepad UID via IHIDDevice (signals & GetNextButtonEvent).
+        uint32_t avk = SdlKeyToAvk(event.key.keysym.sym);
         if (avk != 0 && applet_ptr != 0) {
-          // boolean HandleEvent(IApplet *po, AEEEvent evt, uint16 wParam, uint32 dwParam)
-          // evt 0x101/0x102 confirmed via real disassembly of Double
-          // Dragon's own event dispatcher -- see SdlKeyToAvk's comment
-          // and PHASE8_LOG.md.
           constexpr uint32_t kEvtKeyDown = 0x101;
           constexpr uint32_t kEvtKeyUp = 0x102;
           uint32_t evt = (event.type == SDL_KEYDOWN) ? kEvtKeyDown : kEvtKeyUp;
@@ -5510,6 +5885,18 @@ int main(int argc, char** argv) {
       // is its own real display moment; presenting once per real timer
       // here matches that instead of only ever showing the real *last*
       // timer in a real burst.
+      // OwnerDraw / StageWidget drawing: invoke callbacks registered via widget slot 16.
+      // In Z-Wheel, the 3D stage and bottom carousel are drawn here (matching Zeebx desenha_widgets).
+      for (const auto& [obj, handler] : *widget_draw_callbacks) {
+        if (handler.function != 0) {
+          try {
+            CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handler.function,
+                                   handler.context, display_obj, 0, 0,
+                                   /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+          } catch (...) {}
+        }
+      }
+
       if (!backend.HasRealGlActivity()) {
         // Espelha o buffer do IDIB, quando o jogo escreveu nele.
         //

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <istream>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <unordered_map>
@@ -113,6 +114,11 @@ class FileHle {
   // there's actually something new, rather than rewriting an unchanged
   // file every single tick regardless.
   bool HasUnsavedWrites() const { return dirty_; }
+
+  // Read-only snapshot for adapters such as ISourceUtil::SourceFromFile.
+  // It intentionally does not move the guest file cursor: SourceFromFile
+  // creates an independent source view of the already-open file.
+  std::optional<std::vector<uint8_t>> SnapshotOpenFile(uint32_t handle) const;
 
  private:
   struct OpenFile {

@@ -58,6 +58,12 @@ FileHle::FileHle(Memory& memory, HleRuntime& hle, const VirtualFilesystem& vfs,
                   uint32_t file_object_region_start)
     : memory_(memory), hle_(hle), vfs_(vfs), next_object_address_(file_object_region_start) {}
 
+std::optional<std::vector<uint8_t>> FileHle::SnapshotOpenFile(uint32_t handle) const {
+  auto it = open_files_.find(handle);
+  if (it == open_files_.end() || it->second.data == nullptr) return std::nullopt;
+  return *it->second.data;
+}
+
 void FileHle::WriteFileInfo(uint32_t dest_addr, const std::string& name, uint32_t size) {
   // Matches AEEFileInfo: { char attrib; uint32 dwCreationDate;
   // uint32 dwSize; char szName[64]; } with standard ARM struct

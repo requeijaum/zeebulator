@@ -127,6 +127,26 @@ class MediaHle {
   // receive; Build() must be called first.
   uint32_t CreateMediaObject();
 
+  // Aplica MM_PARM_MEDIA_DATA a um objeto IMedia ja criado, pelo MESMO caminho
+  // que o codigo guest alcanca via SetMediaParm.
+  //
+  // Por que existe: o SDK define, em platform/media/inc/AEEIMedia.h,
+  //   static __inline int IMedia_SetMediaData(IMedia *p, AEEMediaData *pmd)
+  //   { return AEEGETPVTBL(p, IMedia)->SetMediaParm(p, MM_PARM_MEDIA_DATA,
+  //                                                (int32)pmd, (int32)0); }
+  // Ou seja, "definir os dados" NAO e um slot proprio: e o parametro 1 do
+  // SetMediaParm, que este arquivo ja implementa. A fabrica IMediaUtil precisa
+  // disto logo depois de criar o objeto -- platform/media/src/mediautil/
+  // AEEMediaUtil.c faz `ISHELL_CreateInstance(cls)` e em seguida
+  // `IMEDIA_SetMediaData(pMedia, pmd)` antes de devolver o IMedia ao chamador
+  // (que e o que poe o objeto em MM_STATE_READY). Reimplementar a decodificacao
+  // aqui duplicaria a logica; chamar o mesmo impl mantem o resultado identico
+  // ao de o proprio jogo ter chamado SetMediaParm.
+  //
+  // Devolve o R0 real do SetMediaParm (0 = SUCCESS, 1 = falha), sem deixar os
+  // registradores do chamador alterados.
+  int ApplyMediaData(IArmCore& core, uint32_t media_object, uint32_t pmd_address);
+
   // Fires the real MM_STATUS_DONE notification (see class doc) for
   // every voice that has finished playing naturally since the last
   // Tick(), then marks it no longer playing. Call once per real game

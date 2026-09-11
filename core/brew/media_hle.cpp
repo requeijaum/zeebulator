@@ -280,6 +280,28 @@ void MediaHle::RegisterNotifyImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);
 }
 
+int MediaHle::ApplyMediaData(IArmCore& core, uint32_t media_object, uint32_t pmd_address) {
+  // Ver o comentario no header: IMedia_SetMediaData do SDK e exatamente
+  // SetMediaParm(MM_PARM_MEDIA_DATA, pmd, 0). Preserva os registradores do
+  // chamador porque este metodo pode ser chamado de dentro de outro trap (a
+  // fabrica IMediaUtil), onde R0-R3 ainda pertencem ao codigo guest em curso.
+  const uint32_t saved_r0 = core.GetRegister(kR0);
+  const uint32_t saved_r1 = core.GetRegister(kR1);
+  const uint32_t saved_r2 = core.GetRegister(kR2);
+  const uint32_t saved_r3 = core.GetRegister(kR3);
+  core.SetRegister(kR0, media_object);
+  core.SetRegister(kR1, static_cast<uint32_t>(kParmMediaData));
+  core.SetRegister(kR2, pmd_address);
+  core.SetRegister(kR3, 0);
+  SetMediaParmImpl(core);
+  const uint32_t result = core.GetRegister(kR0);
+  core.SetRegister(kR0, saved_r0);
+  core.SetRegister(kR1, saved_r1);
+  core.SetRegister(kR2, saved_r2);
+  core.SetRegister(kR3, saved_r3);
+  return static_cast<int>(result);
+}
+
 void MediaHle::SetMediaParmImpl(IArmCore& core) {
   // int SetMediaParm(IMedia *po, int nParamID, int32 p1, int32 p2)
   auto it = media_by_object_.find(core.GetRegister(kR0));
