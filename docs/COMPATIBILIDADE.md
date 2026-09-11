@@ -5,6 +5,11 @@ em estrutura `fs:/` do BREW (`mif/<id>.mif` + `mod/<id>/`).
 Executados com `zeebulator_game_probe`. ClassIDs extraidos diretamente dos MIFs
 via `ExtractMifClassIds` e validados.
 
+> **Importante:** `AEEMod_Load`, `CreateInstance`, `EVT_APP_START` e o laco de
+> eventos sao indicadores de **boot**, nao de jogabilidade. A classificacao
+> honesta de tela esta na secao 2; um titulo so e tratado como renderizado quando
+> a captura X11 real contem conteudo, e nao apenas o overlay FPS.
+
 ---
 
 ## 1. Resumo por Estagio de Execucao
@@ -27,7 +32,49 @@ via `ExtractMifClassIds` e validados.
 
 ---
 
-## 2. Destaques e Principais Marcos Tecnicos Alcancados
+## 2. Matriz Visual Medida (estado atual)
+
+Metodo: `DISPLAY=:0`, sem `SDL_VIDEODRIVER=offscreen`, captura por
+`xdotool` + `import -window`, resolucao 640x480. Sao reportados pixels
+nao-pretos e cores distintas; aproximadamente 500 px/2 cores e apenas o
+overlay FPS, nao jogo.
+
+| Titulo | Pixels / cores medidos | Veredito honesto |
+|---|---:|---|
+| Alien Breaker Deluxe | 303.042 / 7.910 | renderiza splash/titulo |
+| Pac-Mania | 307.200 / 9.769 | renderiza titulo |
+| Zenonia | 303.336 / 1.106 | intro/UI WIPI renderiza; input ainda bloqueia progresso |
+| Double Dragon | 109.788 / 262 em cenario de titulo validado | renderiza, revalidacao interativa pendente |
+| ChessBots | 64.644 / 3 | geometria errada; nao jogavel |
+| Zeebo Tennis | 307.200 / 2 | tela branca; nao jogavel |
+| Zeebo Volley | 307.200 / 2 | tela branca; nao jogavel |
+| Zeebo Peteca | 307.200 / 2 | tela branca; nao jogavel |
+| Zeeboids | 307.200 / 2 | tela branca; nao jogavel |
+| Peggle | 459--495 / 2 | somente overlay; nao jogavel |
+| Quake | 1.587 / 3 | somente overlay; nao jogavel |
+
+### Zenonia: evidencia de renderizacao e audio
+
+- O WIPI grava diretamente 320x240 RGB565 em um `IBitmap` compativel e apresenta
+  em `BitBlt(640x480)`; o probe fornece essa DIB apenas para `zenonia.mod`.
+- O fade branco exigiu o packing Qualcomm real: `MAKE_RGB(r,g,b) =
+  (r<<8)|(g<<16)|(b<<24)`. `0xFFFFFF00` e branco; interpretar como
+  `0x00RRGGBB` o tornava amarelo.
+- `AEECLSID_MEDIAPCM` (`0x01005511`) cria `MediaHle` somente para Zenonia;
+  o mesmo ID preserva o scaffold de download do Double Dragon nos outros titulos.
+- Fluxo validado sem input: WAV 000 PCM -> `MM_STATUS_DONE` -> `Release` ->
+  WAV 108 PCM em loop, sem SIGSEGV. Fila SDL medida em 358--492 ms apos
+  correcao de clock/audio.
+
+### JIT
+
+- `ZEEB_CPU=jit` seleciona Dynarmic; o interpretador e o oraculo diferencial.
+- `ZEEB_JIT_BLOCK=1` executa blocos limitados entre traps HLE quando diagnosticos
+  por instrucao estao desligados.
+- Zeetris completou 1.000.000 passos em lockstep sem divergencia. Dez titulos
+  oficiais testados tiveram a mesma classe visual sob JIT block e interpretador.
+
+## 3. Destaques e Principais Marcos Tecnicos Alcancados
 
 1. **Z-Wheel (Menu Principal do Zeebo - `tectoy.mod`)**:
    - Totalmente funcional ate o laco de eventos.
@@ -65,7 +112,7 @@ via `ExtractMifClassIds` e validados.
 
 ---
 
-## 3. Contêineres de Dados 100% Suportados no Nucleo
+## 4. Contêineres de Dados 100% Suportados no Nucleo
 - `AEZ` (Fishlabs, 12 arquivos, 1390 entradas)
 - `FUFS` (`.vfs`, 6 arquivos, 1642 entradas)
 - `SAR` (`SWVARC`, Superscape, 53 arquivos, 332 entradas)
@@ -73,7 +120,7 @@ via `ExtractMifClassIds` e validados.
 
 ---
 
-## 4. Tabela Autorizada por Titulo (63 titulos)
+## 5. Tabela de Boot por Titulo (63 titulos)
 
 | Modulo ID | Titulo | ClassID | Status Medido |
 |---|---|---|---|

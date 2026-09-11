@@ -1,7 +1,7 @@
 # Zeebulator
 
-[![Build & Tests](https://img.shields.io/badge/tests-587%2F587%20passing-brightgreen.svg)]()
-[![Compatibility](https://img.shields.io/badge/compatibility-96.8%25%20(61%2F63%20titles)-blue.svg)](docs/COMPATIBILIDADE.md)
+[![Build & Tests](https://img.shields.io/badge/tests-590%2F590%20passing-brightgreen.svg)]()
+[![Compatibility](https://img.shields.io/badge/boot-63%2F63%20titles-blue.svg)](docs/COMPATIBILIDADE.md)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg)]()
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 
@@ -13,15 +13,32 @@ Unlike traditional fixed-function consoles, the Zeebo operates as a connected mo
 
 ## Current Status & Compatibility
 
-Zeebulator has achieved feature and architectural compatibility parity across the entire official retail catalog:
+**Boot is not gameplay.** The 63 official NAND titles load (`AEEMod_Load`),
+create their applet, and reach `EVT_APP_START`/the event loop under the current
+probe. That is a boot-coverage result, **not** a claim that all titles are
+playable.
 
-- **63 of 63 official NAND titles (100%)** load modules (`AEEMod_Load`), instantiate their applets (`CreateInstance`), and reach the main application event loop (`EVT_APP_START` completed or interactive system shell).
-- **27 titles with verified active in-game guest loops** dispatching cooperative threads and rendering at 40–60 FPS.
-- **Z-Wheel (Official System Shell) Fully Bootable**: Boots `tectoy.mod`, opens and queries SQLite preferences, builds the 24-slot visual widget tree, loads all 15 carousel titles, and renders the top stage and bottom roller interface.
-- **Homebrew & Injections**: Validated support for OpenZeebo homebrew and BREW mobile ports (including *Kingdom Hearts V-CAST*).
-- **Automated Test Suite**: **587 unit and integration tests passing (100% green)** via GoogleTest and `ctest`.
+Visual validation uses real SDL video/audio (`DISPLAY=:0`), X11 capture, and
+pixel/color counts. Current measured highlights:
 
-For detailed title-by-title status and telemetry breakdown, see [**`docs/COMPATIBILIDADE.md`**](docs/COMPATIBILIDADE.md).
+| Title | Measured frame | Status |
+|---|---:|---|
+| Alien Breaker Deluxe | 303,042 non-black px / 7,910 colors | title path renders |
+| Pac-Mania | 307,200 px / 9,769 colors | title path renders |
+| Zenonia | 303,336 px / 1,106 colors | WIPI intro/UI renders; input path still under investigation |
+| ChessBots | 64,644 px / 3 colors | geometry is incorrect; not playable |
+| Zeebo Tennis / Volley / Peteca / Zeeboids | full white frame / 2 colors | not playable |
+| Peggle / Quake | FPS overlay only | not playable |
+
+The goal remains genuine playability for every title. See
+[**`docs/COMPATIBILIDADE.md`**](docs/COMPATIBILIDADE.md) for the boot census,
+measured visual matrix, test method, and known blockers.
+
+- **JIT**: Dynarmic is available through `ZEEB_CPU=jit`; the interpreter remains
+a differential oracle. `ZEEB_JIT_BLOCK=1` enables bounded block execution
+between HLE traps.
+- **Automated tests**: **590/590** GoogleTest/CTest tests pass.
+
 
 ---
 
@@ -51,7 +68,7 @@ For detailed title-by-title status and telemetry breakdown, see [**`docs/COMPATI
 - **MIF (`Module Information File`)**: Automatic extraction of application `ClassID` records directly from binary section tables.
 
 ### 4. Audio Engine
-- **Dynamic Stereo Resampling**: Real-time linear stereo resampling supporting arbitrary guest sample rates with zero latency.
+- **Dynamic Stereo Resampling**: Real-time stereo resampling for devices that open at a different host rate. The SDL path uses a 4096-frame callback, an 8192-frame startup prebuffer, reusable resample storage, and wall-clock pacing to avoid underflow without pitch shifting.
 - **WAV Stream Capture**: Real-time audio logging to disk via `ZEEB_DUMP_AUDIO=output.wav`.
 - **Multimedia Codec Hierarchy**: Registration and factory routing for MP3 (`0x01005502`), MIDI (`0x01005501`), QCP (`0x01005503`), PCM (`0x01005511`), ADPCM, AMR, AAC, MMF, and PMD.
 
@@ -116,7 +133,7 @@ Zeebulator supports both modern gamepads (Xbox, PlayStation, generic USB HID con
 | **Button 4 (D)** | `V` | `I` | Button Y / Triangle |
 | **Left Shoulder (L)** | `Q` | `1` | Left Bumper (LB) / Trigger (L2) |
 | **Right Shoulder (R)** | `E` | `2` | Right Bumper (RB) / Trigger (R2) |
-| **Back / Confirm** | `Return` / `Backspace` | `Space` | Back / Select |
+| **Back / Cancel** | `Return` / `Backspace` | `Space` | Back / Select |
 | **Home / Menu** | `Escape` | `Escape` | Guide / Home |
 
 ### Development Hotkeys
@@ -138,6 +155,12 @@ The primary execution engine and automated testing tool:
 
 # Launch with real audio dump and remote NDJSON control server on port 48900
 ZEEB_DUMP_AUDIO=gameplay.wav ZEEB_CONTROL_PORT=48900 ./build/tools/zeebulator_game_probe /path/to/game.mod
+
+# Dynarmic JIT block mode (leave unset for the interpreter oracle)
+ZEEB_CPU=jit ZEEB_JIT_BLOCK=1 ./build/tools/zeebulator_game_probe /path/to/game.mod
+
+# Passive diagnostic: do not forward keyboard/controller events to the guest
+ZEEB_DISABLE_INPUT=1 ./build/tools/zeebulator_game_probe /path/to/game.mod
 ```
 
 ### 2. Format Inspectors
