@@ -3403,7 +3403,13 @@ int main(int argc, char** argv) {
   // vtable). Fixed by giving each dynamic counter its own large,
   // separated range, well past every fixed address and far short of
   // FileHle's own region at 0x80100000.
-  uint32_t next_self_propagating_addr = 0x80070000;
+  // Faixa dinamica para build_self_propagating_stub.
+  // IMPORTANTE: 0x80070000 colidia com 0x80080000..0x8008D000 (IHash, IMemAStream, etc.)
+  // apos apenas 16 objetos (cada objeto avanca 0x1000). Titulos da PopCap como
+  // heavyweaponbrew chamam mais de 16 vezes e sobrescreviam 0x80082000 (IHash),
+  // gerando aviso de colisao e corrompendo a vtable.
+  // A faixa 0x800C0000..0x800F0000 (192 KB) esta completamente desocupada.
+  uint32_t next_self_propagating_addr = 0x800C0000;
   // Real caller `0x10ac10`'s own real "fetch the real decoded PNG
   // size" call (`abd.mod` 0x10adc8-0x10add8) does not go through the
   // real self-propagating-stub object real slot 3's own real "feed"/
@@ -3589,7 +3595,15 @@ int main(int argc, char** argv) {
       uint32_t width = (*pending_png_result)->first;
       uint32_t height = (*pending_png_result)->second;
       uint32_t result_obj = build_self_propagating_stub();
-      static uint32_t next_pixel_addr = 0x80200000;
+      // Regiao dedicada a pixels de texturas decodificadas.
+      // IMPORTANTE: 0x80200000 colidia diretamente com a regiao de objetos de
+      // media (0x80200000..0x80280000) e com a tabela estatica/helpers (0x80280000).
+      // Cada textura PNG (ex. 943x44x4 = ~162 KB) avancava next_pixel_addr.
+      // Apos apenas 3 texturas, next_pixel_addr ultrapassava 0x80280000 e
+      // sobrescrevia o ponteiro `free` em 0x8028006c com zeros de pixels,
+      // causando o salto fatal para pc=0 no heavyweaponbrew e outros titulos PopCap.
+      // A regiao 0x88000000 fica bem acima do heap (0x80300000..0x84300000).
+      static uint32_t next_pixel_addr = 0x88000000;
       uint32_t pixel_addr = next_pixel_addr;
       uint32_t pixel_bytes = width * height * 4;
       next_pixel_addr += pixel_bytes + 64;
