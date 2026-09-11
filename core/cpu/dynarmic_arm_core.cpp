@@ -1,4 +1,5 @@
 #include "core/cpu/dynarmic_arm_core.h"
+#include "core/control/debug_hooks.h"
 
 #include <cstdlib>
 #include <cstddef>
@@ -143,11 +144,9 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
     MemoryWrite32(a + 4, std::uint32_t(v >> 32));
   }
 
-  // The interpreter never reaches SWI/coprocessor/undefined instructions on
-  // any real game probed so far (it raises UnimplementedInstruction). We keep
-  // these as no-ops in Phase 1 rather than throwing across JIT-generated
-  // frames (undefined behaviour); Phase 2/3 differential runs are where such
-  // encodings, if they ever appear, get catalogued.
+  // ARM SVC implements semihosting in ArmInterpreter; titles have not reached
+  // it through the JIT yet, so preserve the prior inert callback until its ABI
+  // is implemented rather than introducing an unverified incompatibility.
   void CallSVC(std::uint32_t /*swi*/) override {}
   void ExceptionRaised(std::uint32_t pc, Dynarmic::A32::Exception e) override {
     // MemoryReadCode returning nullopt in the trap range makes the frontend
@@ -227,6 +226,10 @@ void DynarmicArmCore::Step() {
     }
     return;
   }
+  // Keep the debug contract identical to ArmInterpreter::Step: breakpoints,
+  // trace and writer-PC attribution observe the guest instruction before it
+  // executes. Memory watches already flow through MemoryRead*/MemoryWrite*.
+  DebugHooks::Instance().OnExec(fetch_addr, *this);
   // Keep the tick budget non-empty so cycle counting never halts a single
   // step early; Jit::Step() executes exactly one instruction regardless.
   callbacks_->ticks_left = 1;
