@@ -1621,14 +1621,43 @@ int main(int argc, char** argv) {
     uint32_t height = 240;
   };
   auto compat_state = std::make_shared<CompatBitmapState>();
+  // Some WIPI engines use the concrete DIB fields behind a compatible IBitmap
+  // directly. Keep this experimental until a title proves it writes the arena.
+  const bool compat_dib_enabled = std::getenv("ZEEB_COMPAT_DIB") != nullptr;
+  constexpr uint32_t kCompatBitmapPixels = 0x85000000;
+  constexpr uint32_t kCompatBitmapBytes = 640u * 480u * 2u;
+  if (compat_dib_enabled) {
+    for (uint32_t off = 0; off < kCompatBitmapBytes; off += 4) {
+      cpu.GetMemory().Write32(kCompatBitmapPixels + off, 0);
+    }
+  }
 
   std::vector<zeebulator::HleRuntime::HleFunction> compat_bitmap_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // IBitmap slot 3: NativeColor RGBToNative(IBitmap*, RGBVAL).
+  // Zeebo's display is RGB565 and the game calls this before every source blit.
+  compat_bitmap_methods[3] = [](zeebulator::IArmCore& core) {
+    uint32_t rgb = core.GetRegister(zeebulator::kR1);
+    uint32_t r = (rgb >> 16) & 0xff;
+    uint32_t g = (rgb >> 8) & 0xff;
+    uint32_t b = rgb & 0xff;
+    core.SetRegister(zeebulator::kR0, ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+  };
+  // IBitmap slot 4: RGBVAL NativeToRGB(IBitmap*, NativeColor).
+  compat_bitmap_methods[4] = [](zeebulator::IArmCore& core) {
+    uint16_t pixel = static_cast<uint16_t>(core.GetRegister(zeebulator::kR1));
+    uint32_t r5 = (pixel >> 11) & 0x1f;
+    uint32_t g6 = (pixel >> 5) & 0x3f;
+    uint32_t b5 = pixel & 0x1f;
+    core.SetRegister(zeebulator::kR0,
+                     ((r5 << 3 | r5 >> 2) << 16) |
+                     ((g6 << 2 | g6 >> 4) << 8) |
+                     (b5 << 3 | b5 >> 2));
+  };
+
   // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
   compat_bitmap_methods[12] = [&cpu, compat_state](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);
-    std::fprintf(stderr, "[compat_bitmap] GetInfo called! out=0x%08x w=%u h=%u\n",
-                 out, compat_state->width, compat_state->height);
     if (out != 0) {
       cpu.GetMemory().Write32(out + 0, compat_state->width);
       cpu.GetMemory().Write32(out + 4, compat_state->height);
@@ -1638,6 +1667,16 @@ int main(int argc, char** argv) {
   };
   uint32_t compat_bitmap_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, /*vtable=*/0x8008C000, /*object=*/0x8008D000, compat_bitmap_methods);
+  if (compat_dib_enabled) {
+    auto& compat_mem = cpu.GetMemory();
+    compat_mem.Write32(compat_bitmap_obj + 8, kCompatBitmapPixels);
+    compat_mem.Write32(compat_bitmap_obj + 16, 0xffffffffu);
+    // Zenonia writes exactly 320*240 RGB565 bytes into this surface.
+    compat_mem.Write16(compat_bitmap_obj + 20, 320);
+    compat_mem.Write16(compat_bitmap_obj + 22, 240);
+    compat_mem.Write16(compat_bitmap_obj + 24, 640);
+    compat_mem.Write8(compat_bitmap_obj + 28, 16);
+  }
 
   std::vector<zeebulator::HleRuntime::HleFunction> device_bitmap_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
@@ -1663,12 +1702,18 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0);
   };
   // Slot 13: CreateCompatibleBitmap(IBitmap*, IBitmap **ppIBitmap, uint16 w, uint16 h)
-  device_bitmap_methods[13] = [&cpu, compat_bitmap_obj, compat_state](zeebulator::IArmCore& core) {
+  device_bitmap_methods[13] = [&cpu, compat_bitmap_obj, compat_state, compat_dib_enabled](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);
     uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
     uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
-    if (w != 0) compat_state->width = w;
-    if (h != 0) compat_state->height = h;
+    if (w != 0) compat_state->width = std::min(w, 640u);
+    if (h != 0) compat_state->height = std::min(h, 480u);
+    if (compat_dib_enabled) {
+      auto& m = cpu.GetMemory();
+      m.Write16(compat_bitmap_obj + 20, static_cast<uint16_t>(compat_state->width));
+      m.Write16(compat_bitmap_obj + 22, static_cast<uint16_t>(compat_state->height));
+      m.Write16(compat_bitmap_obj + 24, static_cast<uint16_t>(compat_state->width * 2));
+    }
     if (out != 0) {
       cpu.GetMemory().Write32(out, compat_bitmap_obj);
     }
@@ -3927,6 +3972,11 @@ int main(int argc, char** argv) {
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
   shell_hle.RegisterFactory(0x01005501,
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
+  // Zenonia requests MediaPCM directly (0x01005511). Keep the historical
+  // generic instance below for unrelated scaffolding, but factories take
+  // precedence in IShellHle and must supply a real fresh IMedia here.
+  shell_hle.RegisterFactory(0x01005511,
+                             [&media_hle]() { return media_hle.CreateMediaObject(); });
   // Familia AEECLSID_MULTIMEDIA completa, com os nomes vindos do proprio SDK
   // BREW (testkit/shadow_inc/AEEClassIDs.h), nao de adivinhacao:
   //   #define AEECLSID_MULTIMEDIA (QVERSION + 0x5500)   -> 0x01005500
@@ -4422,6 +4472,12 @@ int main(int argc, char** argv) {
   SDL_Event event;
   constexpr uint32_t kTickMs = 16;
   uint64_t tick_count = 0;
+  // Audio is paced by the host clock. A heavy guest frame can take longer
+  // than kTickMs; mixing only simulated 16-ms quanta then starves SDL even
+  // with correct fractional rounding. Wall pacing keeps PCM pitch normal and
+  // leaves the queue prebuffer to cover an individual long callback.
+  uint32_t audio_last_mix_ms = SDL_GetTicks();
+  uint64_t audio_frame_remainder = 0;
   // A guest callback may cooperatively yield from AEEHelper sleep while its
   // full architectural continuation remains in `cpu`. While active, no other
   // guest callback may run on that single CPU context; resume it first.
@@ -5192,7 +5248,13 @@ int main(int argc, char** argv) {
         }
       }
     }
-    mixer.Mix(backend, static_cast<size_t>(kAudioSampleRate * kTickMs / 1000));
+    const uint32_t audio_now_ms = SDL_GetTicks();
+    const uint32_t audio_elapsed_ms = audio_now_ms - audio_last_mix_ms;
+    audio_last_mix_ms = audio_now_ms;
+    audio_frame_remainder += static_cast<uint64_t>(kAudioSampleRate) * audio_elapsed_ms;
+    const size_t audio_frames = static_cast<size_t>(audio_frame_remainder / 1000);
+    audio_frame_remainder %= 1000;
+    if (audio_frames != 0) mixer.Mix(backend, audio_frames);
     // See IDisplayHle::RepresentLastFrame's own doc comment: keeps the
     // window actually showing whatever was last drawn even on ticks
     // where real app code doesn't call IDISPLAY_Update itself. The

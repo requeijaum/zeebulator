@@ -132,7 +132,9 @@ Sdl2UnifiedBackend::Sdl2UnifiedBackend(SDL_Window* window, int width, int height
   desired.freq = audio_sample_rate;
   desired.format = AUDIO_S16SYS;
   desired.channels = 2;
-  desired.samples = 1024;
+  // 1024 frames at the Zeebo mixer rate (22050 Hz) is only 46 ms. A single
+  // CPU-heavy frame can exceed that and starve SDL's device queue.
+  desired.samples = 4096;
 
   SDL_AudioSpec obtained{};
   // Aceitar uma taxa diferente da pedida. Com allowed_changes=0 o dispositivo
@@ -550,9 +552,32 @@ void Sdl2UnifiedBackend::PushAudioSamples(const int16_t* interleaved_stereo, siz
                                            int sample_rate) {
   if (audio_device_ == 0 || frame_count == 0) return;
   const int out_rate = device_sample_rate_ > 0 ? device_sample_rate_ : audio_sample_rate_;
+  auto log_queue = [&] {
+    if (std::getenv("ZEEB_LOG_AUDIO_QUEUE") == nullptr) return;
+    static uint64_t pushes = 0;
+    ++pushes;
+    if (pushes == 1 || pushes % 60 == 0) {
+      uint32_t bytes = SDL_GetQueuedAudioSize(audio_device_);
+      uint32_t frames = bytes / (2 * sizeof(int16_t));
+      std::fprintf(stderr, "[audio-queue] pushes=%llu queued=%u frames=%u ms=%u rate=%d\n",
+                   static_cast<unsigned long long>(pushes), bytes, frames,
+                   out_rate > 0 ? static_cast<unsigned>(frames * 1000 / out_rate) : 0, out_rate);
+    }
+  };
+  if (!audio_prebuffered_) {
+    // Establish 8192 frames (~371 ms at the native 22050 Hz) once. Initial
+    // asset decode has measured stalls around 170 ms, larger than a device
+    // callback alone; this queue headroom absorbs them without pitch changes.
+    constexpr size_t kInitialAudioPrebufferFrames = 8192;
+    std::vector<int16_t> silence(kInitialAudioPrebufferFrames * 2, 0);
+    SDL_QueueAudio(audio_device_, silence.data(),
+                   static_cast<uint32_t>(silence.size() * sizeof(int16_t)));
+    audio_prebuffered_ = true;
+  }
   if (sample_rate == out_rate) {
     SDL_QueueAudio(audio_device_, interleaved_stereo,
                     static_cast<uint32_t>(frame_count * 2 * sizeof(int16_t)));
+    log_queue();
     return;
   }
   // Reamostragem linear estereo para a taxa real do dispositivo. Antes deste
@@ -560,7 +585,7 @@ void Sdl2UnifiedBackend::PushAudioSamples(const int16_t* interleaved_stereo, siz
   const double ratio = static_cast<double>(sample_rate) / static_cast<double>(out_rate);
   const size_t out_frames = static_cast<size_t>(static_cast<double>(frame_count) / ratio);
   if (out_frames == 0) return;
-  std::vector<int16_t> resampled(out_frames * 2);
+  audio_resample_buffer_.resize(out_frames * 2);
   for (size_t i = 0; i < out_frames; ++i) {
     const double src = static_cast<double>(i) * ratio;
     const size_t f0 = static_cast<size_t>(src);
@@ -569,11 +594,12 @@ void Sdl2UnifiedBackend::PushAudioSamples(const int16_t* interleaved_stereo, siz
     for (int ch = 0; ch < 2; ++ch) {
       const double a = interleaved_stereo[f0 * 2 + ch];
       const double b = interleaved_stereo[f1 * 2 + ch];
-      resampled[i * 2 + ch] = static_cast<int16_t>(a + (b - a) * frac);
+      audio_resample_buffer_[i * 2 + ch] = static_cast<int16_t>(a + (b - a) * frac);
     }
   }
-  SDL_QueueAudio(audio_device_, resampled.data(),
-                  static_cast<uint32_t>(resampled.size() * sizeof(int16_t)));
+  SDL_QueueAudio(audio_device_, audio_resample_buffer_.data(),
+                  static_cast<uint32_t>(audio_resample_buffer_.size() * sizeof(int16_t)));
+  log_queue();
 }
 
 // Standard SDL_GameController button naming *should* already match an

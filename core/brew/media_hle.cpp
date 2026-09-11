@@ -487,14 +487,27 @@ void MediaHle::Tick() {
   memory_.Write32(notify_scratch_address_ + 8, kMmCmdPlay);
   memory_.Write32(notify_scratch_address_ + 16, kMmStatusDone);
 
+  // A real notify callback can call IMedia::Release(), which erases its
+  // Media from media_by_object_. Never hold an unordered_map iterator across
+  // guest re-entry: first snapshot finished notifications, then invoke them.
+  struct FinishedNotify {
+    uint32_t object_addr;
+    int voice;
+    uint32_t fn;
+    uint32_t user;
+  };
+  std::vector<FinishedNotify> finished;
   for (auto& [object_addr, media] : media_by_object_) {
     if (!media.has_voice || media.notify_fn == 0) continue;
     if (mixer_.IsPlaying(media.voice)) continue;
     media.has_voice = false;
     media.state = kStateReady;
+    finished.push_back({object_addr, media.voice, media.notify_fn, media.notify_user});
+  }
+  for (const FinishedNotify& done : finished) {
     MediaLog("obj=0x%08x voice=%d FINISHED -> notify fn=0x%08x user=0x%08x",
-             object_addr, media.voice, media.notify_fn, media.notify_user);
-    hle_.CallArmFunction(media.notify_fn, media.notify_user, notify_scratch_address_);
+             done.object_addr, done.voice, done.fn, done.user);
+    hle_.CallArmFunction(done.fn, done.user, notify_scratch_address_);
   }
 }
 

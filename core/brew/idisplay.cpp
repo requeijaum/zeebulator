@@ -220,8 +220,15 @@ void IDisplayHle::BitBlt(IArmCore& core) {
   if (src_h <= 0) src_h = cy_dest;
   if (src_pitch <= 0) src_pitch = src_w * 2;
 
-  int copy_w = std::min(cx_dest, src_w - x_src);
-  int copy_h = std::min(cy_dest, src_h - y_src);
+  // Some WIPI titles render a 320x240 compatible bitmap and present it in one
+  // full-screen 640x480 BitBlt. Preserve ordinary BitBlt's 1:1 crop semantics;
+  // only this unambiguous full-surface form scales nearest-neighbor.
+  const bool scale_full_surface =
+      x_dest == 0 && y_dest == 0 && x_src == 0 && y_src == 0 &&
+      cx_dest == width_ && cy_dest == height_ && src_w > 0 && src_h > 0 &&
+      (src_w != cx_dest || src_h != cy_dest);
+  int copy_w = scale_full_surface ? cx_dest : std::min(cx_dest, src_w - x_src);
+  int copy_h = scale_full_surface ? cy_dest : std::min(cy_dest, src_h - y_src);
 
   int clip_x0 = std::max<int>(clip_x_, 0);
   int clip_y0 = std::max<int>(clip_y_, 0);
@@ -234,13 +241,17 @@ void IDisplayHle::BitBlt(IArmCore& core) {
   int y1 = std::min<int>(y_dest + copy_h, clip_y1);
 
   for (int y = y0; y < y1; ++y) {
-    int sy = y_src + (y - y_dest);
+    int sy = scale_full_surface
+                 ? y_src + ((y - y_dest) * src_h) / cy_dest
+                 : y_src + (y - y_dest);
     if (sy < 0 || sy >= src_h) continue;
     uint32_t src_row = p_bmp + static_cast<uint32_t>(sy * src_pitch);
     size_t dst_row_idx = static_cast<size_t>(y) * width_;
 
     for (int x = x0; x < x1; ++x) {
-      int sx = x_src + (x - x_dest);
+      int sx = scale_full_surface
+                   ? x_src + ((x - x_dest) * src_w) / cx_dest
+                   : x_src + (x - x_dest);
       if (sx < 0 || sx >= src_w) continue;
 
       uint16_t pixel = 0;

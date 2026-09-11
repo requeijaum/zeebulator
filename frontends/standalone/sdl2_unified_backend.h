@@ -256,6 +256,10 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
 
   SDL_AudioDeviceID audio_device_ = 0;
   int audio_sample_rate_;
+  // Queueing a short real silence lead absorbs host scheduling stalls before
+  // the first mixer block arrives; it is not synthetic game audio.
+  bool audio_prebuffered_ = false;
+  std::vector<int16_t> audio_resample_buffer_;
   // Taxa REAL que o dispositivo abriu. Pode diferir de audio_sample_rate_
   // (pedimos SDL_AUDIO_ALLOW_FREQUENCY_CHANGE); PushAudioSamples reamostra
   // para ela em vez de descartar o bloco.
