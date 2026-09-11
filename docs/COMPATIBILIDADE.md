@@ -52,5 +52,5 @@ Todos os containers de dados do corpus possuem suporte completo no núcleo:
 ## 5. Ultimos Titulos com Trabalho Pendente
 
 - **`nfs`**: tenta abrir `../nfsresources/` em laco; precisa de mapeamento de diretorio de recursos pai.
-- **`alpineracerex`**: gasta dezenas de bilhoes de passos processando fontes e texturas no `EVT_APP_START`; precisa de otimizacao JIT/fast-path.
+- ~~**`alpineracerex`**~~ (RESOLVIDO no commit `a196450`: slot 3 de QEGL `eglGetError` escreve `0x3000` / `EGL_SUCCESS`; jogo agora chega a `EVT_APP_START = 1` e executa a 15 ticks/s).
 - **`rocketweb`, `reksio`, `prey3d`, `imicro3d`**: chegam ao laco de eventos da janela (`running=true`), aguardando despacho de eventos de interface.
