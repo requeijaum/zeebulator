@@ -52,6 +52,8 @@ class HashHle {
   void ResetImpl(IArmCore& core);
   void UpdateImpl(IArmCore& core);
   void GetDigestImpl(IArmCore& core);
+  void GetResultImpl(IArmCore& core);
+  void SetKeyImpl(IArmCore& core);
   void GetDigestSizeImpl(IArmCore& core);
 
   Memory& memory_;

@@ -1359,7 +1359,10 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   methods[106] = GlesMethod([this](IArmCore& c) { GlTranslatex(c); });         // 106 Translatex
   methods[107] = GlesMethod([this](IArmCore& c) { GlVertexPointer(c); });      // 107 VertexPointer
   methods[108] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 108 Viewport
-  methods[109] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 109 Viewport alias
+  // 109 is ClipPlanef, not a second Viewport (zeebx aee_slots.rs lists
+  // 108 Viewport / 109 ClipPlanef / 110 GetClipPlanef). Binding Viewport here
+  // fed a plane equation pointer into glViewport as x/y/w/h.
+  methods[109] = GlesMethod([](IArmCore& c) { c.SetRegister(kR0, 0); });        // 109 ClipPlanef
 
   gles11_object_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return gles11_object_;

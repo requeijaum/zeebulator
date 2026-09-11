@@ -139,18 +139,27 @@ HashHle::HashHle(Memory& memory, HleRuntime& hle,
 }
 
 uint32_t HashHle::Build(uint32_t vtable_address, uint32_t object_address) {
+  // Real layout, from the SDK itself (platform/deprecated/inc/AEESecurity.h):
+  //   QINTERFACE(IHash) { DECLARE_IBASE(IHash)   // AddRef, Release only
+  //     void (*Update)(IHash*, const byte* pbData, int cbData);
+  //     int  (*GetResult)(IHash*, byte* pbData, int* pcbData);
+  //     void (*Restart)(IHash*);
+  //     int  (*SetKey)(IHash*, const byte* pbKey, int cbKey); };
+  // IHash has NO QueryInterface: DECLARE_IBASE stops at Release. We used to
+  // start at QueryInterface and shift everything by one, so a guest Update()
+  // landed on QueryInterface (which wrote 4 bytes through what was really a
+  // length argument) and GetResult() landed on Reset (digest stayed zero).
+  // zeebx aee_slots.rs:1088 reports the same correction, found from Zeeboids.
   std::vector<HleRuntime::HleFunction> methods = {
-      [this](IArmCore& c) { AddRef(c); },          // 0 AddRef
-      [this](IArmCore& c) { Release(c); },         // 1 Release
-      [this](IArmCore& c) { QueryInterface(c); },  // 2 QueryInterface
-      [this](IArmCore& c) { ResetImpl(c); },       // 3 Reset
-      [this](IArmCore& c) { UpdateImpl(c); },      // 4 Update
-      [this](IArmCore& c) { GetDigestImpl(c); },   // 5 GetDigest
-      [this](IArmCore& c) { GetDigestSizeImpl(c); },  // 6 GetDigestSize
+      [this](IArmCore& c) { AddRef(c); },         // 0 AddRef
+      [this](IArmCore& c) { Release(c); },        // 1 Release
+      [this](IArmCore& c) { UpdateImpl(c); },     // 2 Update
+      [this](IArmCore& c) { GetResultImpl(c); },  // 3 GetResult
+      [this](IArmCore& c) { ResetImpl(c); },      // 4 Restart
+      [this](IArmCore& c) { SetKeyImpl(c); },     // 5 SetKey
   };
-  const std::vector<const char*> slot_names = {
-      "AddRef", "Release", "QueryInterface", "Reset", "Update",
-      "GetDigest", "GetDigestSize"};
+  const std::vector<const char*> slot_names = {"AddRef",  "Release", "Update",
+                                               "GetResult", "Restart", "SetKey"};
   return BuildInterfaceObjectLabeled(memory_, hle_, vtable_address,
                                      object_address, methods, "IHash",
                                      slot_names);
@@ -213,6 +222,31 @@ void HashHle::GetDigestImpl(IArmCore& core) {
     }
   }
   core.SetRegister(kR0, digest_addr_);
+}
+
+// int GetResult(IHash*, byte* pbData, int* pcbData) -- writes the digest into
+// the caller's buffer and reports its size through pcbData. Returns
+// AEE_SUCCESS. This is the call a title makes to actually read a hash; the old
+// table never reached it.
+void HashHle::GetResultImpl(IArmCore& core) {
+  auto digest = md5_.Finish();
+  uint32_t out = core.GetRegister(kR1);
+  uint32_t out_len = core.GetRegister(kR2);
+  if (out != 0) {
+    for (size_t i = 0; i < digest.size(); ++i) {
+      memory_.Write8(out + static_cast<uint32_t>(i), digest[i]);
+    }
+  }
+  if (out_len != 0) memory_.Write32(out_len, static_cast<uint32_t>(digest.size()));
+  core.SetRegister(kR0, 0);  // AEE_SUCCESS
+}
+
+// int SetKey(IHash*, const byte* pbKey, int cbKey) -- only meaningful for the
+// HMAC variants. Plain MD5 has no key, and the SDK documents an error return
+// for unsupported operations, so report AEE_EUNSUPPORTED instead of pretending.
+void HashHle::SetKeyImpl(IArmCore& core) {
+  constexpr uint32_t kAeeEunsupported = 20;
+  core.SetRegister(kR0, kAeeEunsupported);
 }
 
 void HashHle::GetDigestSizeImpl(IArmCore& core) {

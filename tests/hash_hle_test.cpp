@@ -68,27 +68,29 @@ TEST_F(HashHleTest, AddRefAndRelease) {
   EXPECT_EQ(Call(1), 1u);  // Release
 }
 
-TEST_F(HashHleTest, GetDigestSizeIsSixteen) {
-  EXPECT_EQ(Call(6), 16u);  // GetDigestSize
+// Slot order comes from the SDK (platform/deprecated/inc/AEESecurity.h):
+// 0 AddRef, 1 Release, 2 Update, 3 GetResult, 4 Restart, 5 SetKey. IHash has no
+// QueryInterface and no GetDigestSize; GetResult reports the size instead.
+TEST_F(HashHleTest, GetResultReportsSixteenByteDigest) {
+  uint32_t len_out = kScratch + 0x100;
+  EXPECT_EQ(Call(3, kScratch, len_out), 0u);  // GetResult(pbData, pcbData)
+  EXPECT_EQ(cpu_.GetMemory().Read32(len_out), 16u);
 }
 
 TEST_F(HashHleTest, EmptyInputMatchesKnownMd5Vector) {
   // MD5("") == d41d8cd98f00b204e9800998ecf8427e (RFC 1321 test vector)
-  Call(3);  // Reset
-  uint32_t digest_ptr = Call(5, kScratch);  // GetDigest, out ptr in R1
-  EXPECT_NE(digest_ptr, 0u);
+  Call(4);  // Restart
+  EXPECT_EQ(Call(3, kScratch), 0u);  // GetResult
   EXPECT_EQ(DigestHex(kScratch), "d41d8cd98f00b204e9800998ecf8427e");
-  EXPECT_EQ(DigestHex(digest_ptr), "d41d8cd98f00b204e9800998ecf8427e");
 }
 
 TEST_F(HashHleTest, AbcMatchesKnownMd5Vector) {
   // MD5("abc") == 900150983cd24fb0d6963f7d28e17f72 (RFC 1321 test vector)
-  Call(3);  // Reset
+  Call(4);  // Restart
   uint32_t src = 0x80003000;
   WriteBytes(src, "abc");
-  Call(4, src, 3);  // Update(pData, nLen=3)
-  uint32_t digest_ptr = Call(5, kScratch);
-  EXPECT_NE(digest_ptr, 0u);
+  Call(2, src, 3);  // Update(pData, nLen=3)
+  EXPECT_EQ(Call(3, kScratch), 0u);  // GetResult
   EXPECT_EQ(DigestHex(kScratch), "900150983cd24fb0d6963f7d28e17f72");
 }
 
@@ -98,31 +100,37 @@ TEST_F(HashHleTest, MultipleUpdatesAccumulateAcrossBlockBoundary) {
   const char* full =
       "12345678901234567890123456789012345678901234567890123456789012345678901"
       "234567890";
-  Call(3);
+  Call(4);  // Restart
   uint32_t src = 0x80004000;
   WriteBytes(src, full);
   uint32_t len = static_cast<uint32_t>(std::strlen(full));
-  Call(4, src, len);
-  uint32_t one_shot_ptr = Call(5, kScratch);
-  std::string one_shot = DigestHex(one_shot_ptr);
+  Call(2, src, len);            // Update
+  Call(3, kScratch);            // GetResult
+  std::string one_shot = DigestHex(kScratch);
 
-  Call(3);  // Reset again
+  Call(4);  // Restart
   uint32_t piece1_len = 40, piece2_len = len - 40;
-  Call(4, src, piece1_len);
-  Call(4, src + piece1_len, piece2_len);
-  uint32_t split_ptr = Call(5, kScratch + 32);
-  EXPECT_EQ(DigestHex(split_ptr), one_shot);
+  Call(2, src, piece1_len);
+  Call(2, src + piece1_len, piece2_len);
+  Call(3, kScratch + 32);
+  EXPECT_EQ(DigestHex(kScratch + 32), one_shot);
 }
 
-TEST_F(HashHleTest, GetDigestIsIdempotentWithoutReUpdate) {
-  Call(3);
+TEST_F(HashHleTest, GetResultIsIdempotentWithoutReUpdate) {
+  Call(4);
   uint32_t src = 0x80005000;
   WriteBytes(src, "abc");
-  Call(4, src, 3);
-  uint32_t first = Call(5, kScratch);
-  std::string first_hex = DigestHex(first);
-  uint32_t second = Call(5, kScratch + 32);
-  EXPECT_EQ(DigestHex(second), first_hex);
+  Call(2, src, 3);
+  Call(3, kScratch);
+  std::string first_hex = DigestHex(kScratch);
+  Call(3, kScratch + 32);
+  EXPECT_EQ(DigestHex(kScratch + 32), first_hex);
+}
+
+// Plain MD5 has no key. The SDK reserves SetKey for the HMAC variants, so the
+// honest answer is AEE_EUNSUPPORTED rather than a silent success.
+TEST_F(HashHleTest, SetKeyReportsUnsupportedForPlainMd5) {
+  EXPECT_EQ(Call(5, 0x80006000, 4), 20u);
 }
 
 }  // namespace

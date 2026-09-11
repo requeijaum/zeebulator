@@ -1350,6 +1350,43 @@ void ModRuntime::StrchrImpl(IArmCore& core) {
 
 // AEEHelperFuncs slot 0x010 is STRCMP (zeemu AEEHelperTable.cpp). It used to be
 // a blind no-op here, which answers "equal" for every comparison a title makes.
+// 0x0dc MEMCMP (zeemu AEEHelperTable.cpp). This slot used to run an in-place
+// gzip inflate, so every memcmp answered "different" and any buffer starting
+// with 1f 8b was rewritten under the caller's feet.
+// 0x0e4 STREXPAND, from AEEStdLib.h:
+//   void strexpand(const byte* pSrc, int nCount, AECHAR* pDest, int nSize)
+// It widens nCount source bytes into a UTF-16 destination, NUL terminated and
+// bounded by nSize characters. This slot used to hold a bounded strcpy, which
+// produced 8-bit text where the caller expected 16-bit.
+void ModRuntime::StrexpandImpl(IArmCore& core) {
+  uint32_t src_ptr = core.GetRegister(kR0);
+  int32_t count = static_cast<int32_t>(core.GetRegister(kR1));
+  uint32_t dest = core.GetRegister(kR2);
+  int32_t dest_chars = static_cast<int32_t>(core.GetRegister(kR3));
+  if (dest == 0 || dest_chars <= 0) return;
+  int32_t written = 0;
+  for (int32_t i = 0; i < count && written < dest_chars - 1; ++i) {
+    uint8_t c = memory_.Read8(src_ptr + static_cast<uint32_t>(i));
+    if (c == 0) break;
+    memory_.Write16(dest + static_cast<uint32_t>(written) * 2, c);
+    ++written;
+  }
+  memory_.Write16(dest + static_cast<uint32_t>(written) * 2, 0);
+}
+
+void ModRuntime::MemcmpImpl(IArmCore& core) {
+  uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1), n = core.GetRegister(kR2);
+  for (uint32_t i = 0; i < n; ++i) {
+    uint8_t ca = memory_.Read8(a + i), cb = memory_.Read8(b + i);
+    if (ca != cb) {
+      core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(ca) -
+                                                  static_cast<int32_t>(cb)));
+      return;
+    }
+  }
+  core.SetRegister(kR0, 0);
+}
+
 void ModRuntime::StrcmpImpl(IArmCore& core) {
   uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1);
   for (;;) {
@@ -1812,6 +1849,138 @@ bool ModRuntime::ConsumeYieldRequest() {
   return requested;
 }
 
+// The real AEEHelperFuncs layout, taken from the SDK's own struct in
+// platform/system/inc/AEEStdLib.h (117 function pointers, in declaration
+// order). Having it here is what lets Install() below refuse to leave a slot
+// as a zero word: a guest `blx [table+off]` through a zero word jumps to
+// address 0, which this project spent sessions mistaking for uninitialised
+// C++ vtables in unrelated titles.
+namespace {
+struct AeeHelperSlot {
+  uint32_t offset;
+  const char* name;
+};
+constexpr AeeHelperSlot kAeeHelperSlots[] = {
+      {0x000, "memmove"},
+      {0x004, "memset"},
+      {0x008, "strcpy"},
+      {0x00c, "strcat"},
+      {0x010, "strcmp"},
+      {0x014, "strlen"},
+      {0x018, "strchr"},
+      {0x01c, "strrchr"},
+      {0x020, "sprintf"},
+      {0x024, "wstrcpy"},
+      {0x028, "wstrcat"},
+      {0x02c, "wstrcmp"},
+      {0x030, "wstrlen"},
+      {0x034, "wstrchr"},
+      {0x038, "wstrrchr"},
+      {0x03c, "wsprintf"},
+      {0x040, "strtowstr"},
+      {0x044, "wstrtostr"},
+      {0x048, "wstrtofloat"},
+      {0x04c, "floattowstr"},
+      {0x050, "utf8towstr"},
+      {0x054, "wstrtoutf8"},
+      {0x058, "wstrlower"},
+      {0x05c, "wstrupper"},
+      {0x060, "chartype"},
+      {0x064, "SetupNativeImage"},
+      {0x068, "malloc"},
+      {0x06c, "free"},
+      {0x070, "wstrdup"},
+      {0x074, "realloc"},
+      {0x078, "wwritelongex"},
+      {0x07c, "wstrsize"},
+      {0x080, "wstrncopyn"},
+      {0x084, "OEMStrLen"},
+      {0x088, "OEMStrSize"},
+      {0x08c, "GetAEEVersion"},
+      {0x090, "atoi"},
+      {0x094, "f_op"},
+      {0x098, "f_cmp"},
+      {0x09c, "dbgprintf"},
+      {0x0a0, "wstrcompress"},
+      {0x0a4, "aee_LocalTimeOffset"},
+      {0x0a8, "aee_GetRand"},
+      {0x0ac, "aee_GetTimeMS"},
+      {0x0b0, "aee_GetUpTimeMS"},
+      {0x0b4, "aee_GetSeconds"},
+      {0x0b8, "aee_GetJulianDate"},
+      {0x0bc, "sysfree"},
+      {0x0c0, "GetAppInstance"},
+      {0x0c4, "strtoul"},
+      {0x0c8, "strncpy"},
+      {0x0cc, "strncmp"},
+      {0x0d0, "stricmp"},
+      {0x0d4, "strnicmp"},
+      {0x0d8, "strstr"},
+      {0x0dc, "memcmp"},
+      {0x0e0, "memchr"},
+      {0x0e4, "strexpand"},
+      {0x0e8, "stristr"},
+      {0x0ec, "memstr"},
+      {0x0f0, "wstrncmp"},
+      {0x0f4, "strdup"},
+      {0x0f8, "strbegins"},
+      {0x0fc, "strends"},
+      {0x100, "strchrend"},
+      {0x104, "strchrsend"},
+      {0x108, "memrchr"},
+      {0x10c, "memchrend"},
+      {0x110, "memrchrbegin"},
+      {0x114, "strlower"},
+      {0x118, "strupper"},
+      {0x11c, "wstricmp"},
+      {0x120, "wstrnicmp"},
+      {0x124, "inet_aton"},
+      {0x128, "inet_ntoa"},
+      {0x12c, "swapl"},
+      {0x130, "swaps"},
+      {0x134, "GetFSFree"},
+      {0x138, "GetRAMFree"},
+      {0x13c, "vsprintf"},
+      {0x140, "vsnprintf"},
+      {0x144, "snprintf"},
+      {0x148, "aee_JulianToSeconds"},
+      {0x14c, "strlcpy"},
+      {0x150, "strlcat"},
+      {0x154, "wstrlcpy"},
+      {0x158, "wstrlcat"},
+      {0x15c, "setstaticptr"},
+      {0x160, "f_assignstr"},
+      {0x164, "f_assignint"},
+      {0x168, "wwritelong"},
+      {0x16c, "dbgheapmark"},
+      {0x170, "lockmem"},
+      {0x174, "unlockmem"},
+      {0x178, "dumpheap"},
+      {0x17c, "strtod"},
+      {0x180, "f_calc"},
+      {0x184, "sleep"},
+      {0x188, "getlasterror"},
+      {0x18c, "wgs84_to_degrees"},
+      {0x190, "dbgevent"},
+      {0x194, "aee_IsBadPtr"},
+      {0x198, "aee_basename"},
+      {0x19c, "aee_makepath"},
+      {0x1a0, "aee_splitpath"},
+      {0x1a4, "aee_stribegins"},
+      {0x1a8, "aee_GetUTCSeconds"},
+      {0x1ac, "f_toint"},
+      {0x1b0, "f_get"},
+      {0x1b4, "qsort"},
+      {0x1b8, "trunc"},
+      {0x1bc, "utrunc"},
+      {0x1c0, "err_realloc"},
+      {0x1c4, "err_strdup"},
+      {0x1c8, "inet_pton"},
+      {0x1cc, "inet_ntop"},
+      {0x1d0, "GetALSContext"},
+};
+}  // namespace
+
 void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t memcpy_fn = hle_.Register([this](IArmCore& core) { MemcpyImpl(core); });
   uint32_t memset_fn = hle_.Register([this](IArmCore& core) { MemsetImpl(core); });
@@ -1913,6 +2082,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
   uint32_t strcmp_fn = hle_.Register([this](IArmCore& core) { StrcmpImpl(core); });
+  uint32_t memcmp_fn = hle_.Register([this](IArmCore& core) { MemcmpImpl(core); });
+  uint32_t strexpand_fn = hle_.Register([this](IArmCore& core) { StrexpandImpl(core); });
   uint32_t strcat_fn = hle_.Register([this](IArmCore& core) { StrcatImpl(core); });
   uint32_t strrchr_fn = hle_.Register([this](IArmCore& core) { StrrchrImpl(core); });
   uint32_t atoi_fn = hle_.Register([this](IArmCore& core) { AtoiImpl(core); });
@@ -2055,7 +2226,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kMemsetSlotOffset, memset_fn);
   memory_.Write32(table_address + kStrlenSlotOffset, strlen_fn);
   memory_.Write32(table_address + kStrcpySlotOffset, strcpy_fn);
-  memory_.Write32(table_address + kBoundedStrcpySlotOffset, bounded_strcpy_fn);
+  memory_.Write32(table_address + kBoundedStrcpySlotOffset, strexpand_fn);  // 0x0e4 STREXPAND
   memory_.Write32(table_address + kStrstrSlotOffset, stristr_fn);      // 0x0e8 STRISTR
   memory_.Write32(table_address + kSprintfSlotOffset, sprintf_fn);
   memory_.Write32(table_address + kMallocSlotOffset, malloc_fn);
@@ -2070,7 +2241,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xc, strcat_fn);   // 0x00c STRCAT
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0xdc, unknown_0xdc_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0xdc, memcmp_fn);   // 0x0dc MEMCMP
   memory_.Write32(table_address + kUnknownSlotOffset0x184, sleep_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x1b4, unknown_0x1b4_fn);
   memory_.Write32(table_address + kStrncpySlotOffset, strncpy_fn);
@@ -2113,7 +2284,9 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0x12c, swapl_fn);
   memory_.Write32(table_address + 0x130, swaps_fn);
   memory_.Write32(table_address + 0x134, getfsfree_fn);
-  memory_.Write32(table_address + 0x148, aee_getseconds_fn); // aee_JulianToSeconds alias
+  // 0x148 aee_JulianToSeconds takes a JulianType struct, which this runtime does
+  // not model yet. Leaving GetSeconds here answered a different question with a
+  // plausible number; the gap-filling loop below now installs a named trap. // aee_JulianToSeconds alias
   memory_.Write32(table_address + 0x154, wstrlcpy_fn);
   memory_.Write32(table_address + 0x158, wstrlcat_fn);
   memory_.Write32(table_address + 0x168, wwritelong_fn);
@@ -2163,6 +2336,25 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
         memory_.Write32(table_address + off, autostub_fn);
       }
     }
+  }
+
+  // No helper slot may stay a zero word. Anything the SDK names but this
+  // runtime has not implemented yet gets a trap that identifies itself under
+  // ZEEB_STUB_TRACE and returns 0, instead of sending the guest to address 0.
+  for (const AeeHelperSlot& slot : kAeeHelperSlots) {
+    if (memory_.Read32(table_address + slot.offset) != 0) continue;
+    const char* name = slot.name;
+    uint32_t offset = slot.offset;
+    uint32_t trap = hle_.Register([name, offset](IArmCore& core) {
+      if (std::getenv("ZEEB_STUB_TRACE") != nullptr) {
+        std::fprintf(stderr,
+                     "[stub] AEEHelperFuncs::%-22s off=0x%03x  r0=0x%08x r1=0x%08x r2=0x%08x\n",
+                     name, offset, core.GetRegister(kR0), core.GetRegister(kR1),
+                     core.GetRegister(kR2));
+      }
+      core.SetRegister(kR0, 0);
+    });
+    memory_.Write32(table_address + slot.offset, trap);
   }
   memory_.Write32(module_base - 4, table_address);
 }

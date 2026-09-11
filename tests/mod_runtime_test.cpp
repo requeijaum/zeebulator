@@ -583,45 +583,7 @@ TEST(ModRuntime, StricmpComparesCaseInsensitivelyAndOrdersDifferentStrings) {
   EXPECT_GT(static_cast<int32_t>(hle.CallArmFunction(stricmp_fn, kOther, kLower)), 0);
 }
 
-TEST(ModRuntime, BoundedStrcpyCopiesUpToRequestedLength) {
-  ArmInterpreter cpu;
-  HleRuntime hle(cpu, 0xF0000000, 0x1000);
-  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
-  mod_runtime.Install(kModuleBase, kTableAddress);
-  uint32_t bounded_strcpy_fn = cpu.GetMemory().Read32(kTableAddress + kBoundedStrcpySlotOffset);
 
-  constexpr uint32_t kSrc = 0x80300100;
-  constexpr uint32_t kDest = 0x80300200;
-  const char* text = "hello";
-  for (size_t i = 0; i <= 5; ++i) {
-    cpu.GetMemory().Write8(kSrc + static_cast<uint32_t>(i), static_cast<uint8_t>(text[i]));
-  }
-
-  EXPECT_EQ(hle.CallArmFunction(bounded_strcpy_fn, kSrc, /*n=*/6, kDest, /*cap=*/0x200), kDest);
-  for (size_t i = 0; i <= 5; ++i) {
-    EXPECT_EQ(cpu.GetMemory().Read8(kDest + static_cast<uint32_t>(i)),
-              static_cast<uint8_t>(text[i]))
-        << "byte " << i;
-  }
-}
-
-TEST(ModRuntime, BoundedStrcpyNeverExceedsCap) {
-  ArmInterpreter cpu;
-  HleRuntime hle(cpu, 0xF0000000, 0x1000);
-  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
-  mod_runtime.Install(kModuleBase, kTableAddress);
-  uint32_t bounded_strcpy_fn = cpu.GetMemory().Read32(kTableAddress + kBoundedStrcpySlotOffset);
-
-  constexpr uint32_t kSrc = 0x80300100;
-  constexpr uint32_t kDest = 0x80300200;
-  cpu.GetMemory().Write8(kSrc, 0xAB);
-  cpu.GetMemory().Write8(kSrc + 1, 0xCD);
-  cpu.GetMemory().Write8(kDest + 1, 0x99);  // sentinel: must not be overwritten
-
-  hle.CallArmFunction(bounded_strcpy_fn, kSrc, /*n=*/10, kDest, /*cap=*/1);
-  EXPECT_EQ(cpu.GetMemory().Read8(kDest), 0xAB);
-  EXPECT_EQ(cpu.GetMemory().Read8(kDest + 1), 0x99) << "copied past the cap";
-}
 
 TEST(ModRuntime, MemcpyCopiesExactlyTheRequestedRangeAndReturnsDest) {
   ArmInterpreter cpu;
@@ -977,81 +939,7 @@ TEST(ModRuntime, SprintfWithNoDirectivesCopiesTheLiteralTextUnchanged) {
   EXPECT_EQ(ReadCString(cpu.GetMemory(), kDest), "LOAD ERROR");
 }
 
-TEST(ModRuntime, DecompressGzipInPlaceSlotDecompressesARealGzipStreamAtTheSameAddress) {
-  ArmInterpreter cpu;
-  HleRuntime hle(cpu, 0xF0000000, 0x1000);
-  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
-  mod_runtime.Install(kModuleBase, kTableAddress);
-  uint32_t decompress_fn = cpu.GetMemory().Read32(kTableAddress + kUnknownSlotOffset0xdc);
 
-  // A real-shaped OBM1 header (core/loader/obm1.h): magic "OI", flag
-  // 0x04, bpp 8, width 16, height 8 (both uint16 LE) -- exactly what
-  // real code reads via memcpy immediately after this slot returns.
-  std::vector<uint8_t> original = {'O', 'I', 0x04, 0x08, 16, 0, 8, 0, 0xAA, 0xBB, 0xCC, 0xDD};
-  std::vector<uint8_t> compressed(256);
-  z_stream strm{};
-  ASSERT_EQ(deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
-                          Z_DEFAULT_STRATEGY),
-            Z_OK);
-  strm.next_in = original.data();
-  strm.avail_in = static_cast<uInt>(original.size());
-  strm.next_out = compressed.data();
-  strm.avail_out = static_cast<uInt>(compressed.size());
-  ASSERT_EQ(deflate(&strm, Z_FINISH), Z_STREAM_END);
-  size_t compressed_size = compressed.size() - strm.avail_out;
-  deflateEnd(&strm);
-
-  constexpr uint32_t kBufAddr = 0x80300100;
-  for (size_t i = 0; i < compressed_size; ++i) {
-    cpu.GetMemory().Write8(kBufAddr + static_cast<uint32_t>(i), compressed[i]);
-  }
-
-  EXPECT_EQ(hle.CallArmFunction(decompress_fn, kBufAddr), 0u);
-  for (size_t i = 0; i < original.size(); ++i) {
-    EXPECT_EQ(cpu.GetMemory().Read8(kBufAddr + static_cast<uint32_t>(i)), original[i])
-        << "byte " << i;
-  }
-}
-
-TEST(ModRuntime, DecompressGzipInPlaceSlotHandlesInputLargerThanOneChunk) {
-  ArmInterpreter cpu;
-  HleRuntime hle(cpu, 0xF0000000, 0x1000);
-  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
-  mod_runtime.Install(kModuleBase, kTableAddress);
-  uint32_t decompress_fn = cpu.GetMemory().Read32(kTableAddress + kUnknownSlotOffset0xdc);
-
-  // Larger than the implementation's internal 4096-byte streaming
-  // chunk size, and incompressible (random-ish, not all-zero) so the
-  // real compressed stream is also larger than one chunk -- exercises
-  // both the growable-input and growable-output loop paths.
-  std::vector<uint8_t> original(10000);
-  for (size_t i = 0; i < original.size(); ++i) {
-    original[i] = static_cast<uint8_t>((i * 2654435761u) >> 24);
-  }
-  std::vector<uint8_t> compressed(original.size() + 1024);
-  z_stream strm{};
-  ASSERT_EQ(deflateInit2(&strm, Z_NO_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY),
-            Z_OK);
-  strm.next_in = original.data();
-  strm.avail_in = static_cast<uInt>(original.size());
-  strm.next_out = compressed.data();
-  strm.avail_out = static_cast<uInt>(compressed.size());
-  ASSERT_EQ(deflate(&strm, Z_FINISH), Z_STREAM_END);
-  size_t compressed_size = compressed.size() - strm.avail_out;
-  deflateEnd(&strm);
-  ASSERT_GT(compressed_size, 4096u) << "test fixture didn't actually exceed one chunk";
-
-  constexpr uint32_t kBufAddr = 0x80300100;
-  for (size_t i = 0; i < compressed_size; ++i) {
-    cpu.GetMemory().Write8(kBufAddr + static_cast<uint32_t>(i), compressed[i]);
-  }
-
-  EXPECT_EQ(hle.CallArmFunction(decompress_fn, kBufAddr), 0u);
-  for (size_t i = 0; i < original.size(); ++i) {
-    ASSERT_EQ(cpu.GetMemory().Read8(kBufAddr + static_cast<uint32_t>(i)), original[i])
-        << "byte " << i;
-  }
-}
 
 TEST(ModRuntime, UnknownSlot0x138IsWiredAndSafelyReturnsZero) {
   // Found in Alien Breaker Deluxe (TASKS.md): left unregistered, real
@@ -1367,4 +1255,51 @@ TEST(ModRuntime, HelperSlot0x1acFToIntTruncatesTowardZero) {
   to_words(-2.7, lo, hi);
   uint32_t result = hle.CallArmFunction(f_toint_fn, lo, hi);
   EXPECT_EQ(static_cast<int32_t>(result), -2);
+}
+
+TEST(ModRuntime, MemcmpSlotComparesBytes) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+  // AEEStdLib.h's own AEEHelperFuncs struct puts memcmp at 0x0dc (field 55).
+  // This slot used to run an in-place gzip inflate, identified from a single
+  // Double Dragon call site; the SDK struct settles it. With the wrong binding
+  // every memcmp answered "different" and any buffer whose first bytes looked
+  // like a gzip header was rewritten under the caller.
+  uint32_t a = 0x00091000, b = 0x00092000;
+  const char* left = "zeebo";
+  const char* right = "zeebx";
+  for (uint32_t i = 0; i < 6; ++i) {
+    cpu.GetMemory().Write8(a + i, static_cast<uint8_t>(left[i]));
+    cpu.GetMemory().Write8(b + i, static_cast<uint8_t>(right[i]));
+  }
+  uint32_t slot = cpu.GetMemory().Read32(kTableAddress + 0xdc);
+  EXPECT_EQ(hle.CallArmFunction(slot, a, b, 4), 0u) << "first four bytes match";
+  EXPECT_NE(hle.CallArmFunction(slot, a, b, 5), 0u) << "fifth byte differs";
+}
+
+TEST(ModRuntime, StrexpandSlotWidensBytesToAecharAndBounds) {
+  // AEEStdLib.h: void strexpand(const byte* pSrc, int nCount, AECHAR* pDest,
+  // int nSize). Slot 0x0e4 used to hold a bounded 8-bit copy, so callers that
+  // expected UTF-16 text got half-width bytes.
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime mod_runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  mod_runtime.Install(kModuleBase, kTableAddress);
+
+  uint32_t src = 0x00093000, dest = 0x00094000;
+  const char* text = "hello";
+  for (uint32_t i = 0; i < 6; ++i) cpu.GetMemory().Write8(src + i, static_cast<uint8_t>(text[i]));
+
+  uint32_t slot = cpu.GetMemory().Read32(kTableAddress + 0xe4);
+  hle.CallArmFunction(slot, src, 5, dest, 8);
+  for (uint32_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(cpu.GetMemory().Read16(dest + i * 2), static_cast<uint16_t>(text[i]));
+  }
+  EXPECT_EQ(cpu.GetMemory().Read16(dest + 5 * 2), 0u) << "NUL terminated";
+
+  // nSize counts characters and includes the terminator.
+  hle.CallArmFunction(slot, src, 5, dest, 3);
+  EXPECT_EQ(cpu.GetMemory().Read16(dest + 2 * 2), 0u) << "bounded by nSize";
 }
