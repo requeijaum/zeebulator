@@ -337,7 +337,7 @@ void IShellHle::GetHandlerImpl(IArmCore& core) {
     std::string mime;
     for (uint32_t i = 0; i < 64; ++i) {
       char c = static_cast<char>(memory_.Read8(mime_addr + i));
-      if (c == ' ') break;
+      if (c == '\0') break;
       mime.push_back(c);
     }
     if (mime == "image/png") {
