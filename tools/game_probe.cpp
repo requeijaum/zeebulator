@@ -2218,8 +2218,65 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 5: AdicionarFilho
-  widget_methods[5] = [&cpu](zeebulator::IArmCore& core) {
+  // Geometria por (pai, filho): o bloco de seis palavras do slot 5.
+  // Ver o comentario dentro do handler sobre por que a leitura e VALIDADA em
+  // vez de assumida.
+  auto widget_geometry = std::make_shared<std::map<uint64_t, std::array<uint32_t, 6>>>();
+  widget_methods[5] = [&cpu, widget_geometry](zeebulator::IArmCore& core) {
+    const uint32_t parent = core.GetRegister(zeebulator::kR0);
+    const uint32_t child = core.GetRegister(zeebulator::kR1);
     uint32_t r2 = core.GetRegister(zeebulator::kR2);
+    // Bloco de posicao (documento da roda, secao 6.2): quando o terceiro
+    // argumento e um PONTEIRO, ele aponta seis palavras:
+    //   {x, y, sinalizador, largura, altura, objeto}
+    // O mesmo slot atende cinco classes e nem toda chamada tem essa forma
+    // (algumas passam funcao em r2 e objeto em r3), entao a leitura e
+    // VALIDADA antes de virar estado: alinhado, endereco de guest plausivel, e
+    // geometria dentro de 0..4096 com x+w e y+h dentro da tela. Sem essa
+    // validacao, um valor pequeno como 4 (o getter de passo de lista, logo
+    // abaixo) ou um ponteiro de funcao viraria "posicao" e o desenho iria para
+    // a origem -- que e exatamente o sintoma que o documento descreve
+    // ("tudo era pintado na origem e a tela era um amontoado no canto").
+    // FORMA REAL DA CHAMADA (medida com ZEEB_LOG_WIDGET_ALL no tectoy.mod, seis
+    // chamadas em 50 s passivos):
+    //   r2=0, r3=0x0038ffdc  (lr=0x101cd8)  -> bloco de posicao em r3
+    //   r2=0, r3=0x0038ffa0  (lr=0x1753e8)  -> idem
+    //   r2=1, r3=0xf00006b4  (lr=0x16df7c)  -> outra forma (objeto/ponteiro de trap)
+    //   r2=trap, r3=0x8007c000 (lr=0x1752b4) -> outra forma (r3 e o objeto de fonte)
+    // Ou seja: o ponteiro do bloco e o TERCEIRO argumento (r3) e aparece quando
+    // o segundo (r2) e zero -- que e a mesma regra que o documento da roda
+    // enuncia ("so leia a posicao quando r2 == 0"), so que com o ponteiro no
+    // argumento seguinte. A leitura e validada de qualquer forma: uma forma de
+    // chamada que nao seja geometria nao pode virar estado de desenho.
+    const uint32_t position_ptr = (r2 == 0) ? core.GetRegister(zeebulator::kR3) : 0;
+    if (r2 == 0 && (position_ptr & 3u) == 0 && position_ptr >= 0x1000 &&
+        position_ptr < 0x90000000u) {
+      r2 = position_ptr;
+      auto& m = cpu.GetMemory();
+      std::array<uint32_t, 6> block{};
+      for (int i = 0; i < 6; ++i) block[i] = m.Read32(r2 + i * 4);
+      const uint32_t x = block[0], y = block[1], w = block[3], h = block[4];
+      // Largura/altura ZERADAS sao legitimas: o documento da roda registra que
+      // o widget que se mede sozinho pendura {x, y, 1, 0, 0, ...}, e que gravar
+      // zero por cima do que o slot 7 (SetExtent) ja disse seria o erro. A
+      // primeira versao desta validacao exigia h != 0 e RECUSOU dois blocos
+      // reais (x=148 y=20 e x=0 y=0, ambos com w=h=0) -- comparar com o
+      // documento e que mostrou que o errado era o filtro, nao o guest.
+      const bool plausible = x <= 4096 && y <= 4096 && w <= 4096 && h <= 4096 &&
+                             (w == 0 || x + w <= 4096) && (h == 0 || y + h <= 4096);
+      if (plausible) {
+        (*widget_geometry)[(static_cast<uint64_t>(parent) << 32) | child] = block;
+      }
+      if (std::getenv("ZEEB_LOG_WIDGET_ALL")) {
+        std::fprintf(stderr,
+                     "[wgeom] pai=0x%08x filho=0x%08x ptr=0x%08x -> x=%u y=%u flag=0x%x w=%u h=%u "
+                     "obj=0x%08x %s\n",
+                     parent, child, r2, x, y, block[2], w, h, block[5],
+                     plausible ? "ACEITO" : "RECUSADO (nao parece geometria)");
+      }
+      core.SetRegister(zeebulator::kR0, 0);  // SUCCESS
+      return;
+    }
     if (r2 == 4) {
       // Passo de lista pedido pelo slot 5 (medido em 0x8fa04 do tectoy.mod)
       uint32_t out = core.GetRegister(zeebulator::kR1);
