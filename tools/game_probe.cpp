@@ -3208,12 +3208,14 @@ int main(int argc, char** argv) {
   shell_hle.RegisterFactory(zeebulator::MemAStreamHle::kClsidMemAStream,
                             [&mem_astream_hle]() { return mem_astream_hle.AllocateStream(); });
 
-  auto run_pending_threads_fn = [&](const char* phase_tag) {
+  auto run_pending_threads_fn = [&](const char* phase_tag) -> size_t {
     std::printf("[run_pending_threads] %s check: has=%d\n", phase_tag, thread_hle.HasPendingThreads());
-    if (!thread_hle.HasPendingThreads()) return true;
+    if (!thread_hle.HasPendingThreads()) return 0;
+    size_t ran_count = 0;
     for (uint32_t th_obj : thread_hle.TakePendingThreads()) {
       auto* state = thread_hle.GetThreadState(th_obj);
       if (!state || state->finished) continue;
+      ++ran_count;
 
       std::printf("[run_pending_threads] %s running thread 0x%08x pc=0x%08x sp=0x%08x\n",
                   phase_tag, th_obj, state->resume_pc, state->context[13]);
@@ -3261,7 +3263,7 @@ int main(int argc, char** argv) {
       for (int r = 0; r < 16; ++r) cpu.SetRegister(r, saved_regs[r]);
       cpu.SetCpsr(saved_cpsr);
     }
-    return true;
+    return ran_count;
   };
 
   // Real code fetches "the current app's IShell"/"IDisplay" from an
@@ -4756,8 +4758,11 @@ int main(int argc, char** argv) {
     // plumbing draining it are kept intact as correct, real
     // infrastructure for whoever picks up real controller-driven
     // navigation next.
-    // Run any pending cooperative threads before or between timer ticks
-    run_pending_threads_fn("tick");
+    // Run any pending cooperative threads before or between timer ticks.
+    // Titulos cujo laco principal e orientado a threads (ex. AirRacez, Bajaz,
+    // Boiaz, JetBoardz, Rolimaz, baddudes, hbarrel) executam fatias de thread
+    // em vez de timers IShell -- cada fatia e um avanco real do guest.
+    tick_count += run_pending_threads_fn("tick");
 
     for (const auto& timer :
          (dbg_paused || callback_continuation_active)
