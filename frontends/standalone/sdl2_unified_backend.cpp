@@ -732,4 +732,28 @@ void Sdl2UnifiedBackend::TexImage2D(GLenum target, const GlTextureImage& image) 
                image.height, /*border=*/0, image.format, image.type, image.pixels);
 }
 
+bool Sdl2UnifiedBackend::CaptureScreenshot(const std::string& path) {
+  if (gl_context_ == nullptr) return false;
+  SDL_GL_MakeCurrent(window_, gl_context_);
+  auto BindFramebuffer = reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  if (fbo_ != 0 && BindFramebuffer != nullptr) {
+    BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+  }
+  std::vector<uint8_t> pixels(static_cast<size_t>(width_) * height_ * 3);
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, width_, height_, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+  if (fbo_ != 0 && BindFramebuffer != nullptr) {
+    BindFramebuffer(GL_FRAMEBUFFER, 0);
+  }
+  std::FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return false;
+  std::fprintf(f, "P6\n%d %d\n255\n", width_, height_);
+  // Inverte as linhas (OpenGL le de baixo para cima, PPM escreve de cima para baixo)
+  for (int y = height_ - 1; y >= 0; --y) {
+    std::fwrite(pixels.data() + static_cast<size_t>(y) * width_ * 3, 1, static_cast<size_t>(width_) * 3, f);
+  }
+  std::fclose(f);
+  return true;
+}
+
 }  // namespace zeebulator

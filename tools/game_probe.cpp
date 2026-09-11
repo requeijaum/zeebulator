@@ -4508,31 +4508,37 @@ int main(int argc, char** argv) {
       req->reply.set_value(out);
     } else if (c == "screenshot") {
       std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
-      const auto& fb = display.LastPresentedFramebuffer();
+      bool shot_ok = false;
       int w = display.width(), h = display.height();
-      std::FILE* f = std::fopen(path.c_str(), "wb");
-      if (!f) {
-        req->reply.set_value("{\"ok\":false,\"error\":\"cannot open path\"}");
-      } else {
-        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
-        for (size_t i = 0; i < fb.size(); ++i) {
-          uint16_t px = fb[i];
-          // Expansao 565->888 com replicacao de bits (nao shift lossy): um
-          // 5-bit 0x1F vira 0xFF, nao 0xF8 -- casa o tom do zeebx (que guarda
-          // o framebuffer em RGBA8 e so converte na apresentacao).
-          uint8_t r5 = (px >> 11) & 0x1F;
-          uint8_t g6 = (px >> 5) & 0x3F;
-          uint8_t b5 = px & 0x1F;
-          uint8_t r = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
-          uint8_t g = static_cast<uint8_t>((g6 << 2) | (g6 >> 4));
-          uint8_t b = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
-          uint8_t rgb[3] = {r, g, b};
-          std::fwrite(rgb, 1, 3, f);
+      if (backend.HasRealGlActivity()) {
+        shot_ok = backend.CaptureScreenshot(path);
+      }
+      if (!shot_ok) {
+        const auto& fb = display.LastPresentedFramebuffer();
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        if (f) {
+          std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+          for (size_t i = 0; i < fb.size(); ++i) {
+            uint16_t px = fb[i];
+            uint8_t r5 = (px >> 11) & 0x1F;
+            uint8_t g6 = (px >> 5) & 0x3F;
+            uint8_t b5 = px & 0x1F;
+            uint8_t r = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
+            uint8_t g = static_cast<uint8_t>((g6 << 2) | (g6 >> 4));
+            uint8_t b = static_cast<uint8_t>((b5 << 3) | (b5 >> 2));
+            uint8_t rgb[3] = {r, g, b};
+            std::fwrite(rgb, 1, 3, f);
+          }
+          std::fclose(f);
+          shot_ok = true;
         }
-        std::fclose(f);
+      }
+      if (shot_ok) {
         std::snprintf(buf, sizeof(buf),
                       "{\"ok\":true,\"w\":%d,\"h\":%d,\"path\":\"%s\"}", w, h, path.c_str());
         req->reply.set_value(buf);
+      } else {
+        req->reply.set_value("{\"ok\":false,\"error\":\"cannot capture screenshot\"}");
       }
     } else if (c == "step") {
       long n = req->has_i0 ? req->i0 : 1;

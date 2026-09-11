@@ -94,6 +94,10 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   void SetOverlayVisible(bool visible) { overlay_visible_ = visible; }
   bool OverlayVisible() const { return overlay_visible_; }
 
+  // Captura o quadro atualmente renderizado no FBO/janela OpenGL e salva em PPM.
+  // Permite obter screenshots reais de titulos 3D (OpenGL ES), e nao apenas do IDisplay 2D.
+  bool CaptureScreenshot(const std::string& path);
+
   // Shows `text` as a second overlay line for a few real seconds, then it
   // clears itself -- transient feedback for a hotkey action (e.g. "Scale:
   // 2x", "Saved slot 1"). No-op while the overlay itself is hidden (see
