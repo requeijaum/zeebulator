@@ -66,5 +66,6 @@ a medicao real confirmou que estes 6 titulos estao em plena execucao do laco gue
   - **baddudes**: tick 10 -> 384 (~62 ticks/s)
   - **hbarrel**: tick 28 -> 402 (~62 ticks/s)
 
-Total de titulos com laco de execucao ativo comprovado: **22 titulos**
+Total de titulos com laco de execucao ativo comprovado: **23 titulos**
+  - **bjt**: avanca ticks ativamente (8 -> 53)
   - **fifa09**: avanca ticks ativamente (~62 ticks/s, thread 0x80300064) (de 50 que iniciam).
