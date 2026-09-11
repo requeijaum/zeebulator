@@ -58,7 +58,7 @@ sempre uniforme dentro da mesma família:
 
 | ID / Pasta | Título | Família / Engine | Status Medido no Zeebulator | Próxima Ação Técnica |
 |---|---|---|---|---|
-| `277455` | *Zenonia* | Gamevil WIPI (Nexus2) | **Jogável / Em Progresso** (Mapas carregando após correção de `strstr` e áudio não-reentrante) | Refinar transparência e blits de sprites secundários |
+| `277455` | *Zenonia* | Gamevil WIPI (Nexus2) | **Entra no jogo; não certificado como jogável**. Mapas carregam após `strstr` e áudio não-reentrante; sprites/frames ainda apresentam artefatos. | Medir transparência, blits e estabilidade em sessão longa |
 | `276212` | *Pac-Mania* | Namco GLES 1.1 | **Renderizando Título / Labirinto** (307.200 px / 9.769 cores, sprites em vértices) | Investigar binding e sub-regiões de textura de fantasmas/Pac-Man |
 | `279369` | *Alien Breaker Deluxe* | Vega Mobile | **Renderizando Splash / Menu** (303.042 px / 7.910 cores) | Conectar atlas ATITC diretamente ao pipeline de desenho de texto |
 | `274754` | *Double Dragon* | Brizo Interactive (.ggz) | **Renderizando** (109.788 px / 262 cores, loop de timer ativo a 31 FPS) | Validar transição após tela de título |
@@ -69,7 +69,7 @@ sempre uniforme dentro da mesma família:
 | `279382` | *Zeeboids* | TTD Middleware | Loop de eventos ativo, tela em branco | Idem ao Tênis |
 | `278962` | *Peggle* | PopCap | Loop de eventos ativo, quads sólidos detectados | Implementar apresentação de quads genéricos no backend |
 | `274802` | *Quake* | id Tech / Tectoy | Loop de eventos ativo, splash carregado | Investigar inicialização do contexto de software rasterizer |
-| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Totalmente Funcional** (SQLite preferences e carrossel ativos) | Conectar comandos de lançamento aos módulos filhos |
+| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Boot parcial**: applet, SQLite e widgets iniciais chegam a `EVT_APP_START`; animação, chime, instruções Z-Pad e carrossel não foram comprovados no Zeebulator. | Implementar ISourceUtil/IGetLine e callbacks dos widgets; validar a cadeia de boot |
 | `277495` | *Opera Mini (reksio)*| Opera Software | Loop de eventos ativo (Requer stack de sockets/rede) | Fornecer bridge HLE para sockets TCP/IP |
 
 ---
@@ -85,3 +85,41 @@ sempre uniforme dentro da mesma família:
 3. **Isolamento de Estado de Persistência**: Salvar `.userdata` e abrir bancos SQLite dentro do diretório `/media/.../ROMs/`
    contaminava dumps históricos e falhava em mídias somente-leitura. O redirecionamento para caminhos padrão XDG resolve
    a portabilidade.
+
+
+## Ferramentas de Evidência e Limites da Análise
+
+### `tools/binary_survey.py`
+
+Extrai strings ASCII e UTF-16LE com offsets e, opcionalmente, executa `binwalk`.
+É o primeiro passo para qualquer título: revela arquivos, mensagens de erro,
+CLSID/IID e nomes de engine sem supor que bytes arbitrários sejam código.
+
+### `tools/opcode_stats.py`
+
+Analisa **somente** o trace produzido por `ZEEB_TRACE` (`DebugHooks::OnExec`).
+Não deve ser substituído por `objdump -D` ou Capstone aplicado ao `.mod` inteiro:
+um módulo mistura código, literais, strings, tabelas e dados comprimidos. Uma
+varredura linear de bytes encontrou falsos `CP15`, `SVC` e DSP que desapareceram
+quando a amostra foi limitada a instruções executadas.
+
+Validação inicial da ferramenta, Z-Wheel, trace limitado a 5.000 entradas:
+
+```text
+3.790 instruções executadas; 1.405 PCs distintos; 0 linhas malformadas
+faixa de PC: somente 0x001xxxxx (módulo guest esperado)
+loop mais quente: 0x001008d8..0x001008ec, cópia em blocos, 1.536 execuções
+```
+
+O relatório fornece histograma de nibble alto do PC, entropia de PCs, categorias
+de instrução e PCs quentes. Toda hipótese criada a partir dele deve ter controle
+negativo, conforme `zeebo-lle/notes/STATS_TECHNIQUES.md`.
+
+### Higiene de corpus
+
+O corpus não é automaticamente imutável: versões anteriores do probe gravaram
+`.userdata`, `.savestate`, `.playlog` e bancos SQLite ao lado da ROM. Esses
+artefatos contaminam contagens de arquivos e extensões; 29 registros estáticos
+os continham. A ferramenta agora prefere `~/.local/share/zeebulator/` (ou
+`ZEEB_DATA_DIR`), com leitura compatível do caminho legado. Relatórios futuros
+devem excluir artefatos gerados e registrar mtimes anômalos separadamente.
