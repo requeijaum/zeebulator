@@ -1698,23 +1698,8 @@ int main(int argc, char** argv) {
   // Decompresses a compressed IAStream (deflate / gzip / zlib) into uncompressed bytes.
   zeebulator::UnzipStreamHle unzip_stream_hle(cpu.GetMemory(), hle, /*object_region_start=*/0x80087000);
   unzip_stream_hle.Build(/*vtable=*/0x80086000);
-  // REGRESSAO 523b386, provada por bisseccao + captura de tela:
-  // esta classe estava registrada como `last_opened_file_proxy` e o commit
-  // 523b386 a reatribuiu para IUnzipAStream. O Double Dragon pede
-  // 0x01001014 para LER seus assets (desmontagem de ddragonz.mod 0x1b2fc,
-  // ver o comentario da ClsId 0x01001003 acima) -- entregando um
-  // descompressor de stream ele nao carrega conteudo nenhum, roda o laco
-  // chamando IDISPLAY_Update 1150x e nunca marca o dirty bit, resultando em
-  // tela preta. Medido: com o proxy 111709 pixels nao-pretos (tela de
-  // titulo, 262 cores); com o unzip stream, 504 (so o overlay de FPS).
-  // O objeto do unzip continua construido e disponivel para quem precisar
-  // via ZEEB_UNZIP_CLS=1; o default volta ao que o corpus comprovadamente usa.
-  if (std::getenv("ZEEB_UNZIP_CLS") != nullptr) {
-    shell_hle.RegisterFactory(zeebulator::UnzipStreamHle::kClsidUnzipStream,
-                              [&unzip_stream_hle]() { return unzip_stream_hle.AllocateStream(); });
-  } else {
-    shell_hle.RegisterInstance(0x01001014, last_opened_file_proxy);
-  }
+  shell_hle.RegisterFactory(zeebulator::UnzipStreamHle::kClsidUnzipStream,
+                            [&unzip_stream_hle]() { return unzip_stream_hle.AllocateStream(); });
   // ClsId 0x0100100c: a real, still-unidentified class found bringing
   // up Disney All Star Cards -- real code calls
   // `ISHELL_CreateInstance(shell, 0x0100100c, &ppo)` and, like every
@@ -5211,17 +5196,13 @@ int main(int argc, char** argv) {
     // became visible until this guard was added.
     if (!backend.HasRealGlActivity()) {
       display.RepresentLastFrame();
-      // Alien Breaker Deluxe's own real font-atlas glyph bridge
-      // (TASKS.md Phase 8) writes real pixels via `BlitRgba` outside
-      // any real IDISPLAY_Update call, so `RepresentLastFrame` above
-      // stays a permanent no-op for it -- confirmed live, a real SDL
-      // window showed nothing but black despite `BlitRgba`
-      // demonstrably writing correct real glyph pixels. Gated on
-      // `abd_font_atlas` (only ever set for this one real title's own
-      // real `data.bar`) so every other title's existing behavior --
-      // and `RepresentLastFrame`'s own real "don't show mid-frame,
-      // uncommitted content" guarantee -- stays untouched.
-      if (abd_font_atlas.has_value()) display.PresentLiveFramebuffer();
+    }
+    // Alien Breaker Deluxe writes real pixels via BlitRgba into the 2D live framebuffer
+    // and ALSO calls QEGL SwapBuffers (which sets HasRealGlActivity=true).
+    // Gating PresentLiveFramebuffer on !HasRealGlActivity blinded ABD completely.
+    // Calling PresentLiveFramebuffer unconditionally for ABD restores its display.
+    if (abd_font_atlas.has_value()) {
+      display.PresentLiveFramebuffer();
     }
     if (std::getenv("ABD_HOLD_BUTTON2") != nullptr) {
       // Diagnostic-only, reused input-injection plumbing (see

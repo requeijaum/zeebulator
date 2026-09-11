@@ -7,6 +7,7 @@
 #include "core/brew/interface_object.h"
 #include "core/brew/thread_hle.h"
 #include "core/brew/nid_table.h"
+#include "core/brew/stub_trace.h"
 
 namespace zeebulator {
 
@@ -605,47 +606,47 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
   // BREW MP's later-appended slots, e.g. RegisterSystemCallback onward,
   // are deliberately not included since Zeebo predates that rebrand).
   std::vector<HleRuntime::HleFunction> methods = {
-      Stub,                                            // 0  AddRef
-      Stub,                                            // 1  Release
+      LoggedStub("IShell", 0, "AddRef"),                                            // 0 AddRef
+      LoggedStub("IShell", 1, "Release"),                                            // 1 Release
       [this](IArmCore& c) { CreateInstanceImpl(c); },   // 2  CreateInstance
-      Stub,  // 3  QueryClass
+      LoggedStub("IShell", 3, "QueryClass"),  // 3 QueryClass
       [this](IArmCore& c) { GetDeviceInfoImpl(c); },  // 4  GetDeviceInfo
-      Stub,  // 5  StartApplet
-      Stub,  // 6  CloseApplet
-      Stub,  // 7  CanStartApplet
-      Stub,  // 8  ActiveApplet
-      Stub,  // 9  EnumAppletInit
-      Stub,  // 10 EnumNextApplet
+      LoggedStub("IShell", 5, "StartApplet"),  // 5 StartApplet
+      LoggedStub("IShell", 6, "CloseApplet"),  // 6 CloseApplet
+      LoggedStub("IShell", 7, "CanStartApplet"),  // 7 CanStartApplet
+      LoggedStub("IShell", 8, "ActiveApplet"),  // 8 ActiveApplet
+      LoggedStub("IShell", 9, "EnumAppletInit"),  // 9 EnumAppletInit
+      LoggedStub("IShell", 10, "EnumNextApplet"),  // 10 EnumNextApplet
       [this](IArmCore& c) { SetTimerImpl(c); },     // 11 SetTimer
       [this](IArmCore& c) { CancelTimerImpl(c); },  // 12 CancelTimer
-      Stub,  // 13 GetTimerExpiration
-      Stub,  // 14 CreateDialog
-      Stub,  // 15 GetActiveDialog
-      Stub,  // 16 EndDialog
-      Stub,  // 17 LoadResString
+      LoggedStub("IShell", 13, "GetTimerExpiration"),  // 13 GetTimerExpiration
+      LoggedStub("IShell", 14, "CreateDialog"),  // 14 CreateDialog
+      LoggedStub("IShell", 15, "GetActiveDialog"),  // 15 GetActiveDialog
+      LoggedStub("IShell", 16, "EndDialog"),  // 16 EndDialog
+      LoggedStub("IShell", 17, "LoadResString"),  // 17 LoadResString
       [this](IArmCore& c) { LoadResDataImpl(c); },    // 18 LoadResData
       [this](IArmCore& c) { LoadResObjectImpl(c); },  // 19 LoadResObject
-      Stub,  // 20 FreeResData
+      LoggedStub("IShell", 20, "FreeResData"),  // 20 FreeResData
       [this](IArmCore& c) { SendEventImpl(c); },  // 21 SendEvent
-      Stub,  // 22 Beep
-      Stub,  // 23 GetPrefs
-      Stub,  // 24 SetPrefs
-      Stub,  // 25 GetItemStyle
-      Stub,  // 26 Prompt
-      Stub,  // 27 MessageBox
-      Stub,  // 28 MessageBoxText
-      Stub,  // 29 SetAlarm
-      Stub,  // 30 CancelAlarm
-      Stub,  // 31 AlarmsActive
+      LoggedStub("IShell", 22, "Beep"),  // 22 Beep
+      LoggedStub("IShell", 23, "GetPrefs"),  // 23 GetPrefs
+      LoggedStub("IShell", 24, "SetPrefs"),  // 24 SetPrefs
+      LoggedStub("IShell", 25, "GetItemStyle"),  // 25 GetItemStyle
+      LoggedStub("IShell", 26, "Prompt"),  // 26 Prompt
+      LoggedStub("IShell", 27, "MessageBox"),  // 27 MessageBox
+      LoggedStub("IShell", 28, "MessageBoxText"),  // 28 MessageBoxText
+      LoggedStub("IShell", 29, "SetAlarm"),  // 29 SetAlarm
+      LoggedStub("IShell", 30, "CancelAlarm"),  // 30 CancelAlarm
+      LoggedStub("IShell", 31, "AlarmsActive"),  // 31 AlarmsActive
       [this](IArmCore& c) { GetHandlerImpl(c); },  // 32 GetHandler
-      Stub,  // 33 RegisterHandler
-      Stub,  // 34 RegisterNotify
-      Stub,                                           // 35 Notify
+      LoggedStub("IShell", 33, "RegisterHandler"),  // 33 RegisterHandler
+      LoggedStub("IShell", 34, "RegisterNotify"),  // 34 RegisterNotify
+      LoggedStub("IShell", 35, "Notify"),                                           // 35 Notify
       [this](IArmCore& c) { ResumeImpl(c); },         // 36 Resume
-      Stub,                                           // 37 ForceExit
-      Stub,  // 38 GetPosition
-      Stub,  // 39 CheckPrivLevel
-      Stub,  // 40 IsValidResource
+      LoggedStub("IShell", 37, "ForceExit"),                                           // 37 ForceExit
+      LoggedStub("IShell", 38, "GetPosition"),  // 38 GetPosition
+      LoggedStub("IShell", 39, "CheckPrivLevel"),  // 39 CheckPrivLevel
+      LoggedStub("IShell", 40, "IsValidResource"),  // 40 IsValidResource
       [this](IArmCore& c) { LoadResDataExImpl(c); },  // 41 LoadResDataEx
       // Slots below this point are NOT verified against any real header --
       // unlike 0-41 above, they're only known to exist at all because real
@@ -660,7 +661,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       // HID device scaffold) rather than pinned exactly to slot 43, so the
       // next real call into this range doesn't reproduce the same
       // undersized-vtable crash.
-      Stub,  // 42 RegisterSystemCallback
+      LoggedStub("IShell", 42, "RegisterSystemCallback"),  // 42 RegisterSystemCallback
       // Slot 43: DetectType
       // int DetectType(IShell *po, const void *cpBuf, uint32 *pdwSize, const char *cpszName, const char **pcpszMIME)
       // Confirmed by BREW SDK 4.0.2 headers and zeebx oracle (machine.rs:2209 / aee_slots.rs:55).
@@ -668,12 +669,12 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       [this](IArmCore& c) { DetectTypeImpl(c); },
       [this](IArmCore& c) { GetDeviceInfoExImpl(c); },  // 44 GetDeviceInfoEx
       [this](IArmCore& c) { GetClassItemIdImpl(c); },  // 45 GetClassItemID
-      Stub,  // 46 Obsolete
-      Stub,  // 47 GetProperty
-      Stub,  // 48 SetProperty
-      Stub,  // 49 RegisterEvent
-      Stub,  // 50 Reset
-      Stub,  // 51 AppIsInGroup
+      LoggedStub("IShell", 46, "Obsolete"),  // 46 Obsolete
+      LoggedStub("IShell", 47, "GetProperty"),  // 47 GetProperty
+      LoggedStub("IShell", 48, "SetProperty"),  // 48 SetProperty
+      LoggedStub("IShell", 49, "RegisterEvent"),  // 49 RegisterEvent
+      LoggedStub("IShell", 50, "Reset"),  // 50 Reset
+      LoggedStub("IShell", 51, "AppIsInGroup"),  // 51 AppIsInGroup
   };
   return BuildInterfaceObject(memory_, hle_, vtable_address, object_address, methods);
 }
