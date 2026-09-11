@@ -2110,8 +2110,17 @@ int main(int argc, char** argv) {
   constexpr uint32_t kWidgetVtable = 0x8006C000;
   constexpr uint32_t kWidgetObject = 0x8006D000;
   constexpr uint32_t kWidgetChildBase = 0x8006D100;  // filhos entregues pelo 0x800
-  auto widget_props = std::make_shared<std::map<uint32_t, uint32_t>>();
-  auto widget_children = std::make_shared<std::map<uint32_t, uint32_t>>();
+  // ATENCAO (bug corrigido): as duas tabelas sao indexadas por (this, id), NAO
+  // so por id. O codigo antigo usava `id` puro, como se existisse UM widget no
+  // sistema. Existem varios: a instrumentacao mostrou o guest falando com
+  // 0x8006d000, 0x8006d100, 0x8006d140 e 0x8006c000 na MESMA execucao, e o
+  // item 0x5000 e justamente o que cada formulario usa para pendurar o seu
+  // conteudo. Com a tabela compartilhada, pendurar o item 0x5000 de um widget
+  // sobrescrevia o do outro e as propriedades numericas vazavam entre eles --
+  // exatamente o tipo de colisao que o documento da roda descreve ao separar
+  // "propriedade numerica" de "objeto pendurado".
+  auto widget_props = std::make_shared<std::map<uint64_t, uint32_t>>();
+  auto widget_children = std::make_shared<std::map<uint64_t, uint32_t>>();
   // Estrutura para armazenar tratadores de eventos de widget (slot 4) e desenho (slot 16)
   struct WidgetHandler { uint32_t function = 0; uint32_t context = 0; };
   auto widget_handlers = std::make_shared<std::map<uint32_t, WidgetHandler>>();
@@ -2130,23 +2139,27 @@ int main(int argc, char** argv) {
 
   // Slot 3: Acessador (le/grava propriedades e filhos)
   widget_methods[3] = [&cpu, widget_props, widget_children](zeebulator::IArmCore& core) {
+    const uint32_t this_obj = core.GetRegister(zeebulator::kR0);
     const uint32_t selector = core.GetRegister(zeebulator::kR1);
     const uint32_t id = core.GetRegister(zeebulator::kR2);
     const uint32_t value = core.GetRegister(zeebulator::kR3);
+    // Chave por (this, id): ver o comentario das duas tabelas acima.
+    const uint64_t key = (static_cast<uint64_t>(this_obj) << 32) | id;
     constexpr uint32_t kPrimeiroObjeto = 0x5000;
     if (selector == 0x800) {
       // Itens tipados (comprovado no Zeebx e disassembly de AnimationVideo_Form):
       // id >= 0x5000 sao objetos/widgets; abaixo de 0x5000 sao numeros/propriedades!
       if (id >= kPrimeiroObjeto) {
-        auto it = widget_children->find(id);
+        auto it = widget_children->find(key);
         if (it == widget_children->end()) {
-          const uint32_t child = kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
+          const uint32_t child =
+              kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
           cpu.GetMemory().Write32(child, kWidgetVtable);  // filho e outro widget
-          it = widget_children->emplace(id, child).first;
+          it = widget_children->emplace(key, child).first;
         }
         if (value != 0) cpu.GetMemory().Write32(value, it->second);
       } else {
-        auto it = widget_props->find(id);
+        auto it = widget_props->find(key);
         uint32_t val = (it != widget_props->end()) ? it->second : 0;
         if (value != 0) cpu.GetMemory().Write32(value, val);
       }
@@ -2154,13 +2167,13 @@ int main(int argc, char** argv) {
       return;
     }
     if (selector == 0x801) {
-      (*widget_props)[id] = value;
+      (*widget_props)[key] = value;
       core.SetRegister(zeebulator::kR0, 1);
       return;
     }
     // Seletor 0x711: grava propriedade
     if (selector == 0x711) {
-      (*widget_props)[0x711] = value;
+      (*widget_props)[key] = value;
       core.SetRegister(zeebulator::kR0, 1);
       return;
     }
@@ -2278,6 +2291,29 @@ int main(int argc, char** argv) {
   widget_methods[17] = [](zeebulator::IArmCore& core) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
+  // Instrumentacao pedida pelo documento da roda (secao 5.1): "por callback,
+  // entrou / voltou / abortou, e por que". Recusar um slot aborta o callback do
+  // jogo em SILENCIO -- quem abortou foi o emulador, nao o guest, entao nao ha
+  // nada no log do jogo. Com ZEEB_LOG_WIDGET_ALL=1 cada chamada de cada slot
+  // sai com argumentos, chamador e valor devolvido. Envolve ANTES do
+  // BuildInterfaceObject para que a vtable aponte para o envoltorio.
+  if (std::getenv("ZEEB_LOG_WIDGET_ALL") != nullptr) {
+    for (size_t i = 0; i < widget_methods.size(); ++i) {
+      zeebulator::HleRuntime::HleFunction inner = widget_methods[i];
+      widget_methods[i] = [i, inner](zeebulator::IArmCore& core) {
+        const uint32_t a0 = core.GetRegister(zeebulator::kR0);
+        const uint32_t a1 = core.GetRegister(zeebulator::kR1);
+        const uint32_t a2 = core.GetRegister(zeebulator::kR2);
+        const uint32_t a3 = core.GetRegister(zeebulator::kR3);
+        const uint32_t lr = core.GetRegister(zeebulator::kLR);
+        inner(core);
+        std::fprintf(stderr,
+                     "[wslot] slot=%zu this=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x -> r0=0x%08x\n",
+                     i, a0, a1, a2, a3, lr, core.GetRegister(zeebulator::kR0));
+      };
+    }
+  }
+
   uint32_t widget_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, kWidgetVtable, kWidgetObject, widget_methods);
   // Registra toda a familia de widgets da Z-Wheel
