@@ -200,6 +200,45 @@ palco recusado.
   (`0x101828` handler de boot, `0x178338` carregador chave:valor, `0x1783b8`
   desreferencia nula do `fontsize.map`), as conclusoes concordam.
 
+### Checklist do documento da roda contra o que existe aqui
+
+Documento: `18-a-roda-da-z-wheel.md` (sha `57a6db1375e8`, lido integralmente).
+Cada linha foi conferida no codigo e, quando possivel, medida em execucao.
+
+| Item do documento | Estado no Zeebulator |
+|---|---|
+| §2.1 evento para a propria classe **dentro do CreateInstance** | feito nesta sessao: entrega real ao `HandleEvent`, applet resolvido do `ppObj` |
+| §2.2 SQLite de verdade | ja existia (`SqlHle`, SQLite real ligado, dialeto do jogo) |
+| §2.3 catalogo gravavel (copia de perfil) | ja existia (`.sqldb/` copiada, nunca escreve na midia da ROM) |
+| §2.4 esquema do `tt_dlqueue.db` | ja existia (`DBINFO` + `DLITEMINFO` ao abrir) |
+| §2.5 `preloaded.cfg` existe e vazio | feito nesta sessao; `fontsize.map` ausente confirmado por varredura da NAND |
+| §3 retorno invertido do acessador (`!= 0` = sucesso) | ja existia |
+| §3.1 itens tipados (`>= 0x5000` objeto, `< 0x5000` numero) | ja existia; nesta sessao passou a ser por `(this, id)` |
+| §3.2 familia de classes de widget | ja registrada (`e05 e14 e19 e26 e2a e36 e3f e47` + `e51`) |
+| §4 recusar `0x01006c01` de proposito | fazemos isso; o log mostra a recusa e o fluxo segue |
+| §4 pbuffer com o tamanho dos atributos | **aberto** |
+| §4 `eglGetColorBufferQUALCOMM` devolve pixel cru | **aberto** |
+| §5.1 instrumentar o desfecho de cada callback | feito nesta sessao (`ZEEB_LOG_WIDGET_ALL`) |
+| §5.2 slot 13 = `CreateCompatibleBitmap(&bmp,w,h)` | ja existia |
+| §5.3 acessador chamado com endereco de filho no lugar do seletor | ja existia |
+| §5.4 slot 17 aceito (e segurar a fonte) | aceito; **nao** seguramos referencia da fonte |
+| §5.5 slots 4 e 16 devolvem o registro anterior | feito nesta sessao |
+| §5.6 bitmap do display nao volta para a lista de livres | **aberto / nao verificado** |
+| §5.7 eventos do root devolvem "nao tratei" (0x101, 0x7b0a, 0x7b0e, 0x7b0f) | feito nesta sessao (incluindo o `0x7b0e`) |
+| §6.1 desenho registrado e explicito; tela atual = mais novo com filhos | **aberto** (nao ha desenhador de widget aqui) |
+| §6.2 bloco de posicao do slot 5 | feito nesta sessao, e os valores batem com o documento |
+| §6.3 passo de lista nunca zero | ja existia (18) |
+| §6.3 `GetExtent` do texto | parcial (a fonte devolve 640x50 fixo), **aberto** |
+| §7 teclas `0xe033`/`0xe034` chegando como `EVT_KEY` ao applet | ja existia e confere (`AVK_LEFT`/`AVK_RIGHT` = `0xE033`/`0xE034`) |
+
+### O que o documento nao explica do nosso caso
+
+O erro que trava a Z-Wheel aqui e `EUNABLETOLOAD` (6) na construcao do
+formulario do z-pad. O documento registra esse mesmo ponto com erro **20**
+(`EUNSUPPORTED`, a classe `0x01028e36` recusada). Aqui a classe esta registrada,
+entao o nosso 6 tem outra causa -- a cadeia medida acima. Mesmo sintoma, causa
+diferente, e a leitura do codigo do guest (nao do documento) e que resolve.
+
 ---
 
 ## Lições Aprendidas na Auditoria de Código
