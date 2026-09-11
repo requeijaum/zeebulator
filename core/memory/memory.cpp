@@ -29,6 +29,19 @@ uint8_t Memory::Read8(uint32_t address) const {
 }
 
 uint16_t Memory::Read16(uint32_t address) const {
+  // Mesmo motivo do Read32: duas buscas de pagina viravam uma. Isto esta no
+  // caminho de busca de instrucao do modo Thumb -- ArmInterpreter::Step chama
+  // Read16 uma vez por instrucao Thumb executada.
+  const uint32_t offset = address & kPageMask;
+  if (offset <= kPageSize - 2) {
+    DebugHooks& hooks = DebugHooks::Instance();
+    hooks.OnMemRead(address, 1);
+    hooks.OnMemRead(address + 1, 1);
+    const Page* page = FindPage(address / kPageSize);
+    if (page == nullptr) return 0;
+    const uint8_t* p = page->data() + offset;
+    return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+  }
   return static_cast<uint16_t>(Read8(address)) |
          (static_cast<uint16_t>(Read8(address + 1)) << 8);
 }
@@ -98,6 +111,16 @@ void Memory::Write8(uint32_t address, uint8_t value) {
 }
 
 void Memory::Write16(uint32_t address, uint16_t value) {
+  const uint32_t offset = address & kPageMask;
+  if (offset <= kPageSize - 2) {
+    DebugHooks& hooks = DebugHooks::Instance();
+    hooks.OnMemWrite(address, 1);
+    hooks.OnMemWrite(address + 1, 1);
+    uint8_t* p = MutablePage(address / kPageSize).data() + offset;
+    p[0] = static_cast<uint8_t>(value);
+    p[1] = static_cast<uint8_t>(value >> 8);
+    return;
+  }
   Write8(address, static_cast<uint8_t>(value));
   Write8(address + 1, static_cast<uint8_t>(value >> 8));
 }
