@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <unordered_set>
 
 #include "dynarmic/interface/A32/a32.h"
@@ -144,10 +145,30 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
     MemoryWrite32(a + 4, std::uint32_t(v >> 32));
   }
 
-  // ARM SVC implements semihosting in ArmInterpreter; titles have not reached
-  // it through the JIT yet, so preserve the prior inert callback until its ABI
-  // is implemented rather than introducing an unverified incompatibility.
-  void CallSVC(std::uint32_t /*swi*/) override {}
+  // ARM semihosting mirrors ArmInterpreter::ExecuteSwi exactly for the
+  // supported Angel operations. Dynarmic invokes this from generated code, so
+  // replicate the observable R0/memory/log behavior here rather than discard it.
+  void CallSVC(std::uint32_t /*swi*/) override {
+    if (jit == nullptr || memory == nullptr) return;
+    uint32_t op = jit->Regs()[kR0];
+    uint32_t arg = jit->Regs()[kR1];
+    if (op == 0x03) {  // SYS_WRITEC
+      if (std::getenv("ZEEB_LOG_SEMIHOSTING")) {
+        std::fprintf(stderr, "%c", static_cast<char>(memory->Read8(arg)));
+      }
+    } else if (op == 0x04) {  // SYS_WRITE0
+      if (std::getenv("ZEEB_LOG_SEMIHOSTING")) {
+        std::string text;
+        for (uint32_t i = 0; i < 4096; ++i) {
+          char c = static_cast<char>(memory->Read8(arg + i));
+          if (c == 0) break;
+          text.push_back(c);
+        }
+        std::fprintf(stderr, "%s", text.c_str());
+      }
+    }
+    jit->Regs()[kR0] = 0;  // semihosting success, same as ArmInterpreter
+  }
   void ExceptionRaised(std::uint32_t pc, Dynarmic::A32::Exception e) override {
     // MemoryReadCode returning nullopt in the trap range makes the frontend
     // emit a NoExecuteFault exception at the trap PC. That is our block-mode

@@ -73,6 +73,28 @@ TEST(DynarmicArmCore, RunMatchesInterpreter) {
   EXPECT_EQ(jit.GetRegister(kR2), 12u);
 }
 
+TEST(DynarmicArmCore, SemihostingSvcMatchesInterpreter) {
+  constexpr uint32_t kSvc0 = 0xEF000000;  // ARM SVC #0
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  for (IArmCore* core : {static_cast<IArmCore*>(&interp), static_cast<IArmCore*>(&jit)}) {
+    core->Reset();
+    core->GetMemory().Write32(0, kSvc0);
+    core->GetMemory().Write8(0x100, 'O');
+    core->GetMemory().Write8(0x101, 'K');
+    core->GetMemory().Write8(0x102, 0);
+    core->SetRegister(kR0, 0x04);  // SYS_WRITE0
+    core->SetRegister(kR1, 0x100);
+    core->SetRegister(kPC, 0);
+  }
+  EXPECT_NO_THROW(interp.Step());
+  EXPECT_NO_THROW(jit.Step());
+  EXPECT_EQ(interp.GetRegister(kR0), 0u);
+  EXPECT_EQ(jit.GetRegister(kR0), 0u);
+  EXPECT_EQ(interp.GetRegister(kPC), jit.GetRegister(kPC));
+  EXPECT_EQ(jit.GetRegister(kPC), 4u);
+}
+
 // Central-risk feature (design doc): the call-out trap must be a pure
 // control-flow decision in the adapter, never entangled with a JIT block.
 // A branch into the trap range must fire the handler with the trapped
