@@ -131,6 +131,24 @@ void ModRuntime::SetContextAddress(uint32_t context_address) {
   third_pending_ = false;
   fourth_pending_ = false;
   fifth_pending_ = false;
+  // ...and the sixth field for the SAME reason, plus one stronger one:
+  // its write is a 32-bit store at applet+0x68, and the TTD engine
+  // (zeebotennis/zeebopeteca/zeeboids/zeebovolei -- shared
+  // TTDMemoryManager middleware) keeps its own "applet is suspended"
+  // BOOLEAN at applet+0x69, i.e. INSIDE those same four bytes. Proven
+  // byte-exact with the probe's own ZEEB_WWATCH/ZEEB_TRACE:
+  // SetSixthContextObject is 0x80069000, so the store leaves 0x90 at
+  // +0x69; the engine's cooperative main thread then reads that byte
+  // at its loop head (zeebotennis 0x00101c10), believes the applet is
+  // paused, and takes the branch that calls IThread::Suspend() WITHOUT
+  // the matching ISHELL_Resume(GetResumeCBK()) the running branch does
+  // -- so the thread parks forever and the title idles with
+  // "tick check: has=0" and zero draw calls.
+  // The sixth object is only ever read during IModule::CreateInstance,
+  // which has already completed by the time SetContextAddress() is
+  // called with the applet pointer, so it was already delivered at the
+  // previous context address and must not be re-written here.
+  sixth_pending_ = false;
 }
 
 constexpr uint32_t kAllocNoZmem = 0x80000000u;
@@ -1747,8 +1765,51 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     // binario (o endereco e montado com `add rX, pc`), entao procurar por
     // literal nao acha o sitio de chamada. Com o LR o endereco sai de graca, e
     // vale para qualquer titulo do corpus, nao so para este caso.
+    // Substitui os argumentos de verdade. Sem isto a linha sai com o
+    // "%s" literal e o diagnostico do guest fica inutil -- e o guest usa
+    // dbgprintf justamente para nomear o que faltou (p.ex. zenonia:
+    // "::: '%s' resource not found! :::"). Args em r1/r2/r3, na ordem,
+    // igual ao resto da familia DBGPRINTF deste mesmo slot.
+    const uint32_t argv_regs[3] = {core.GetRegister(kR1), core.GetRegister(kR2),
+                                   core.GetRegister(kR3)};
+    int argi = 0;
+    std::string msg;
+    for (size_t i = 0; i < fmt.size(); ++i) {
+      if (fmt[i] != '%' || i + 1 >= fmt.size()) { msg.push_back(fmt[i]); continue; }
+      // pula flags/largura/precisao para achar o conversor
+      size_t j = i + 1;
+      while (j < fmt.size() && std::strchr("-+ #0123456789.lhz", fmt[j])) ++j;
+      if (j >= fmt.size()) { msg.push_back(fmt[i]); continue; }
+      char conv = fmt[j];
+      if (conv == '%') { msg.push_back('%'); i = j; continue; }
+      uint32_t a = (argi < 3) ? argv_regs[argi] : 0;
+      ++argi;
+      char buf[64];
+      switch (conv) {
+        case 's': {
+          if (a == 0) { msg += "(null)"; break; }
+          for (uint32_t k = 0; k < 256; ++k) {
+            char c = static_cast<char>(memory_.Read8(a + k));
+            if (!c) break;
+            msg.push_back(c);
+          }
+          break;
+        }
+        case 'd': case 'i':
+          std::snprintf(buf, sizeof(buf), "%d", static_cast<int32_t>(a)); msg += buf; break;
+        case 'u':
+          std::snprintf(buf, sizeof(buf), "%u", a); msg += buf; break;
+        case 'x': case 'X': case 'p':
+          std::snprintf(buf, sizeof(buf), "0x%08x", a); msg += buf; break;
+        case 'c':
+          msg.push_back(static_cast<char>(a & 0xff)); break;
+        default:
+          msg.push_back('%'); msg.push_back(conv); --argi; break;
+      }
+      i = j;
+    }
     std::printf("[guest dbgprintf] %s (args: r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x)\n",
-                fmt.c_str(), core.GetRegister(kR1), core.GetRegister(kR2),
+                msg.c_str(), core.GetRegister(kR1), core.GetRegister(kR2),
                 core.GetRegister(kR3), core.GetRegister(kLR));
     core.SetRegister(kR0, 0);
   });
