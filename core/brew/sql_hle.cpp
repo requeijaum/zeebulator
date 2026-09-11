@@ -310,9 +310,14 @@ void SqlHle::Exec(IArmCore& core) {
         core.SetRegister(kR0, kEFailed);
         return;
       }
-      const uint32_t result = hle_.CallArmFunction(callback, context,
-                                                   static_cast<uint32_t>(column_count),
-                                                   values_array, names_array);
+      // ISQL::Exec callbacks are synchronous by API contract, but this HLE
+      // handler itself was entered from guest code. The ordinary helper call
+      // replaces PC/LR with its return sentinel and never restores the outer
+      // SQL call, skipping the rest of the caller (Z-Wheel then never reached
+      // tectoy.cfg/boot animation). Preserve CPU context, not callback memory
+      // writes, which are the point of the callback.
+      const uint32_t result = hle_.CallArmFunctionPreservingContext(
+          callback, context, static_cast<uint32_t>(column_count), values_array, names_array);
       // Callback != 0 aborta a consulta, como no sqlite3_exec.
       if (result != 0) aborted = true;
     }

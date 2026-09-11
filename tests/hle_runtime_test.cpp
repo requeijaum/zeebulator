@@ -78,3 +78,29 @@ TEST(HleRuntime, ReadStackArgReadsBeyondFirstFourRegisters) {
   EXPECT_EQ(HleRuntime::ReadStackArg(cpu, 0), 0xAAAAAAAAu);
   EXPECT_EQ(HleRuntime::ReadStackArg(cpu, 1), 0xBBBBBBBBu);
 }
+
+
+TEST(HleRuntime, PreservingContextNestedGuestCallKeepsOuterRegistersAndMemoryWrites) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  uint32_t callback = hle.Register([](zeebulator::IArmCore& c) {
+    c.GetMemory().Write32(0x2800, 0xC0DEC0DE);  // callback side effect survives
+    c.SetRegister(zeebulator::kR4, 0xDEADBEEF);
+    c.SetRegister(zeebulator::kR0, 0x12345678);
+  });
+  bool outer_context_preserved = false;
+  uint32_t outer = hle.Register([&](zeebulator::IArmCore& c) {
+    const uint32_t r1 = c.GetRegister(zeebulator::kR1);
+    const uint32_t r4 = c.GetRegister(zeebulator::kR4);
+    const uint32_t lr = c.GetRegister(zeebulator::kLR);
+    const uint32_t result = hle.CallArmFunctionPreservingContext(callback, 1, 2, 3, 4);
+    outer_context_preserved = c.GetRegister(zeebulator::kR1) == r1 && c.GetRegister(zeebulator::kR4) == r4 &&
+                              c.GetRegister(zeebulator::kLR) == lr;
+    c.SetRegister(zeebulator::kR0, result);
+  });
+  cpu.SetRegister(zeebulator::kR4, 0xABCD1234);
+  EXPECT_EQ(hle.CallArmFunction(outer, 0, 0xCAFEBABE), 0x12345678u);
+  EXPECT_TRUE(outer_context_preserved);
+  EXPECT_EQ(cpu.GetMemory().Read32(0x2800), 0xC0DEC0DEu);
+}
+

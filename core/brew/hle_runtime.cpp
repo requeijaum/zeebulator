@@ -1,5 +1,7 @@
 #include "core/brew/hle_runtime.h"
 
+#include <array>
+
 #include "core/control/call_stack_tracer.h"
 #include "core/control/debug_sink.h"
 
@@ -237,6 +239,24 @@ uint32_t HleRuntime::CallArmFunction(uint32_t target, uint32_t r0, uint32_t r1,
     core_.Step();
   }
   return core_.GetRegister(kR0);
+}
+
+uint32_t HleRuntime::CallArmFunctionPreservingContext(uint32_t target, uint32_t r0,
+                                                         uint32_t r1, uint32_t r2,
+                                                         uint32_t r3) {
+  std::array<uint32_t, 16> saved{};
+  for (int i = 0; i < 16; ++i) saved[static_cast<size_t>(i)] = core_.GetRegister(i);
+  const uint32_t saved_cpsr = core_.GetCpsr();
+  try {
+    const uint32_t result = CallArmFunction(target, r0, r1, r2, r3);
+    for (int i = 0; i < 16; ++i) core_.SetRegister(i, saved[static_cast<size_t>(i)]);
+    core_.SetCpsr(saved_cpsr);
+    return result;
+  } catch (...) {
+    for (int i = 0; i < 16; ++i) core_.SetRegister(i, saved[static_cast<size_t>(i)]);
+    core_.SetCpsr(saved_cpsr);
+    throw;
+  }
 }
 
 uint32_t HleRuntime::ReadStackArg(IArmCore& core, uint32_t index) {

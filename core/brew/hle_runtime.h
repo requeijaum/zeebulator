@@ -56,6 +56,14 @@ class HleRuntime {
   uint32_t CallArmFunction(uint32_t target, uint32_t r0 = 0, uint32_t r1 = 0,
                             uint32_t r2 = 0, uint32_t r3 = 0);
 
+  // Calls guest code from inside an HLE handler without destroying the outer
+  // guest context. Memory side effects deliberately remain visible; only the
+  // CPU register file/CPSR/PC is restored. Needed for synchronous guest
+  // callbacks such as ISQL::Exec row callbacks.
+  uint32_t CallArmFunctionPreservingContext(uint32_t target, uint32_t r0 = 0,
+                                             uint32_t r1 = 0, uint32_t r2 = 0,
+                                             uint32_t r3 = 0);
+
   // Reads a stack-passed argument (the 5th AAPCS argument and onward)
   // relative to the current SP, for use inside an HleFunction. index 0 =
   // the 5th argument overall (the first one that didn't fit in R0-R3).
