@@ -29,7 +29,6 @@ constexpr uint32_t kFreeSlotOffset = 0x6c;
 constexpr uint32_t kGetUpTimeMsSlotOffset = 0xb0;
 constexpr uint32_t kGetAppContextSlotOffset = 0xc0;
 constexpr uint32_t kDbgPrintfSlotOffset = 0x9c;
-constexpr uint32_t kMemcpyAliasSlotOffset = 0x44;
 constexpr uint32_t kReallocSlotOffset = 0x74;
 constexpr uint32_t kUnknownSlotOffset0x40 = 0x40;
 constexpr uint32_t kUnknownSlotOffset0x50 = 0x50;
@@ -358,10 +357,20 @@ void ModRuntime::MemcpyImpl(IArmCore& core) {
     core.SetRegister(kR0, dest);
     return;
   }
-  for (uint32_t i = 0; i < count; ++i) {
-    memory_.Write8(dest + i, memory_.Read8(src + i));
+  // AEEHelperFuncs slot 0 is MEMMOVE (zeemu AEEHelperTable.cpp lists
+  // {0x000, "memmove"}), so overlapping regions must survive. A forward byte
+  // loop corrupts dest > src overlaps, which is exactly the shape scrolling
+  // and ring-buffer code uses.
+  if (dest > src && dest < src + count) {
+    for (uint32_t i = count; i-- > 0;) {
+      memory_.Write8(dest + i, memory_.Read8(src + i));
+    }
+  } else {
+    for (uint32_t i = 0; i < count; ++i) {
+      memory_.Write8(dest + i, memory_.Read8(src + i));
+    }
   }
-  core.SetRegister(kR0, dest);  // memcpy returns its first argument
+  core.SetRegister(kR0, dest);  // memmove returns its first argument
 }
 
 void ModRuntime::MemsetImpl(IArmCore& core) {
@@ -1339,6 +1348,90 @@ void ModRuntime::StrchrImpl(IArmCore& core) {
   }
 }
 
+// AEEHelperFuncs slot 0x010 is STRCMP (zeemu AEEHelperTable.cpp). It used to be
+// a blind no-op here, which answers "equal" for every comparison a title makes.
+void ModRuntime::StrcmpImpl(IArmCore& core) {
+  uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1);
+  for (;;) {
+    uint8_t ca = memory_.Read8(a++), cb = memory_.Read8(b++);
+    if (ca != cb || ca == 0 || cb == 0) {
+      core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(ca) -
+                                                  static_cast<int32_t>(cb)));
+      return;
+    }
+  }
+}
+
+// 0x00c STRCAT: appends src to the end of dest and returns dest.
+void ModRuntime::StrcatImpl(IArmCore& core) {
+  uint32_t dest = core.GetRegister(kR0), src_ptr = core.GetRegister(kR1);
+  uint32_t end = dest;
+  while (memory_.Read8(end) != 0) ++end;
+  for (;;) {
+    uint8_t c = memory_.Read8(src_ptr++);
+    memory_.Write8(end++, c);
+    if (c == 0) break;
+  }
+  core.SetRegister(kR0, dest);
+}
+
+// 0x01c STRRCHR: last occurrence of a character, NULL when absent.
+void ModRuntime::StrrchrImpl(IArmCore& core) {
+  uint32_t s = core.GetRegister(kR0);
+  uint8_t needle = static_cast<uint8_t>(core.GetRegister(kR1));
+  uint32_t found = 0;
+  for (uint32_t p = s;; ++p) {
+    uint8_t c = memory_.Read8(p);
+    if (c == needle) found = p;
+    if (c == 0) break;
+  }
+  core.SetRegister(kR0, found);
+}
+
+// 0x090 ATOI: decimal integer parse with optional sign and leading spaces.
+void ModRuntime::AtoiImpl(IArmCore& core) {
+  uint32_t p = core.GetRegister(kR0);
+  while (true) {
+    uint8_t c = memory_.Read8(p);
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++p; continue; }
+    break;
+  }
+  bool negative = false;
+  uint8_t sign = memory_.Read8(p);
+  if (sign == '+' || sign == '-') { negative = sign == '-'; ++p; }
+  int64_t value = 0;
+  for (;;) {
+    uint8_t c = memory_.Read8(p++);
+    if (c < '0' || c > '9') break;
+    value = value * 10 + (c - '0');
+    if (value > 0x7fffffffll) { value = 0x7fffffffll; break; }
+  }
+  if (negative) value = -value;
+  core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(value)));
+}
+
+// 0x0e8 STRISTR: case-insensitive substring search. This slot used to hold the
+// case-sensitive STRSTR, so a title looking for "MENU" inside "menu_select"
+// found nothing.
+void ModRuntime::StristrImpl(IArmCore& core) {
+  auto lower = [](uint8_t c) { return static_cast<uint8_t>(std::tolower(c)); };
+  uint32_t haystack = core.GetRegister(kR0), needle = core.GetRegister(kR1);
+  if (memory_.Read8(needle) == 0) {
+    core.SetRegister(kR0, haystack);
+    return;
+  }
+  for (uint32_t start = haystack; memory_.Read8(start) != 0; ++start) {
+    uint32_t a = start, b = needle;
+    for (;;) {
+      uint8_t cb = memory_.Read8(b);
+      if (cb == 0) { core.SetRegister(kR0, start); return; }
+      if (lower(memory_.Read8(a)) != lower(cb)) break;
+      ++a; ++b;
+    }
+  }
+  core.SetRegister(kR0, 0);
+}
+
 void ModRuntime::StricmpImpl(IArmCore& core) {
   // int stricmp(const char *a, const char *b) -- AEEHelperFuncs offset
   // 0xd0 in the official SDK. BREW game code uses this for case-insensitive
@@ -1818,8 +1911,12 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t wstrtostr_fn = hle_.Register([this](IArmCore& core) { WstrtostrImpl(core); });
   uint32_t wstrncopyn_fn = hle_.Register([this](IArmCore& core) { WstrncopynImpl(core); });
   uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0xc_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
+  uint32_t strcmp_fn = hle_.Register([this](IArmCore& core) { StrcmpImpl(core); });
+  uint32_t strcat_fn = hle_.Register([this](IArmCore& core) { StrcatImpl(core); });
+  uint32_t strrchr_fn = hle_.Register([this](IArmCore& core) { StrrchrImpl(core); });
+  uint32_t atoi_fn = hle_.Register([this](IArmCore& core) { AtoiImpl(core); });
+  uint32_t stristr_fn = hle_.Register([this](IArmCore& core) { StristrImpl(core); });
   uint32_t unknown_0xdc_fn =
       hle_.Register([this](IArmCore& core) { DecompressGzipInPlaceImpl(core); });
   uint32_t sleep_fn = hle_.Register([this](IArmCore& core) { SleepImpl(core); });
@@ -1837,28 +1934,9 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   // resource is compressed. With STRCMP every name answered "different" (nonzero),
   // so the loader tried to inflate plain files such as `map/073.map`, failed and
   // returned NULL -- the game then read its map header from guest address 0.
-  uint32_t unknown_0xd8_fn = hle_.Register([](IArmCore& core) {
-    uint32_t haystack = core.GetRegister(kR0), needle = core.GetRegister(kR1);
-    auto& mem = core.GetMemory();
-    if (mem.Read8(needle) == 0) {
-      core.SetRegister(kR0, haystack);
-      return;
-    }
-    for (uint32_t start = haystack; mem.Read8(start) != 0; ++start) {
-      uint32_t a = start, b = needle;
-      for (;;) {
-        uint8_t cb = mem.Read8(b);
-        if (cb == 0) {
-          core.SetRegister(kR0, start);  // real strstr returns the match position
-          return;
-        }
-        if (mem.Read8(a) != cb) break;
-        ++a;
-        ++b;
-      }
-    }
-    core.SetRegister(kR0, 0);  // not found
-  });
+  // 0x0d8 STRSTR (zeemu AEEHelperTable.cpp; Zenonia asks
+  // [0xd8](name, ".zt1") to decide whether a resource is compressed).
+  uint32_t unknown_0xd8_fn = strstr_fn;
   uint32_t unknown_0x34_fn = hle_.Register([this](IArmCore& core) { WstrchrImpl(core); });
   uint32_t wstrrchr_fn = hle_.Register([this](IArmCore& core) { WstrrchrImpl(core); });
   uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
@@ -1929,8 +2007,6 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     core.SetRegister(kR0, data + data_off);
   });
   // slot 0xcc is strncmp (strncmp_fn registered above)
-  uint32_t unknown_0x90_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t unknown_0x10_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   // Real, confirmed gap: Alien Breaker Deluxe's own real per-object init
   // loop (abd.mod 0x10619c and 0x106150, both `blx [runtime_table+0x1c]`)
   // jumps through this slot unconditionally once its own real per-object
@@ -1938,7 +2014,6 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   // bring-up, TASKS.md). Left unregistered, this is a null-pointer jump
   // -- registered as a safe no-op, same precedent as every other single-
   // call-site gap in this table (e.g. 0x138 above).
-  uint32_t unknown_0x1c_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   // Real, confirmed gap, resolved: Alien Breaker Deluxe's own real
   // menu-input handling (abd.mod 0x108d98, `blx [runtime_table+0x20]`)
   // reached this slot on a repeated/rapid re-press of the menu confirm
@@ -1970,18 +2045,18 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   // real execution reach the real entity-creation call that follows,
   // instead of branching into what disassembly shows is a real
   // "skip this candidate, advance to the next linked entity" path.
-  uint32_t check_object_flag_0xa8_fn = hle_.Register([](IArmCore& core) {
-    uint32_t buffer = core.GetRegister(kR0);
-    core.GetMemory().Write8(buffer, 0);
-    core.SetRegister(kR0, 0);
-  });
-  memory_.Write32(table_address + kMemcpySlotOffset, memcpy_fn);
-  memory_.Write32(table_address + kMemcpyAliasSlotOffset, memcpy_fn);
+  // AEEHelperFuncs 0x0a8 is aee_GetRand(byte *pBuf, int nLen) (zeemu
+  // AEEHelperTable.cpp). A previous hack registered a "write one zero byte"
+  // stub here for Alien Breaker Deluxe's ball spawn -- which is simply
+  // GetRand(buf, 1) followed by `tst r0,#7`. That stub overwrote the real
+  // implementation for the whole corpus, so every title's randomness was a
+  // constant zero.
+    memory_.Write32(table_address + kMemcpySlotOffset, memcpy_fn);
   memory_.Write32(table_address + kMemsetSlotOffset, memset_fn);
   memory_.Write32(table_address + kStrlenSlotOffset, strlen_fn);
   memory_.Write32(table_address + kStrcpySlotOffset, strcpy_fn);
   memory_.Write32(table_address + kBoundedStrcpySlotOffset, bounded_strcpy_fn);
-  memory_.Write32(table_address + kStrstrSlotOffset, strstr_fn);
+  memory_.Write32(table_address + kStrstrSlotOffset, stristr_fn);      // 0x0e8 STRISTR
   memory_.Write32(table_address + kSprintfSlotOffset, sprintf_fn);
   memory_.Write32(table_address + kMallocSlotOffset, malloc_fn);
   memory_.Write32(table_address + kFreeSlotOffset, free_fn);
@@ -1993,7 +2068,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0x44, wstrtostr_fn);
   memory_.Write32(table_address + 0x80, wstrncopyn_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0xc, unknown_0xc_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0xc, strcat_fn);   // 0x00c STRCAT
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xdc, unknown_0xdc_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x184, sleep_fn);
@@ -2048,18 +2123,19 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0x178, noop_success_fn); // dumpheap
   memory_.Write32(table_address + 0x190, noop_success_fn); // dbgevent
   memory_.Write32(table_address + 0x198, aee_basename_fn);
-  memory_.Write32(table_address + 0x1a8, get_uptime_ms_fn); // aee_GetUTCSeconds
+  // 0x1a8 aee_GetUTCSeconds: seconds, not milliseconds. Feeding uptime in ms
+  // here made every date/time computation in a title read as far future.
+  memory_.Write32(table_address + 0x1a8, aee_getseconds_fn); // aee_GetUTCSeconds
   memory_.Write32(table_address + 0x1c0, err_realloc_fn);
   memory_.Write32(table_address + 0x1c4, err_strdup_fn);
   memory_.Write32(table_address + 0xf4, strdup_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x90, unknown_0x90_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x10, unknown_0x10_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x90, atoi_fn);    // 0x090 ATOI
+  memory_.Write32(table_address + kUnknownSlotOffset0x10, strcmp_fn);  // 0x010 STRCMP
   memory_.Write32(table_address + kUnknownSlotOffset0x34, unknown_0x34_fn);
   memory_.Write32(table_address + 0x38, wstrrchr_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xd8, unknown_0xd8_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x1c, unknown_0x1c_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x1c, strrchr_fn); // 0x01c STRRCHR
   memory_.Write32(table_address + kUnknownSlotOffset0x20, unknown_0x20_fn);
-  memory_.Write32(table_address + kCheckObjectFlagSlotOffset0xa8, check_object_flag_0xa8_fn);
   memory_.Write32(table_address + 0x024, hle_.Register([this](IArmCore& c) { WstrcpyImpl(c); }));
   memory_.Write32(table_address + 0x028, hle_.Register([this](IArmCore& c) { WstrcatImpl(c); }));
   memory_.Write32(table_address + 0x02c, hle_.Register([this](IArmCore& c) { WstrcmpImpl(c); }));
