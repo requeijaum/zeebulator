@@ -973,83 +973,60 @@ int main(int argc, char** argv) {
       const bool log_file = std::getenv("ZEEB_LOG_FILE") != nullptr;
       loose_resolver = [own_dir, log_file](const std::string& basename,
                                            std::vector<uint8_t>& out) -> bool {
-        // Reject empty / traversal names: the resolver matches a bare sibling
-        // filename OR a single-level subdirectory relative path inside the
-        // game's own folder (no `..` traversal, no absolute paths). Several
-        // titles ship a per-game asset subfolder next to the .mod named after
-        // the class ID/title (e.g. Zeeboids' `zeeboiddata/version.txt`) and
-        // request it by that relative path via IFileMgr_OpenFile. The .mod's
-        // own container types are never served as loose assets.
-        if (basename.empty() ||
-            basename.find("..") != std::string::npos ||
-            basename[0] == '/' || basename[0] == '\\') {
+        if (basename.empty() || basename[0] == '/' || basename[0] == '\\') {
           return false;
         }
-        fs::path cand = own_dir / basename;
+        // Resolucao de caminhos relativos e irmaos (ex: "./../quake2res/pak0.pakz",
+        // "../nfsresources/config.ini", "../preyresources/prey3d.bar"):
+        // Normaliza lexicalmente o caminho e assegura que fique contido no
+        // diretorio `mod/` pai (limite de seguranca do sistema de arquivos).
+        fs::path mod_root = own_dir.parent_path();
+        fs::path cand = (own_dir / basename).lexically_normal();
+        auto rel_to_mod = cand.lexically_relative(mod_root);
+        if (rel_to_mod.empty() || rel_to_mod.string().rfind("..", 0) == 0) {
+          return false;
+        }
         std::error_code ec;
         if (!fs::is_regular_file(cand, ec)) {
-          // Case-insensitive match on disk, either directly in the game's
-          // directory (bare filename) or inside a single named subdirectory
-          // (one path separator, e.g. "zeeboiddata/version.txt").
-          bool found = false;
-          size_t sep = basename.find_first_of("/\\");
-          std::string subdir_name = sep == std::string::npos
-                                         ? std::string()
-                                         : basename.substr(0, sep);
-          std::string leaf_name =
-              sep == std::string::npos ? basename : basename.substr(sep + 1);
-          bool has_further_sep =
-              leaf_name.find_first_of("/\\") != std::string::npos;
-          fs::path search_root = own_dir;
-          if (!subdir_name.empty() && !has_further_sep) {
-            // Resolve the subdirectory case-insensitively too.
-            for (const auto& dir_entry : fs::directory_iterator(own_dir, ec)) {
-              if (!dir_entry.is_directory(ec)) continue;
-              std::string dn = dir_entry.path().filename().string();
-              if (dn.size() != subdir_name.size()) continue;
-              bool eq = true;
-              for (size_t i = 0; i < dn.size(); ++i) {
-                if (std::tolower(static_cast<unsigned char>(dn[i])) !=
-                    std::tolower(static_cast<unsigned char>(subdir_name[i]))) {
-                  eq = false;
-                  break;
-                }
-              }
-              if (eq) {
-                search_root = dir_entry.path();
-                break;
-              }
-            }
-          } else if (has_further_sep) {
-            // More than one separator: unsupported depth, bail out.
-            return false;
-          }
-          for (const auto& entry : fs::directory_iterator(search_root, ec)) {
-            if (entry.is_regular_file(ec)) {
-              std::string fn = entry.path().filename().string();
-              if (fn.size() == leaf_name.size()) {
+          // Se o caminho direto nao existe, resolve cada componente insensivel a caixa
+          // a partir de mod_root (ou own_dir), cobrindo pastas irmas e subpastas.
+          fs::path cur = mod_root;
+          bool walked_all = true;
+          for (const auto& part : rel_to_mod) {
+            std::string pstr = part.string();
+            if (pstr == "." || pstr.empty()) continue;
+            if (pstr == "..") { cur = cur.parent_path(); continue; }
+            bool matched_part = false;
+            for (const auto& entry : fs::directory_iterator(cur, ec)) {
+              std::string en = entry.path().filename().string();
+              if (en.size() == pstr.size()) {
                 bool eq = true;
-                for (size_t i = 0; i < fn.size(); ++i) {
-                  if (std::tolower(static_cast<unsigned char>(fn[i])) !=
-                      std::tolower(static_cast<unsigned char>(leaf_name[i]))) {
+                for (size_t i = 0; i < en.size(); ++i) {
+                  if (std::tolower(static_cast<unsigned char>(en[i])) !=
+                      std::tolower(static_cast<unsigned char>(pstr[i]))) {
                     eq = false;
                     break;
                   }
                 }
                 if (eq) {
-                  cand = entry.path();
-                  found = true;
+                  cur = entry.path();
+                  matched_part = true;
                   break;
                 }
               }
             }
+            if (!matched_part) { walked_all = false; break; }
           }
-          if (!found) return false;
+          if (walked_all && fs::is_regular_file(cur, ec)) {
+            cand = cur;
+          } else {
+            return false;
+          }
         }
         std::string lext = cand.extension().string();
         for (auto& c : lext) c = static_cast<char>(std::tolower(c));
-        if (lext == ".mod" || lext == ".pkg" || lext == ".sig" ||
-            lext == ".bar" || lext == ".userdata" || lext == ".savestate" ||
+        if (lext == ".mod" || lext == ".sig" ||
+            lext == ".userdata" || lext == ".savestate" ||
             lext == ".playlog") {
           return false;
         }

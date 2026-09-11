@@ -68,6 +68,12 @@ void FileHle::OpenFileImpl(IArmCore& core) {
   } else if ((mode & kOfmCreate) != 0) {
     auto [inserted, _] = writable_files_.emplace(name, std::vector<uint8_t>{});
     handle = AllocateFileObject(name, &inserted->second, &inserted->second);
+  } else if (!name.empty() && (name.back() == '/' || name.back() == '\\')) {
+    // Abertura de diretorio em modo somente leitura (ex. nfs.mod abrindo "../nfsresources/").
+    // No POSIX e no BREW real open(dir, O_RDONLY) tem exito; devolver um arquivo vazio
+    // satisfaz a verificacao de existencia do diretorio sem falhar a chamada.
+    static const std::vector<uint8_t> empty_dir_data;
+    handle = AllocateFileObject(name, &empty_dir_data);
   }
   if (handle != 0) last_opened_handle_ = handle;
   if (std::getenv("ZEEB_LOG_FILE")) {
