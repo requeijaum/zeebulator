@@ -135,6 +135,37 @@ nem dado corrompido -- e exatamente `AEECLSID_DOWNLOAD`. Nos recusamos essa
 classe hoje, e as duas mensagens "Unable to create instance of IDOWNLOAD" vem
 dai.
 
+### O caminho da string de recurso, e o que ainda falta
+
+A cadeia do formulario do z-pad, medida instrucao por instrucao (trace de
+execucao, nao disassembly linear):
+
+```
+0x16ed60  bl 0x17ec54        ; cria o formulario 0x01028e47, escreve o item 0x5002
+0x17ec54  ... bl 0x17f580    ; monta o conteudo do formulario
+0x17f580  0x17f6f8  ldrsh r1,[r5,#0x24]   ; id do recurso (1178 = "Z-Pad")
+          0x17f700  bl 0x179518            ; (shell, id)
+0x179518  0x179528  bl 0x1785a4  -> SendEvent(0x7b0a, wParam, &resposta)
+          0x179540  bl 0x179594            ; le a string pelo slot 41 do objeto
+          0x179554  bl 0x179290            ; alternativa, tambem falha
+          0x17956c  devolve 0
+0x17f580  0x17f704  cmp r0,#0 ; bne ...
+          0x17f70c  mov r4,#6              ; EUNABLETOLOAD
+```
+
+Duas coisas ficaram provadas nesta sessao: (a) o evento 0x7b0a agora chega ao
+applet e a resposta dele e `applet+0x2ef8` -- exatamente a constante que este
+projeto tinha chumbado como palpite, agora confirmada pelo proprio guest;
+(b) as strings existem e sao legiveis: `tectoyli.brf` id 1178 = "Z-Pad" e
+`tectoy_pt.brf` id 1002 = "Nao foi possivel inicializar.".
+
+O que continua sem resposta: o guest le o ponteiro de funcao que chama de
+`*(*(resposta)) + 0xa4`, e para `resposta = 0x80302f1c` isso da a palavra em
+`0x80001000 + 0xa4` -- dentro do NOSSO objeto de shell, onde ela e zero. Um
+`bx` para zero e exatamente a excursao `pc=0x00000000` que aparece no log
+(recoverable wander, ver abaixo). Ou seja: a forma do objeto que o guest espera
+do evento 0x7b0a ainda nao esta entendida, e e o proximo alvo.
+
 ### Onde a Z-Wheel para agora (bloqueio medido, nao hipotese)
 
 O app passa o gate de 30 ticks do splash (o contador em `[r4+0x30]` do callback
