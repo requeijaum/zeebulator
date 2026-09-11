@@ -1303,3 +1303,24 @@ TEST(ModRuntime, StrexpandSlotWidensBytesToAecharAndBounds) {
   hle.CallArmFunction(slot, src, 5, dest, 3);
   EXPECT_EQ(cpu.GetMemory().Read16(dest + 2 * 2), 0u) << "bounded by nSize";
 }
+
+
+TEST(ModRuntime, Utf8HelperRoundTripsPortugueseText) {
+  // AEEStdLib.h explicitly separates UTF8TOWSTR (0x50) from the byte-local
+  // STRTOWSTR (0x40). Z-Wheel's terms.txt is valid UTF-8 and contains á/ç/ã.
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x1000);
+  ModRuntime runtime(cpu.GetMemory(), hle, kHeapRegion, /*heap_size=*/0x1000, kContextAddress);
+  runtime.Install(kModuleBase, kTableAddress);
+  const uint8_t utf8[] = {'A', 0xc3, 0xa7, 0xc3, 0xa3, 'o', 0};  // "Ação"
+  uint32_t src = 0x00095000, wide = 0x00096000, back = 0x00097000;
+  for (size_t i = 0; i < sizeof(utf8); ++i) cpu.GetMemory().Write8(src + i, utf8[i]);
+  uint32_t to_wide = cpu.GetMemory().Read32(kTableAddress + 0x50);
+  ASSERT_EQ(hle.CallArmFunction(to_wide, src, sizeof(utf8), wide, 32), 1u);
+  EXPECT_EQ(cpu.GetMemory().Read16(wide + 0), 'A');
+  EXPECT_EQ(cpu.GetMemory().Read16(wide + 2), 0x00e7);  // ç
+  EXPECT_EQ(cpu.GetMemory().Read16(wide + 4), 0x00e3);  // ã
+  uint32_t to_utf8 = cpu.GetMemory().Read32(kTableAddress + 0x54);
+  ASSERT_EQ(hle.CallArmFunction(to_utf8, wide, 4, back, 32), 1u);
+  for (size_t i = 0; i < sizeof(utf8); ++i) EXPECT_EQ(cpu.GetMemory().Read8(back + i), utf8[i]);
+}

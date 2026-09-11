@@ -734,6 +734,8 @@ class ModRuntime {
   void ErrReallocImpl(IArmCore& core);
   void ErrStrdupImpl(IArmCore& core);
   void StrtowstrImpl(IArmCore& core);
+  void Utf8towstrImpl(IArmCore& core);
+  void Wstrtoutf8Impl(IArmCore& core);
   void WstrtostrImpl(IArmCore& core);
   void WstrncopynImpl(IArmCore& core);
   void StrcmpImpl(IArmCore& core);

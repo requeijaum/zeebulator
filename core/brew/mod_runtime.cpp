@@ -1261,6 +1261,79 @@ void ModRuntime::ErrStrdupImpl(IArmCore& core) {
   }
 }
 
+// AEEHelperFuncs 0x050 UTF8TOWSTR / 0x054 WSTRTOUTF8 are distinct from
+// STRTOWSTR/WSTRTOSTR. AEEStdLib.h explicitly names them and gives byte sizes
+// for both buffers. Do not reinterpret every char* as UTF-8: config and legacy
+// BREW APIs use byte strings, while terms.txt and network text are UTF-8.
+void ModRuntime::Utf8towstrImpl(IArmCore& core) {
+  uint32_t src = core.GetRegister(kR0);
+  int32_t len = static_cast<int32_t>(core.GetRegister(kR1));
+  uint32_t dst = core.GetRegister(kR2);
+  int32_t dst_bytes = static_cast<int32_t>(core.GetRegister(kR3));
+  if (dst == 0 || dst_bytes < 2 || len < 0) { core.SetRegister(kR0, 0); return; }
+  const uint32_t cap = static_cast<uint32_t>(dst_bytes / 2 - 1);
+  uint32_t in = 0, out = 0;
+  bool ok = true;
+  while (in < static_cast<uint32_t>(len) && out < cap) {
+    uint8_t b0 = memory_.Read8(src + in);
+    if (b0 == 0) break;
+    uint32_t code = 0, need = 0;
+    if (b0 < 0x80) { code = b0; need = 1; }
+    else if (b0 >= 0xc2 && b0 <= 0xdf) { code = b0 & 0x1f; need = 2; }
+    else if (b0 >= 0xe0 && b0 <= 0xef) { code = b0 & 0x0f; need = 3; }
+    else if (b0 >= 0xf0 && b0 <= 0xf4) { code = b0 & 0x07; need = 4; }
+    else { ok = false; break; }
+    if (in + need > static_cast<uint32_t>(len)) { ok = false; break; }
+    for (uint32_t j = 1; j < need; ++j) {
+      uint8_t bx = memory_.Read8(src + in + j);
+      if ((bx & 0xc0) != 0x80) { ok = false; break; }
+      code = (code << 6) | (bx & 0x3f);
+    }
+    if (!ok || (need == 3 && code < 0x800) || (need == 4 && code < 0x10000) ||
+        code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) { ok = false; break; }
+    if (code <= 0xffff) {
+      memory_.Write16(dst + out * 2, static_cast<uint16_t>(code)); ++out;
+    } else {
+      if (out + 1 >= cap) break;
+      code -= 0x10000;
+      memory_.Write16(dst + out * 2, static_cast<uint16_t>(0xd800 + (code >> 10)));
+      memory_.Write16(dst + (out + 1) * 2, static_cast<uint16_t>(0xdc00 + (code & 0x3ff)));
+      out += 2;
+    }
+    in += need;
+  }
+  memory_.Write16(dst + out * 2, 0);
+  core.SetRegister(kR0, ok ? 1u : 0u);  // boolean
+}
+
+void ModRuntime::Wstrtoutf8Impl(IArmCore& core) {
+  uint32_t src = core.GetRegister(kR0);
+  int32_t chars = static_cast<int32_t>(core.GetRegister(kR1));
+  uint32_t dst = core.GetRegister(kR2);
+  int32_t dst_bytes = static_cast<int32_t>(core.GetRegister(kR3));
+  if (dst == 0 || dst_bytes <= 0 || chars < 0) { core.SetRegister(kR0, 0); return; }
+  uint32_t in = 0, out = 0, cap = static_cast<uint32_t>(dst_bytes - 1);
+  bool ok = true;
+  auto put = [&](uint8_t b) { if (out >= cap) return false; memory_.Write8(dst + out++, b); return true; };
+  while (in < static_cast<uint32_t>(chars)) {
+    uint32_t code = memory_.Read16(src + in * 2); ++in;
+    if (code == 0) break;
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (in >= static_cast<uint32_t>(chars)) { ok = false; break; }
+      uint32_t low = memory_.Read16(src + in * 2); ++in;
+      if (low < 0xdc00 || low > 0xdfff) { ok = false; break; }
+      code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+    } else if (code >= 0xdc00 && code <= 0xdfff) { ok = false; break; }
+    if (code < 0x80) ok = put(static_cast<uint8_t>(code));
+    else if (code < 0x800) ok = put(0xc0 | (code >> 6)) && put(0x80 | (code & 0x3f));
+    else if (code < 0x10000) ok = put(0xe0 | (code >> 12)) && put(0x80 | ((code >> 6) & 0x3f)) && put(0x80 | (code & 0x3f));
+    else ok = put(0xf0 | (code >> 18)) && put(0x80 | ((code >> 12) & 0x3f)) && put(0x80 | ((code >> 6) & 0x3f)) && put(0x80 | (code & 0x3f));
+    if (!ok) break;
+  }
+  memory_.Write8(dst + out, 0);
+  core.SetRegister(kR0, ok ? 1u : 0u);
+}
+
 void ModRuntime::StrtowstrImpl(IArmCore& core) {
   // AECHAR *strtowstr(const char *pszIn, AECHAR *pDest, int nSize)
   // nSize is in BYTES, not characters (per Qualcomm SDK / zeebx machine.rs:10156).
@@ -2079,7 +2152,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t strtowstr_fn = hle_.Register([this](IArmCore& core) { StrtowstrImpl(core); });
   uint32_t wstrtostr_fn = hle_.Register([this](IArmCore& core) { WstrtostrImpl(core); });
   uint32_t wstrncopyn_fn = hle_.Register([this](IArmCore& core) { WstrncopynImpl(core); });
-  uint32_t unknown_0x50_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t utf8towstr_fn = hle_.Register([this](IArmCore& core) { Utf8towstrImpl(core); });
+  uint32_t wstrtoutf8_fn = hle_.Register([this](IArmCore& core) { Wstrtoutf8Impl(core); });
   uint32_t stricmp_fn = hle_.Register([this](IArmCore& core) { StricmpImpl(core); });
   uint32_t strcmp_fn = hle_.Register([this](IArmCore& core) { StrcmpImpl(core); });
   uint32_t memcmp_fn = hle_.Register([this](IArmCore& core) { MemcmpImpl(core); });
@@ -2238,7 +2312,8 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + 0x40, strtowstr_fn);
   memory_.Write32(table_address + 0x44, wstrtostr_fn);
   memory_.Write32(table_address + 0x80, wstrncopyn_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x50, unknown_0x50_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x50, utf8towstr_fn); // 0x050 UTF8TOWSTR
+  memory_.Write32(table_address + 0x54, wstrtoutf8_fn); // 0x054 WSTRTOUTF8
   memory_.Write32(table_address + kUnknownSlotOffset0xc, strcat_fn);   // 0x00c STRCAT
   memory_.Write32(table_address + kStricmpSlotOffset, stricmp_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0xdc, memcmp_fn);   // 0x0dc MEMCMP
