@@ -1541,8 +1541,38 @@ int main(int argc, char** argv) {
   // circumstantial evidence, not a confirmed literal match like
   // AEECLSID_GL/EGL/HID above -- doesn't change any behavior either way
   // since the scaffold is generic regardless of the class's real name.
+  // AEECLSID_DIB (0x01001045) / IDIB: Device Independent Bitmap format (AEEIDIB.h).
+  // A struct with public fields that games read directly from guest memory
+  // without going through vtable methods (AEEIDIB.h lines 40-55):
+  //   +00 vtable
+  //   +04 pPaletteMap (u32)
+  //   +08 pBmp (u32)
+  //   +12 pRGB (u32)
+  //   +16 ncTransparent (u32)
+  //   +20 cx (u16) = 640
+  //   +22 cy (u16) = 480
+  //   +24 nPitch (i16) = 1280 (640 * 2)
+  //   +26 cntRGB (u16) = 0
+  //   +28 nDepth (u8) = 16 (bits per pixel)
+  //   +29 nColorScheme (u8) = 16 (IDIB_COLORSCHEME_565, 5-6-5 RGB)
+  //
+  // Root cause of failure in zumar and bjt: both games call
+  // `IBITMAP_QueryInterface(pDeviceBmp, AEECLSID_DIB, &pDIB)` and immediately
+  // inspect byte [pDIB + 29] (nColorScheme). They compare against 16 (RGB565).
+  // If not 16, they abort with "INITIALIZATION FAILED!" and return 2 from the
+  // subsystem factory, leaving game members null and causing a crash on EVT_APP_START.
   uint32_t unknown_0x01001045_obj = zeebulator::BuildGenericStubObject(
       cpu.GetMemory(), hle, /*vtable=*/0x80018000, /*object=*/0x80019000, /*slot_count=*/20);
+  cpu.GetMemory().Write32(0x80019000 + 4, 0);
+  cpu.GetMemory().Write32(0x80019000 + 8, 0);
+  cpu.GetMemory().Write32(0x80019000 + 12, 0);
+  cpu.GetMemory().Write32(0x80019000 + 16, 0);
+  cpu.GetMemory().Write16(0x80019000 + 20, 640);
+  cpu.GetMemory().Write16(0x80019000 + 22, 480);
+  cpu.GetMemory().Write16(0x80019000 + 24, 1280);
+  cpu.GetMemory().Write16(0x80019000 + 26, 0);
+  cpu.GetMemory().Write8(0x80019000 + 28, 16);
+  cpu.GetMemory().Write8(0x80019000 + 29, 16); // IDIB_COLORSCHEME_565
 
   // State for compatible bitmaps created by CreateCompatibleBitmap (slot 13)
   struct CompatBitmapState {
