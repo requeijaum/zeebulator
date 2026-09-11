@@ -1720,8 +1720,13 @@ int main(int argc, char** argv) {
   // version..." e "Failed to init Preferences database". Os bancos que
   // ele quer sao arquivos SQLite reais que vem no proprio pacote do
   // jogo (tt_prefs.db, 4096 bytes, comeca com "SQLite format 3").
-  zeebulator::SqlHle sql_hle(cpu.GetMemory(), hle, /*db_object_region_start=*/0x8006C000,
-                             /*scratch_address=*/0x8006E000, /*scratch_size=*/0x2000);
+  // Faixa dedicada 0x800D0000..0x800E0000 para ISQLMgr / ISQLDatabase.
+  // IMPORTANTE: os enderecos anteriores (0x8006C000 / 0x8006E000) colidiam
+  // frontalmente com kWidgetVtable (0x8006C000) e com sound_obj (0x8006E000).
+  // A cada banco aberto, sql_hle sobrescrevia a vtable do widget, fazendo a
+  // Z-Wheel saltar para um endereco invalido no EVT_APP_START.
+  zeebulator::SqlHle sql_hle(cpu.GetMemory(), hle, /*db_object_region_start=*/0x800D3000,
+                             /*scratch_address=*/0x800D8000, /*scratch_size=*/0x4000);
   {
     // Copia-para-gravavel: o banco original que veio com o jogo nunca e
     // aberto direto, porque o SQLite grava nele (journal, PRAGMA,
@@ -1753,8 +1758,8 @@ int main(int argc, char** argv) {
       return target.string();
     });
   }
-  uint32_t sqlmgr_obj = sql_hle.BuildManager(/*mgr_vtable=*/0x8006A000, /*mgr_object=*/0x8006B000,
-                                             /*db_vtable=*/0x8006F000);
+  uint32_t sqlmgr_obj = sql_hle.BuildManager(/*mgr_vtable=*/0x800D0000, /*mgr_object=*/0x800D1000,
+                                             /*db_vtable=*/0x800D2000);
   shell_hle.RegisterInstance(/*AEECLSID_SQLMGR=*/0x0102c4e8, sqlmgr_obj);
 
   // 0x01028e51 -- o widget da interface da Z-Wheel, inclusive o formulario raiz.
@@ -1832,9 +1837,57 @@ int main(int argc, char** argv) {
   // Continua um scaffold: nenhum slot desta classe foi medido ainda. O objetivo
   // e so parar de recusar a classe, ja que a recusa faz o jogo desistir. Se um
   // slot for exercitado, aparece no ZEEB_HLE_PROFILE.
-  uint32_t collection_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x80071000, /*object=*/0x80072000, /*slot_count=*/24);
+  // 0x0100104f -- a colecao generica da Z-Wheel (ICollection).
+  // Metodos: 0=AddRef, 1=Release, 4=AtEnd, 5=Reset, 7=GetCurrent.
+  // Medido na Z-Wheel: no EVT_APP_START o jogo itera sobre a colecao com
+  // `while (!collection->AtEnd()) { item = collection->GetCurrent(); }`.
+  // Como o stub generico devolvia 0 para o slot 4 (AtEnd), o jogo achava que a
+  // colecao NUNCA terminava e rodava em laco infinito (13,6 milhoes de chamadas!).
+  // Para uma colecao vazia, AtEnd() deve retornar 1 (TRUE: cursor >= itens).
+  std::vector<zeebulator::HleRuntime::HleFunction> collection_methods(
+      24, [](zeebulator::IArmCore& c) { c.SetRegister(zeebulator::kR0, 0); });
+  collection_methods[4] = [](zeebulator::IArmCore& c) {
+    // AtEnd: 1 se no fim da colecao (ou se vazia)
+    c.SetRegister(zeebulator::kR0, 1);
+  };
+  uint32_t collection_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80071000, /*object=*/0x80072000, collection_methods);
   shell_hle.RegisterInstance(/*colecao da Z-Wheel=*/0x0100104f, collection_obj);
+
+  // Extensoes da Z-Wheel (menu principal do console / tectoy.mod):
+  // 1) 0x01028e3c: Classe28e3c. tectoymain.c cria duas instancias e guarda
+  //    em +0x354 e +0x358 (sem chamar metodos alem de AddRef/Release).
+  uint32_t class_28e3c_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80073000, /*object=*/0x80074000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(0x01028e3c, class_28e3c_obj);
+
+  // 2) 0x01011810: ICM (Call Manager / AEECLSID_CM). tectoymain.c:1037
+  //    chama o slot 28 (GetPhInfo) com buffer de 0x340 bytes e espera a palavra
+  //    em +0x0c igual a 5 (SYS_OPRT_MODE_ONLINE, radio online).
+  std::vector<zeebulator::HleRuntime::HleFunction> cm_methods(
+      32, [](zeebulator::IArmCore& c) { c.SetRegister(zeebulator::kR0, 0); });
+  cm_methods[28] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    if (pinfo != 0) {
+      // oprt_mode = SYS_OPRT_MODE_ONLINE (5)
+      cpu.GetMemory().Write32(pinfo + 0x0c, 5);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  uint32_t cm_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80075000, /*object=*/0x80076000, cm_methods);
+  shell_hle.RegisterInstance(0x01011810, cm_obj);
+
+  // 3) 0x01006c02: OEM_LCTSystemCtl (controle do sistema/luzes). tectoymain.c:1759.
+  //    Slot 6 chamado em laco; 0 significa 'sucesso/siga'.
+  uint32_t sysctl_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80077000, /*object=*/0x80078000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(0x01006c02, sysctl_obj);
+
+  // 4) 0x01035156: Typeface TrueType (AEECLSID_TYPEFACE). tectoymain.c:1269.
+  uint32_t typeface_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80079000, /*object=*/0x8007A000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(0x01035156, typeface_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
   // the literal pool addresses its own `ldr r1,[pc,#N]` instructions
