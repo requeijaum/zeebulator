@@ -127,6 +127,8 @@ class IShellHle {
     item_id_ = item_id;
   }
 
+  void SetAppletPointer(uint32_t applet_ptr) { applet_ptr_ = applet_ptr; }
+
   // Optional ThreadHle hook for cooperative threads
   void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
 
@@ -190,6 +192,7 @@ class IShellHle {
   void SetTimerImpl(IArmCore& core);
   void CancelTimerImpl(IArmCore& core);
   void ResumeImpl(IArmCore& core);
+  void SendEventImpl(IArmCore& core);
   void LoadResObjectImpl(IArmCore& core);
   void LoadResDataImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
@@ -211,6 +214,7 @@ class IShellHle {
   std::function<uint32_t(uint32_t)> malloc_fn_;
   uint32_t applet_clsid_ = 0;
   uint32_t item_id_ = 0;
+  uint32_t applet_ptr_ = 0;
   void GetClassItemIdImpl(IArmCore& core);
   void GetDeviceInfoExImpl(IArmCore& core);
 };

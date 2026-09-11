@@ -170,6 +170,45 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
   core.SetRegister(kR0, erased ? 0 : 1);
 }
 
+void IShellHle::SendEventImpl(IArmCore& core) {
+  // int ISHELL_SendEvent(IShell *po, AEECLSID cls, AEEEvent evt, uint16 wParam, uint32 dwParam)
+  uint32_t a1 = core.GetRegister(kR1);
+  uint32_t a2 = core.GetRegister(kR2);
+  uint32_t a3 = core.GetRegister(kR3);
+  uint32_t sp = core.GetRegister(kSP);
+  uint32_t s0 = memory_.Read32(sp);
+  uint32_t s1 = memory_.Read32(sp + 4);
+
+  uint32_t cls = a1;
+  uint32_t evt = a2;
+  uint16_t w = static_cast<uint16_t>(a3);
+  uint32_t dw = s0;
+  if (a2 == applet_clsid_ || a2 == 0x01070798) {
+    cls = a2;
+    evt = a3;
+    w = static_cast<uint16_t>(s0);
+    dw = s1;
+  }
+  // Evento 0x7b0a da Z-Wheel
+  if (evt == 0x7b0a) {
+    if (w == 4) {  // PrefsDB
+      if (dw != 0 && applet_ptr_ != 0) {
+        memory_.Write32(dw, applet_ptr_ + 0x2ef8);
+      }
+      core.SetRegister(kR0, 1);  // TRUE = tratado
+      return;
+    }
+    if (w == 1 || w == 0xa) {  // Lang
+      if (dw != 0) {
+        memory_.Write32(dw, 538997872);  // "pt  "
+      }
+      core.SetRegister(kR0, 1);  // TRUE = tratado
+      return;
+    }
+  }
+  core.SetRegister(kR0, 0);  // 0 = nao tratado
+}
+
 void IShellHle::ResumeImpl(IArmCore& core) {
   // int ISHELL_Resume(IShell *ps, AEECallback *pCallback)
   // Invokes or queues callback immediately (ms=0), or schedules a cooperative thread.
@@ -587,7 +626,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       [this](IArmCore& c) { LoadResDataImpl(c); },    // 18 LoadResData
       [this](IArmCore& c) { LoadResObjectImpl(c); },  // 19 LoadResObject
       Stub,  // 20 FreeResData
-      Stub,  // 21 SendEvent
+      [this](IArmCore& c) { SendEventImpl(c); },  // 21 SendEvent
       Stub,  // 22 Beep
       Stub,  // 23 GetPrefs
       Stub,  // 24 SetPrefs

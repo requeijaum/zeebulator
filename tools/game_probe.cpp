@@ -549,14 +549,10 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
     }
     static uint64_t trace_step_start = ~0ull;
     static uint64_t trace_step_count = 50;
-    static bool trace_step_init = false;
-    if (!trace_step_init) {
-      trace_step_init = true;
-      if (const char* env_ts = std::getenv("ZEEB_TRACE_STEP")) {
-        std::sscanf(env_ts, "%llu,%llu",
-                    reinterpret_cast<unsigned long long*>(&trace_step_start),
-                    reinterpret_cast<unsigned long long*>(&trace_step_count));
-      }
+    if (const char* env_ts = std::getenv("ZEEB_TRACE_STEP")) {
+      std::sscanf(env_ts, "%llu,%llu",
+                  reinterpret_cast<unsigned long long*>(&trace_step_start),
+                  reinterpret_cast<unsigned long long*>(&trace_step_count));
     }
     bool step_trace = (steps >= trace_step_start && steps < trace_step_start + trace_step_count);
     if (trace || step_trace) {
@@ -1778,7 +1774,7 @@ int main(int argc, char** argv) {
   auto widget_props = std::make_shared<std::map<uint32_t, uint32_t>>();
   auto widget_children = std::make_shared<std::map<uint32_t, uint32_t>>();
   std::vector<zeebulator::HleRuntime::HleFunction> widget_methods(
-      13, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+      24, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
   widget_methods[3] = [&cpu, widget_props, widget_children](zeebulator::IArmCore& core) {
     const uint32_t selector = core.GetRegister(zeebulator::kR1);
     const uint32_t id = core.GetRegister(zeebulator::kR2);
@@ -1802,13 +1798,57 @@ int main(int argc, char** argv) {
       core.SetRegister(zeebulator::kR0, 1);
       return;
     }
+    // Consultas de estado/evento no root widget (0x101, 0x7b0a, 0x7b0f):
+    // devolver 0 (FALSE) permite que o tratador do proprio applet as resolva.
+    if (selector == 0x101 || selector == 0x7b0a || selector == 0x7b0f) {
+      core.SetRegister(zeebulator::kR0, 0);
+      return;
+    }
     // Seletor ainda nao visto: sucesso, para nao inventar uma falha que o jogo
     // trataria como fatal. Aparece no ZEEB_HLE_PROFILE se for exercitado.
     core.SetRegister(zeebulator::kR0, 1);
   };
+  // Slot 13: CreateCompatibleBitmap (utilizado em 0x24100..0x24198 do tectoy.mod)
+  widget_methods[13] = [&cpu, compat_bitmap_obj, compat_state](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
+    uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
+    if (w != 0) compat_state->width = w;
+    if (h != 0) compat_state->height = h;
+    if (out != 0) {
+      cpu.GetMemory().Write32(out, compat_bitmap_obj);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 14: Anexar / Attach (associa widget ou modelo)
+  widget_methods[14] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 16: OwnerDraw / RegisterDrawCallback (tectoy.mod 0x22d58)
+  widget_methods[16] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 17: SetModel / SetFont (tectoy.mod 0x23860 e 0x23d0c: associa modelo 0x8000 / fonte ao roller)
+  widget_methods[17] = [](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
   uint32_t widget_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, kWidgetVtable, kWidgetObject, widget_methods);
-  shell_hle.RegisterInstance(/*widget da Z-Wheel=*/0x01028e51, widget_obj);
+  // Registra toda a familia de widgets da Z-Wheel
+  const uint32_t kZWheelWidgetClasses[] = {
+    0x01028e51, // root form / widget principal
+    0x01028e05, // widget do palco (StageWidget)
+    0x01028e14, // OwnerDrawWidget do roller inferior
+    0x01028e19, // widget de imagem
+    0x01028e26, // widget de cor/fundo
+    0x01028e2a, // widget de texto / rotulo
+    0x01028e36, // widget de instrucoes do z-pad
+    0x01028e3f, // container visual da barra e formulários
+    0x01028e47, // formulario visual
+  };
+  for (uint32_t cls : kZWheelWidgetClasses) {
+    shell_hle.RegisterInstance(cls, widget_obj);
+  }
 
   // 0x0100104f -- a colecao generica da Z-Wheel: guarda itens e e percorrida.
   // Registrada com scaffold generico por enquanto; nenhum slot dela foi medido
@@ -1873,10 +1913,105 @@ int main(int argc, char** argv) {
       cpu.GetMemory(), hle, /*vtable=*/0x80077000, /*object=*/0x80078000, /*slot_count=*/10);
   shell_hle.RegisterInstance(0x01006c02, sysctl_obj);
 
-  // 4) 0x01035156: Typeface TrueType (AEECLSID_TYPEFACE). tectoymain.c:1269.
-  uint32_t typeface_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x80079000, /*object=*/0x8007A000, /*slot_count=*/10);
-  shell_hle.RegisterInstance(0x01035156, typeface_obj);
+  // 4) Fonte e Typeface TrueType da Z-Wheel (AEECLSID_TYPEFACE = 0x01035156, AEECLSID_ROLLER_FONT = 0x0102f67c)
+  // Objeto de Fonte concreto (vtable 0x8007B000 / object 0x8007C000):
+  std::vector<zeebulator::HleRuntime::HleFunction> font_methods(
+      16, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 4: GetTextExtent(IFont *po, const AECHAR *pcText, int nChars, int nMaxWidth, int *pnFits)
+  // No roller (tectoy.mod 0x238dc), chama Slot 4 com r1=&extent { width: int16, height: int16 }
+  font_methods[4] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    if (out != 0) {
+      cpu.GetMemory().Write16(out, 640);
+      cpu.GetMemory().Write16(out + 2, 50);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  uint32_t font_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8007B000, /*object=*/0x8007C000, font_methods);
+  shell_hle.RegisterInstance(/*AEECLSID_ROLLER_FONT=*/0x0102f67c, font_obj);
+
+  // Typeface TrueType (vtable 0x80079000 / object 0x8007A000):
+  // Slot 4: CriarFonte(ITypeface*, const char *face, int size, int style, IFont **ppFont)
+  // O ponteiro de saida ppFont vem no primeiro argumento da pilha (sp[0])!
+  std::vector<zeebulator::HleRuntime::HleFunction> typeface_methods(
+      10, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  typeface_methods[4] = [&cpu, font_obj](zeebulator::IArmCore& core) {
+    uint32_t sp = core.GetRegister(zeebulator::kSP);
+    uint32_t out_ptr = cpu.GetMemory().Read32(sp);
+    if (out_ptr != 0) {
+      cpu.GetMemory().Write32(out_ptr, font_obj);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  uint32_t typeface_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80079000, /*object=*/0x8007A000, typeface_methods);
+  shell_hle.RegisterInstance(/*AEECLSID_TYPEFACE=*/0x01035156, typeface_obj);
+
+  // 5) 0x01028e35: IVectorModel (lista genérica da Z-Wheel / PREFSDB_GetRecords).
+  // vtable 0x8007D000 / object 0x8007E000
+  auto vector_items = std::make_shared<std::vector<uint32_t>>();
+  std::vector<zeebulator::HleRuntime::HleFunction> vector_methods(
+      16, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slot 5: Tamanho (retorna quantidade de itens)
+  vector_methods[5] = [vector_items](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0, static_cast<uint32_t>(vector_items->size()));
+  };
+  // Slot 6: PegarEm(uint32_t index, uint32_t *out)
+  vector_methods[6] = [&cpu, vector_items](zeebulator::IArmCore& core) {
+    uint32_t index = core.GetRegister(zeebulator::kR1);
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (index < vector_items->size()) {
+      if (out != 0) cpu.GetMemory().Write32(out, (*vector_items)[index]);
+      core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+    } else {
+      core.SetRegister(zeebulator::kR0, 1); // EBADPARM
+    }
+  };
+  // Slot 8: InserirEm(uint32_t index, uint32_t item)
+  vector_methods[8] = [vector_items](zeebulator::IArmCore& core) {
+    uint32_t index = core.GetRegister(zeebulator::kR1);
+    uint32_t item = core.GetRegister(zeebulator::kR2);
+    if (index == ~0u || index >= vector_items->size()) {
+      vector_items->push_back(item);
+    } else {
+      vector_items->insert(vector_items->begin() + index, item);
+    }
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  // Slot 9: RemoverEm(uint32_t index)
+  vector_methods[9] = [vector_items](zeebulator::IArmCore& core) {
+    uint32_t index = core.GetRegister(zeebulator::kR1);
+    if (index < vector_items->size()) {
+      vector_items->erase(vector_items->begin() + index);
+      core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+    } else {
+      core.SetRegister(zeebulator::kR0, 1);
+    }
+  };
+  // Slot 10: Esvaziar / Clear
+  vector_methods[10] = [vector_items](zeebulator::IArmCore& core) {
+    vector_items->clear();
+    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  };
+  uint32_t vector_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8007D000, /*object=*/0x8007E000, vector_methods);
+  shell_hle.RegisterInstance(/*AEECLSID_VETOR=*/0x01028e35, vector_obj);
+
+  // 6) 0x01006c05: ZEEBOMCP
+  uint32_t zeebomcp_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8009A000, /*object=*/0x8009B000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(/*AEECLSID_ZEEBOMCP=*/0x01006c05, zeebomcp_obj);
+
+  // 7) 0x01001027: IConfig (GetItem / SetItem)
+  uint32_t config_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8009C000, /*object=*/0x8009D000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(/*AEECLSID_CONFIG=*/0x01001027, config_obj);
+
+  // 8) 0x01001011: ISourceUtil
+  uint32_t source_util_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x8009E000, /*object=*/0x8009F000, /*slot_count=*/10);
+  shell_hle.RegisterInstance(/*AEECLSID_SOURCE_UTIL=*/0x01001011, source_util_obj);
   // A still-deeper gate (0x1d5b8, reached only after the fixes above)
   // requires two more classes -- confirmed via real objdump directly on
   // the literal pool addresses its own `ldr r1,[pc,#N]` instructions
@@ -3883,6 +4018,7 @@ int main(int argc, char** argv) {
     }
     std::printf("CreateInstance OK, applet=0x%08x HandleEvent=0x%08x\n", applet_ptr,
                 handle_event_fn);
+    shell_hle.SetAppletPointer(applet_ptr);
     // Real code reads/writes the third/fourth/fifth "app context"
     // fields (see mod_runtime.h) directly on the real IApplet instance
     // CreateInstance just returned, not on a separate fixed struct --

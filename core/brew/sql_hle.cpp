@@ -165,6 +165,16 @@ void SqlHle::OpenDatabase(IArmCore& core) {
     return;
   }
 
+  // Inicializacao de esquemas esperados pela Z-Wheel caso o arquivo esteja vazio
+  if (name == "tt_dlqueue.db" || host_path.find("tt_dlqueue.db") != std::string::npos) {
+    sqlite3_exec(handle, "CREATE TABLE IF NOT EXISTS DBINFO(version INTEGER, subversion INTEGER);", nullptr, nullptr, nullptr);
+    sqlite3_exec(handle, "INSERT OR IGNORE INTO DBINFO values (1, 0);", nullptr, nullptr, nullptr);
+    sqlite3_exec(handle, "CREATE TABLE IF NOT EXISTS DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER, titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER);", nullptr, nullptr, nullptr);
+  } else if (name == "tt_prefs.db" || host_path.find("tt_prefs.db") != std::string::npos) {
+    // 0x20207470 = "pt  " (Portugues do Brasil como idioma inicial)
+    sqlite3_exec(handle, "UPDATE PREFSINFO SET dwValue = 538997872 WHERE PREFSINFO.name = 'Lang' AND PREFSINFO.dwValue = 0;", nullptr, nullptr, nullptr);
+  }
+
   uint32_t object = next_db_object_;
   next_db_object_ += 16;
   memory_.Write32(object, db_vtable_);
