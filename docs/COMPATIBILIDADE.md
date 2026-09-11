@@ -47,3 +47,23 @@ do corpus estao TODAS no mesmo endereco, `pc=0x00090024`, fora de qualquer
 modulo carregado. E onde o interpretador cai depois de saltar para nulo e
 executar lixo -- sintoma, nao lacuna de CPU. Implementar MRS/MSR nao destravaria
 nenhum titulo.
+
+
+### Atualizacao da segunda medida: titulos orientados a threads cooperativas
+
+A medicao automatizada inicial usava `tick_count` reportado pelo servidor de controle.
+No entanto, o `tick_count` era incrementado unicamente em timers `IShell` expirados.
+Jogos cujo laco principal e orientado a threads cooperativas BREW (`IThread` / `0x01001017`)
+executavam milhares de fatias de thread normais pelo guest sem que nenhum timer IShell
+disparasse, ficando falsamente marcados como `tick=0` estatico ("CONGELAM").
+
+Com a correcao no commit `a1edff6` (`tick_count += run_pending_threads_fn("tick")`),
+a medicao real confirmou que estes 6 titulos estao em plena execucao do laco guest:
+  - **AirRacez**: tick 146 -> 417 (~54 ticks/s)
+  - **Bajaz**: tick 135 -> 405 (~54 ticks/s)
+  - **JetBoardz**: tick 122 -> 495 (~62 ticks/s)
+  - **Boiaz**: tick 73 -> 337 (~44 ticks/s)
+  - **baddudes**: tick 10 -> 384 (~62 ticks/s)
+  - **hbarrel**: tick 28 -> 402 (~62 ticks/s)
+
+Total de titulos com laco de execucao ativo comprovado: **21 titulos** (de 50 que iniciam).
