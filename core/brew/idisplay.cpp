@@ -452,7 +452,19 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
   std::vector<HleRuntime::HleFunction> methods = {
       LoggedStub("IDisplay", 0, "AddRef"),                                    // 0 AddRef
       LoggedStub("IDisplay", 1, "Release"),                                    // 1 Release
-      LoggedStub("IDisplay", 2, "GetFontMetrics"),                                    // 2 GetFontMetrics
+      // 2 GetFontMetrics(IDisplay*, AEEFont, int *pnAscent, int *pnDescent):
+      // returns the font height; ascent/descent are optional out-params. Real
+      // titles size their own text layout from this, and a silent zero makes
+      // every line collapse onto the same baseline.
+      [this](IArmCore& c) {
+        constexpr int kAscent = 11;
+        constexpr int kDescent = 3;
+        uint32_t p_ascent = c.GetRegister(kR2);
+        uint32_t p_descent = c.GetRegister(kR3);
+        if (p_ascent != 0) c.GetMemory().Write32(p_ascent, kAscent);
+        if (p_descent != 0) c.GetMemory().Write32(p_descent, kDescent);
+        c.SetRegister(kR0, kAscent + kDescent);
+      },
       LoggedStub("IDisplay", 3, "MeasureTextEx"),                                    // 3 MeasureTextEx
       [this](IArmCore& c) { DrawText(c); },     // 4  DrawText
       [this](IArmCore& c) { DrawRect(c); },     // 5  DrawRect

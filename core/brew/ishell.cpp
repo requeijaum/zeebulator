@@ -285,9 +285,20 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
     core.SetRegister(kR0, 0);
     return;
   }
+  auto cache_key = std::make_tuple(filename, id, type);
+  auto cached = resource_cache_.find(cache_key);
+  if (cached != resource_cache_.end()) {
+    if (std::getenv("ZEEB_LOG_FILE")) {
+      std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> CACHED ptr=0x%08x\n",
+                   filename.c_str(), id, type, cached->second);
+    }
+    core.SetRegister(kR0, cached->second);
+    return;
+  }
   std::vector<uint8_t> data = file_it->second.Extract(*entry);
   uint32_t ptr = malloc_fn_ ? malloc_fn_(static_cast<uint32_t>(data.size() + 4)) : 0;
   if (ptr != 0) {
+    resource_cache_[cache_key] = ptr;
     for (size_t i = 0; i < data.size(); ++i) {
       memory_.Write8(ptr + static_cast<uint32_t>(i), data[i]);
     }
@@ -623,7 +634,21 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       LoggedStub("IShell", 10, "EnumNextApplet"),  // 10 EnumNextApplet
       [this](IArmCore& c) { SetTimerImpl(c); },     // 11 SetTimer
       [this](IArmCore& c) { CancelTimerImpl(c); },  // 12 CancelTimer
-      LoggedStub("IShell", 13, "GetTimerExpiration"),  // 13 GetTimerExpiration
+      // 13 GetTimerExpiration(IShell*, PFNNOTIFY, void *pUser): milliseconds left
+      // before that timer fires, 0 when it is not scheduled. Zenonia polls this
+      // every frame around its own SetTimer/CancelTimer pair.
+      [this](IArmCore& c2) {
+        uint32_t callback = c2.GetRegister(kR1);
+        uint32_t user_data = c2.GetRegister(kR2);
+        uint32_t remaining = 0;
+        for (const PendingTimer& timer : timers_) {
+          if (timer.callback == callback && (user_data == 0 || timer.user_data == user_data)) {
+            remaining = timer.remaining_ms;
+            break;
+          }
+        }
+        c2.SetRegister(kR0, remaining);
+      },
       LoggedStub("IShell", 14, "CreateDialog"),  // 14 CreateDialog
       LoggedStub("IShell", 15, "GetActiveDialog"),  // 15 GetActiveDialog
       LoggedStub("IShell", 16, "EndDialog"),  // 16 EndDialog

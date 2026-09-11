@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -212,6 +214,12 @@ class IShellHle {
   uint32_t next_mime_addr_ = 0x0008d000;
   class ThreadHle* thread_hle_ = nullptr;
   std::function<uint32_t(uint32_t)> malloc_fn_;
+  // Real ISHELL_LoadResData hands back a cached, reference-counted pointer for
+  // the same (file, id, type); it does not copy the resource again per call.
+  // Titles routinely load the same id twice and free it once, so allocating a
+  // fresh block each time leaked the guest heap (measured in Zenonia: free
+  // memory fell from 59 MB to 44 MB while loading one map).
+  std::map<std::tuple<std::string, uint32_t, uint32_t>, uint32_t> resource_cache_;
   uint32_t applet_clsid_ = 0;
   uint32_t item_id_ = 0;
   uint32_t applet_ptr_ = 0;
