@@ -1830,21 +1830,34 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0x140_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x138_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t unknown_0x30_fn = hle_.Register([this](IArmCore& core) { WstrlenImpl(core); });
-  // CONFIRMED 2026-09-02 via live byte dump: AccelMenu (AirRacez/Boiaz/Bajaz) call
-  // [table+0xd8] as STRCMP for asset-name lookup (e.g. "audio/xui/count_down" vs
-  // "menu_select", "sfx_04.wav"). AEEHelperFuncs offset 0xd8 = STRCMP (case-sensitive;
-  // sits right after STRICMP at 0xd0). Real signed byte compare, 0 on exact match.
+  // AEEHelperFuncs offset 0xd8 is STRSTR, not STRCMP. The independent AEE helper
+  // table in research/sources/zeemu/runtime/AEEHelperTable.cpp lists
+  // 0xd0 stricmp / 0xd4 strnicmp / 0xd8 strstr / 0xdc memcmp, and Zenonia proves
+  // it live: its resource loader asks `[0xd8](name, ".zt1")` to decide whether a
+  // resource is compressed. With STRCMP every name answered "different" (nonzero),
+  // so the loader tried to inflate plain files such as `map/073.map`, failed and
+  // returned NULL -- the game then read its map header from guest address 0.
   uint32_t unknown_0xd8_fn = hle_.Register([](IArmCore& core) {
-    uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1);
+    uint32_t haystack = core.GetRegister(kR0), needle = core.GetRegister(kR1);
     auto& mem = core.GetMemory();
-    for (;;) {
-      uint8_t ca = mem.Read8(a++), cb = mem.Read8(b++);
-      if (ca != cb || ca == 0 || cb == 0) {
-        core.SetRegister(kR0, static_cast<uint32_t>(static_cast<int32_t>(ca) -
-                                                    static_cast<int32_t>(cb)));
-        return;
+    if (mem.Read8(needle) == 0) {
+      core.SetRegister(kR0, haystack);
+      return;
+    }
+    for (uint32_t start = haystack; mem.Read8(start) != 0; ++start) {
+      uint32_t a = start, b = needle;
+      for (;;) {
+        uint8_t cb = mem.Read8(b);
+        if (cb == 0) {
+          core.SetRegister(kR0, start);  // real strstr returns the match position
+          return;
+        }
+        if (mem.Read8(a) != cb) break;
+        ++a;
+        ++b;
       }
     }
+    core.SetRegister(kR0, 0);  // not found
   });
   uint32_t unknown_0x34_fn = hle_.Register([this](IArmCore& core) { WstrchrImpl(core); });
   uint32_t wstrrchr_fn = hle_.Register([this](IArmCore& core) { WstrrchrImpl(core); });
