@@ -7,6 +7,7 @@
 #include "core/brew/font5x7.h"
 #include "core/brew/interface_object.h"
 #include "core/brew/draw_stats.h"
+#include <map>
 #include "core/brew/stub_trace.h"
 
 namespace zeebulator {
@@ -401,8 +402,20 @@ void IDisplayHle::CreateDIBitmapEx(IArmCore& core) {
   core.SetRegister(kR0, status);
 }
 
-void IDisplayHle::Update(IArmCore&) {
+void IDisplayHle::Update(IArmCore& core_for_lr) {
   ++DrawStats::Instance().disp_update;
+  // Quem chama Update e o dono do laco de render. Com zero draw calls
+  // antes dele (ddragonz: 1150 Update, 0 draws), o LR e o unico fio que
+  // leva ao ponto onde o jogo decidiu nao desenhar.
+  if (std::getenv("ZEEB_LOG_UPDATE_LR") != nullptr) {
+    static std::map<uint32_t, uint64_t> callers;
+    uint32_t lr = core_for_lr.GetRegister(kLR);
+    uint64_t n = ++callers[lr];
+    if (n == 1 || n == 100 || (n % 500) == 0) {
+      std::printf("[update] caller lr=0x%08x hits=%llu distinct=%zu\n",
+                  lr, static_cast<unsigned long long>(n), callers.size());
+    }
+  }
   if (std::getenv("ZEEB_LOG_DRAW")) {
     std::fprintf(stderr, "[draw] Update (present frame)\n");
   }

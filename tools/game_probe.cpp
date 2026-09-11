@@ -1698,8 +1698,23 @@ int main(int argc, char** argv) {
   // Decompresses a compressed IAStream (deflate / gzip / zlib) into uncompressed bytes.
   zeebulator::UnzipStreamHle unzip_stream_hle(cpu.GetMemory(), hle, /*object_region_start=*/0x80087000);
   unzip_stream_hle.Build(/*vtable=*/0x80086000);
-  shell_hle.RegisterFactory(zeebulator::UnzipStreamHle::kClsidUnzipStream,
-                            [&unzip_stream_hle]() { return unzip_stream_hle.AllocateStream(); });
+  // REGRESSAO 523b386, provada por bisseccao + captura de tela:
+  // esta classe estava registrada como `last_opened_file_proxy` e o commit
+  // 523b386 a reatribuiu para IUnzipAStream. O Double Dragon pede
+  // 0x01001014 para LER seus assets (desmontagem de ddragonz.mod 0x1b2fc,
+  // ver o comentario da ClsId 0x01001003 acima) -- entregando um
+  // descompressor de stream ele nao carrega conteudo nenhum, roda o laco
+  // chamando IDISPLAY_Update 1150x e nunca marca o dirty bit, resultando em
+  // tela preta. Medido: com o proxy 111709 pixels nao-pretos (tela de
+  // titulo, 262 cores); com o unzip stream, 504 (so o overlay de FPS).
+  // O objeto do unzip continua construido e disponivel para quem precisar
+  // via ZEEB_UNZIP_CLS=1; o default volta ao que o corpus comprovadamente usa.
+  if (std::getenv("ZEEB_UNZIP_CLS") != nullptr) {
+    shell_hle.RegisterFactory(zeebulator::UnzipStreamHle::kClsidUnzipStream,
+                              [&unzip_stream_hle]() { return unzip_stream_hle.AllocateStream(); });
+  } else {
+    shell_hle.RegisterInstance(0x01001014, last_opened_file_proxy);
+  }
   // ClsId 0x0100100c: a real, still-unidentified class found bringing
   // up Disney All Star Cards -- real code calls
   // `ISHELL_CreateInstance(shell, 0x0100100c, &ppo)` and, like every
