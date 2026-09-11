@@ -6,6 +6,8 @@
 
 #include "core/brew/font5x7.h"
 #include "core/brew/interface_object.h"
+#include "core/brew/draw_stats.h"
+#include "core/brew/stub_trace.h"
 
 namespace zeebulator {
 
@@ -33,6 +35,7 @@ IDisplayHle::IDisplayHle(Backend& backend, int width, int height)
       clip_dy_(static_cast<int16_t>(height)) {}
 
 void IDisplayHle::DrawText(IArmCore& core) {
+  ++DrawStats::Instance().disp_draw_text;
   // int DrawText(iname* po, AEEFont nFont, const AECHAR* pcText,
   //              int nChars, int x, int y, const AEERect* prcBackground,
   //              uint32 dwFlags)
@@ -89,6 +92,7 @@ void IDisplayHle::DrawText(IArmCore& core) {
 }
 
 void IDisplayHle::DrawRect(IArmCore& core) {
+  ++DrawStats::Instance().disp_draw_rect;
   // void DrawRect(iname *po, const AEERect *pRect, RGBVAL clrFrame,
   //               RGBVAL clrFill, uint32 dwFlags)
   // po is R0 (unused), pRect R1, clrFrame R2 (border, not drawn -- no
@@ -166,6 +170,7 @@ void IDisplayHle::GetClipRect(IArmCore& core) {
 }
 
 void IDisplayHle::BitBlt(IArmCore& core) {
+  ++DrawStats::Instance().disp_bitblt;
   // int BitBlt(IDisplay *pIDisplay, int xDest, int yDest, int cxDest, int cyDest,
   //            IBitmap *pSrc, int xSrc, int ySrc, AEE_RasterOp rop)
   // R0 = pIDisplay, R1 = xDest, R2 = yDest, R3 = cxDest
@@ -397,6 +402,7 @@ void IDisplayHle::CreateDIBitmapEx(IArmCore& core) {
 }
 
 void IDisplayHle::Update(IArmCore&) {
+  ++DrawStats::Instance().disp_update;
   if (std::getenv("ZEEB_LOG_DRAW")) {
     std::fprintf(stderr, "[draw] Update (present frame)\n");
   }
@@ -420,32 +426,32 @@ uint32_t IDisplayHle::Build(Memory& memory, HleRuntime& hle,
   // Update have real behavior so far -- extend individual stubs as
   // games need them.
   std::vector<HleRuntime::HleFunction> methods = {
-      Stub,                                    // 0  AddRef
-      Stub,                                    // 1  Release
-      Stub,                                    // 2  GetFontMetrics
-      Stub,                                    // 3  MeasureTextEx
+      LoggedStub("IDisplay", 0, "AddRef"),                                    // 0 AddRef
+      LoggedStub("IDisplay", 1, "Release"),                                    // 1 Release
+      LoggedStub("IDisplay", 2, "GetFontMetrics"),                                    // 2 GetFontMetrics
+      LoggedStub("IDisplay", 3, "MeasureTextEx"),                                    // 3 MeasureTextEx
       [this](IArmCore& c) { DrawText(c); },     // 4  DrawText
       [this](IArmCore& c) { DrawRect(c); },     // 5  DrawRect
       [this](IArmCore& c) { BitBlt(c); },       // 6  BitBlt
       [this](IArmCore& c) { Update(c); },       // 7  Update
-      Stub,                                    // 8  SetAnnunciators
-      Stub,                                    // 9  Backlight
+      LoggedStub("IDisplay", 8, "SetAnnunciators"),                                    // 8 SetAnnunciators
+      LoggedStub("IDisplay", 9, "Backlight"),                                    // 9 Backlight
       [this](IArmCore& c) { SetColor(c); },     // 10 SetColor
-      Stub,                                    // 11 GetSymbol
-      Stub,                                    // 12 DrawFrame
+      LoggedStub("IDisplay", 11, "GetSymbol"),                                    // 11 GetSymbol
+      LoggedStub("IDisplay", 12, "DrawFrame"),                                    // 12 DrawFrame
       [this](IArmCore& c) { CreateDIBitmap(c); },  // 13 CreateDIBitmap
       [this](IArmCore& c) { SetDestination(c); },  // 14 SetDestination
       [this](IArmCore& c) { GetDestination(c); },  // 15 GetDestination
       [this](IArmCore& c) { GetDeviceBitmap(c); },  // 16 GetDeviceBitmap
-      Stub,                                    // 17 SetFont
+      LoggedStub("IDisplay", 17, "SetFont"),                                    // 17 SetFont
       [this](IArmCore& c) { SetClipRect(c); },  // 18 SetClipRect
       [this](IArmCore& c) { GetClipRect(c); },  // 19 GetClipRect
-      Stub,                                    // 20 Clone
-      Stub,                                    // 21 MakeDefault
+      LoggedStub("IDisplay", 20, "Clone"),                                    // 20 Clone
+      LoggedStub("IDisplay", 21, "MakeDefault"),                                    // 21 MakeDefault
       [this](IArmCore& c) { IsEnabled(c); },    // 22 IsEnabled
-      Stub,                                    // 23 NotifyEnable
+      LoggedStub("IDisplay", 23, "NotifyEnable"),                                    // 23 NotifyEnable
       [this](IArmCore& c) { CreateDIBitmapEx(c); },  // 24 CreateDIBitmapEx
-      Stub,                                    // 25 SetPrefs
+      LoggedStub("IDisplay", 25, "SetPrefs"),                                    // 25 SetPrefs
   };
   return BuildInterfaceObject(memory, hle, vtable_address, object_address,
                                methods);

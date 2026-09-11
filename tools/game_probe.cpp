@@ -62,6 +62,7 @@
 #include "core/save_state.h"
 #include "frontends/standalone/sdl2_unified_backend.h"
 #include "frontends/standalone/zpad_edges.h"
+#include "core/brew/draw_stats.h"
 
 namespace {
 
@@ -1555,8 +1556,31 @@ int main(int argc, char** argv) {
   // subsystem factory, leaving game members null and causing a crash on EVT_APP_START.
   uint32_t unknown_0x01001045_obj = zeebulator::BuildGenericStubObject(
       cpu.GetMemory(), hle, /*vtable=*/0x80018000, /*object=*/0x80019000, /*slot_count=*/20);
+  // pBmp (+8): o buffer de pixels de verdade.
+  //
+  // Ficava NULO. A struct tinha geometria correta (640x480, pitch 1280,
+  // RGB565) mas nenhum lugar onde escrever -- e e exatamente por aqui que
+  // os jogos comerciais desenham: `IBITMAP_QueryInterface(devbmp,
+  // AEECLSID_DIB, &pDIB)` e depois escrita direta em `pDIB->pBmp`, sem
+  // passar por vtable nenhuma. Confirma o oraculo zeebx ("o IDIB entrega
+  // ao jogo o ponteiro do buffer para ele desenhar direto -- e assim que
+  // os jogos comerciais escrevem na tela").
+  //
+  // Evidencia que nomeou este gap: ddragonz chama IDISPLAY_Update 1000
+  // vezes em 35s com ZERO draw calls contabilizados (DrawRect/BitBlt/
+  // DrawText todos em 0). Ou seja, ele compoe o quadro inteiro sozinho e
+  // so pede a apresentacao -- com pBmp nulo, nao tinha onde compor.
+  //
+  // Acima do heap do modulo (0x80300000 + 0x04000000) para nao colidir
+  // com nada; a memoria e paginada sob demanda, entao reservar aqui nao
+  // custa nada ate ser tocado.
+  constexpr uint32_t kDibPixelBuffer = 0x88000000;
+  constexpr uint32_t kDibPixelBytes = 640u * 480u * 2u;
+  for (uint32_t off = 0; off < kDibPixelBytes; off += 4) {
+    cpu.GetMemory().Write32(kDibPixelBuffer + off, 0);
+  }
   cpu.GetMemory().Write32(0x80019000 + 4, 0);
-  cpu.GetMemory().Write32(0x80019000 + 8, 0);
+  cpu.GetMemory().Write32(0x80019000 + 8, kDibPixelBuffer);
   cpu.GetMemory().Write32(0x80019000 + 12, 0);
   cpu.GetMemory().Write32(0x80019000 + 16, 0);
   cpu.GetMemory().Write16(0x80019000 + 20, 640);
@@ -4969,13 +4993,21 @@ int main(int argc, char** argv) {
     // triggered so far ever sets it. Kept as a real, evidence-grounded
     // building block for whoever traces that next -- not yet sufficient
     // on its own.
-    if (!callback_continuation_active && !injected_simulated_download_complete &&
+    if (std::getenv("ZEEB_NO_DOWNLOAD_INJECT") == nullptr &&
+        !callback_continuation_active && !injected_simulated_download_complete &&
         *captured_download_callback != 0 &&
         tick_count >= 30) {
       injected_simulated_download_complete = true;
       constexpr uint32_t kSimulatedEventStructAddr = 0x80066000;
       cpu.GetMemory().Write32(kSimulatedEventStructAddr + 8, 4);
-      cpu.GetMemory().Write32(kSimulatedEventStructAddr + 16, 2);
+      // `+16` selects the callback's branch. Disasm of AirRacez 0x158a9c shows
+      // `+16 == 1` SETS [obj+36]=1 (the real success path, also tail-calls the
+      // registered handler), while `+16 == 2` ZEROES it. The old hard-coded 2
+      // was right for ddragonz 0x11d020 but actively breaks AirRacez. Let the
+      // caller pick the real success value.
+      const char* iv = std::getenv("ZEEB_DOWNLOAD_INJECT_VALUE");
+      const uint32_t inject_val = (iv && iv[0] == '1') ? 1u : 2u;
+      cpu.GetMemory().Write32(kSimulatedEventStructAddr + 16, inject_val);
       std::printf("  [input] simulating a download-complete notification: invoking callback "
                   "0x%08x\n",
                   *captured_download_callback);
@@ -5015,6 +5047,20 @@ int main(int argc, char** argv) {
     // Boiaz, JetBoardz, Rolimaz, baddudes, hbarrel) executam fatias de thread
     // em vez de timers IShell -- cada fatia e um avanco real do guest.
     tick_count += run_pending_threads_fn("tick");
+    // Veredito honesto de renderizacao: "chegou ao event loop" nao
+    // distingue jogo rodando de jogo parado. Pura observacao, atras de env.
+    if (std::getenv("ZEEB_DRAW_STATS")) {
+      static uint64_t last_total = 0;
+      static int draw_report = 0;
+      auto& ds = zeebulator::DrawStats::Instance();
+      if (ds.TotalDraws() != last_total || (draw_report % 50) == 0) {
+        char tag[64];
+        std::snprintf(tag, sizeof(tag), "tick=%d", static_cast<int>(tick_count));
+        ds.Print(tag);
+        last_total = ds.TotalDraws();
+      }
+      ++draw_report;
+    }
 
     for (const auto& timer :
          (dbg_paused || callback_continuation_active)
@@ -5088,6 +5134,29 @@ int main(int argc, char** argv) {
       // here matches that instead of only ever showing the real *last*
       // timer in a real burst.
       if (!backend.HasRealGlActivity()) {
+        // Espelha o buffer do IDIB, quando o jogo escreveu nele.
+        //
+        // So sobrescreve se houver pixel nao-zero: titulos que usam o
+        // caminho HLE (zenonia: 499 BitBlt + 499 Update) continuam
+        // intocados, e um jogo que ainda nao desenhou nada nao apaga o
+        // que ja estava na tela.
+        // Custa 307k Read16 por quadro, e a medicao mostrou que nenhum
+        // titulo do corpus escreve em pBmp (write-watch em ddragonz:
+        // zero escritas, IDIB nunca sequer consultada). Fica atras de
+        // env para nao cobrar esse preco de todo mundo por um caminho
+        // que hoje ninguem usa -- o buffer em si continua existindo,
+        // porque pBmp nulo e defeito de verdade para quem usar.
+        if (std::getenv("ZEEB_DIB_MIRROR") != nullptr) {
+          auto& gm = cpu.GetMemory();
+          auto& fb = display.MutableFramebuffer();
+          const size_t px = static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight);
+          bool any = false;
+          for (size_t i = 0; i < px && i < fb.size(); ++i) {
+            uint16_t v = gm.Read16(0x88000000u + static_cast<uint32_t>(i * 2));
+            if (v != 0) { any = true; fb[i] = v; }
+          }
+          if (any) display.PresentLiveFramebuffer();
+        }
         display.RepresentLastFrame();
         // Present the live framebuffer for ABD (font atlas set) OR for any
         // non-ABD title when the generic fill-quad/texture bridge is enabled

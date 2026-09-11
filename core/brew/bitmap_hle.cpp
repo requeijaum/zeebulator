@@ -2,6 +2,7 @@
 #include "core/brew/interface_object.h"
 #include <algorithm>
 #include <cstdio>
+#include "core/brew/stub_trace.h"
 
 namespace zeebulator {
 
@@ -90,17 +91,17 @@ uint32_t BitmapHle::Build(uint32_t vtable_address, uint32_t object_address) {
       [this](IArmCore& c) { AddRef(c); },                 // 0 AddRef
       [this](IArmCore& c) { Release(c); },                // 1 Release
       [this](IArmCore& c) { QueryInterface(c); },         // 2 QueryInterface
-      Stub,                                               // 3 RGBToNative
-      Stub,                                               // 4 NativeToRGB
-      Stub,                                               // 5 DrawPixel
-      Stub,                                               // 6 GetPixel
-      Stub,                                               // 7 SetPixels
-      Stub,                                               // 8 DrawHScanline
-      Stub,                                               // 9 FillRect
-      Stub,                                               // 10 BltIn
-      Stub,                                               // 11 BltOut
+      LoggedStub("IBitmap", 3, "RGBToNative"),                                               // 3 RGBToNative
+      LoggedStub("IBitmap", 4, "NativeToRGB"),                                               // 4 NativeToRGB
+      LoggedStub("IBitmap", 5, "DrawPixel"),                                               // 5 DrawPixel
+      LoggedStub("IBitmap", 6, "GetPixel"),                                               // 6 GetPixel
+      LoggedStub("IBitmap", 7, "SetPixels"),                                               // 7 SetPixels
+      LoggedStub("IBitmap", 8, "DrawHScanline"),                                               // 8 DrawHScanline
+      LoggedStub("IBitmap", 9, "FillRect"),                                               // 9 FillRect
+      LoggedStub("IBitmap", 10, "BltIn"),                                               // 10 BltIn
+      LoggedStub("IBitmap", 11, "BltOut"),                                               // 11 BltOut
       [this](IArmCore& c) { GetInfo(c); },                // 12 GetInfo
-      Stub,                                               // 13 CreateCompatibleBitmap
+      LoggedStub("IBitmap", 13, "CreateCompatibleBitmap"),                                               // 13 CreateCompatibleBitmap
       [this](IArmCore& c) { SetTransparencyColor(c); },   // 14 SetTransparencyColor
       [this](IArmCore& c) { GetTransparencyColor(c); },   // 15 GetTransparencyColor
   };

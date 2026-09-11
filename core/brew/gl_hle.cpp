@@ -10,6 +10,7 @@
 #include "core/brew/interface_object.h"
 #include "core/loader/atitc.h"
 #include "core/loader/obm1.h"
+#include "core/brew/draw_stats.h"
 
 namespace zeebulator {
 
@@ -341,6 +342,7 @@ void GlHle::EglGetProcAddress(IArmCore& core) {
 }
 
 void GlHle::EglSwapBuffers(IArmCore& core) {
+  ++DrawStats::Instance().gl_swap;
   backend_.SwapBuffers();
   static uint32_t frame = 0;
   GpuLog("SwapBuffers frame=%u", ++frame);
@@ -598,6 +600,7 @@ void GlHle::GlDrawArrays(IArmCore& core) {
   for (int32_t i = 0; i < count; ++i) {
     indices.push_back(static_cast<uint32_t>(first + i));
   }
+  ++DrawStats::Instance().gl_draw_arrays;
   backend_.DrawArrays(mode, ExtractArrays(core.GetMemory(), indices));
   GpuLog("DrawArrays mode=0x%x first=%d count=%d", mode, first, count);
 }
@@ -618,6 +621,7 @@ void GlHle::GlDrawElements(IArmCore& core) {
                           : memory.Read8(indices_ptr + static_cast<uint32_t>(i));
     indices.push_back(index);
   }
+  ++DrawStats::Instance().gl_draw_arrays;
   backend_.DrawArrays(mode, ExtractArrays(memory, indices));
   GpuLog("DrawElements mode=0x%x count=%d type=0x%x", mode, count, type);
 }
@@ -759,6 +763,7 @@ void GlHle::GlTexImage2D(IArmCore& core) {
     }
     image.pixels = pixel_bytes.data();
   }
+  ++DrawStats::Instance().gl_tex_image;
   backend_.TexImage2D(target, image);
 }
 
