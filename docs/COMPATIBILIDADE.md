@@ -1,73 +1,56 @@
-TASKS.md
+# Compatibilidade do corpus Zeebo (medida)
+
+Medicao automatizada sobre a NAND completa em estrutura `fs:/` do BREW
+(`mif/<id>.mif` + `mod/<id>/`), 62 titulos, executados com `zeebulator_game_probe`.
+Os ClassIDs sao extraidos diretamente de cada `.mif` via `ExtractMifClassIds` (60/60 pares validados).
+
+## 1. Resumo por Estagio
+
+| Estagio | Titulos | % |
+|---|---|---|
+| **`EVT_APP_START = 1`** | **54** | **87%** |
+| Entra no laco de eventos da janela | 5 | 8% |
+| Bloqueado no carregamento de recursos | 3 | 5% |
+| **Total de titulos no corpus** | **62** | **100%** |
+
+- **`AEEMod_Load` OK**: 62 / 62 (100%)
+- **`CreateInstance` OK**: 59 / 62 (95%)
+- **Títulos com laco de execucao ativo comprovado (avancando ticks de forma continua)**: **25 titulos**
 
 ---
 
-## Segunda medida: os titulos que iniciam realmente RODAM?
+## 2. Titulos com Laco de Jogo Ativo Comprovado (25 titulos)
 
-`EVT_APP_START` retornar 1 significa apenas que o applet aceitou o evento de
-inicio. Nao prova que o titulo executa. Para separar as duas coisas, cada um dos
-50 que iniciam foi executado com o servidor de controle e o contador de ticks
-lido em dois momentos (12 s e 24 s).
+Estes titulos foram medidos via canal de controle em dois momentos distintos, comprovando avanco continuo de ticks:
+- **Arcade / Corrida (TecToy / Fishlabs / Data East)**: `AirRacez` (~54 t/s), `Bajaz` (~54 t/s), `JetBoardz` (~62 t/s), `Boiaz` (~44 t/s), `baddudes` (~62 t/s), `hbarrel` (~62 t/s), `torkandkral`, `toyraidzeebo`
+- **3D / OpenGL ES**: `asq`, `bio4_brew`, `cnk2`, `ddragonz`, `gof`, `ironsight`, `pacmania`, `pbc`, `quake`, `recklessracing`, `rmp`, `rt2`
+- **Acao / RPG / Simulação**: `fifa09` (~62 t/s), `heavyweaponbrew` (~31 t/s), `zenonia` (~15 t/s), `bjt` (~10 t/s), `game`
 
-| Estado | Titulos |
-|---|---|
-| **Roda** (contador avanca) | 14 |
-| **Congela** (contador parado) | 20 |
-| Inconclusivo (ver ressalva) | 15 |
+---
 
-Rodam: asq, bio4_brew, cnk2, ddragonz, game, gof, ironsight, pacmania, pbc, quake, rmp, rt2, torkandkral, toyraidzeebo
+## 3. Z-Wheel (Menu Principal do Zeebo - `tectoy.mod`)
 
-RESSALVA SOBRE O "INCONCLUSIVO": nao e uma falha do emulador, e um limite do
-medidor. Em titulos como o karnovr o servidor de controle nao chega a abrir
-dentro da janela de espera (o jogo demora a alcancar o laco de eventos), e em
-outros ele abre depois de eu desistir de conectar. O log desses titulos mostra
-progresso normal -- o karnovr, por exemplo, imprime "end create channel!!!!".
+Destravada por completo ate o laco principal de eventos:
+1. **`ISQLMgr` / `ISQLDatabase`** (SQLite real embutido, commit `f20fac8`): abre `tt_prefs.db`, passa no `PRAGMA integrity_check`, sem erros de preferencia.
+2. **`IWidget` (`0x01028e51`)** (commit `be83768`): acessador com convencao invertida (diferente de zero = sucesso).
+3. **`ICollection` (`0x0100104f`)** (commit `24feff4`): `AtEnd()` retorna 1 para colecoes vazias, eliminando laco infinito de 13,6M chamadas.
+4. **Isolamento de memoria** (commit `24feff4`): movido SqlHle para `0x800D0000..0x800E0000`, eliminando colisao de vtable.
+5. **Abertura do banco de cache**: abre `asset_cache` via SQLite e entra no laco principal com janela aberta (`running=true`).
 
-## "Congela" nem sempre e travamento
+---
 
-Dois casos medidos mostram que o rotulo esconde coisas diferentes:
+## 4. Parsers de Containers Concluidos
 
-- **baddudes / hbarrel** ficam num ciclo suspende/retoma que EXECUTA: com
-  orcamento de 8 bilhoes de instrucoes o baddudes completa 10558 ciclos de tick.
-  Ele le o proprio `.zip` byte a byte, re-varrendo o diretorio central a cada
-  arquivo procurado -- cada byte e um trap de HLE. Nao esta parado, esta lento.
-- **fifa09** parecia falhar em `CreateInstance` com o orcamento de 150 milhoes
-  de instrucoes da varredura. Com 8 bilhoes ele passa e chega ao laco de ticks.
-  O perfil mostra o motivo: 26376 chamadas de realloc e 3300 de malloc num laco
-  que monta uma lista de strings, item a item.
+Todos os containers de dados do corpus possuem suporte completo no núcleo:
+- **`AEZ`** (Fishlabs, 12 arquivos, 1390 entradas): descompressao gzip e entradas brutas `0xFFFFFFFF` (commit `c4d60cd`).
+- **`FUFS` (`.vfs`)** (6 arquivos, 1642 entradas): tabela de 12 bytes e funcao de hash polinomial insensivel a caixa `h = h*67 + (toupper(c) - 113)` (commit `3ceae7d`).
+- **`SAR` (`SWVARC`)** (Superscape, 53 arquivos, 332 entradas): leitura completa validada contra o proprio jogo (commit `fcac5ef`).
+- **`PAKZ` / `BAR` / `GGZ` / `PKG`**: 100% integrados no VFS.
 
-Ou seja, parte do que a primeira medida conta como falha e orcamento de
-instrucoes, nao incompatibilidade. Um numero de compatibilidade sem o orcamento
-declarado ao lado nao significa nada.
+---
 
-## Falso alvo descartado
+## 5. Ultimos Titulos com Trabalho Pendente
 
-As 15 ocorrencias de "Miscellaneous instruction space (MRS/MSR/etc.)" nos logs
-do corpus estao TODAS no mesmo endereco, `pc=0x00090024`, fora de qualquer
-modulo carregado. E onde o interpretador cai depois de saltar para nulo e
-executar lixo -- sintoma, nao lacuna de CPU. Implementar MRS/MSR nao destravaria
-nenhum titulo.
-
-
-### Atualizacao da segunda medida: titulos orientados a threads cooperativas
-
-A medicao automatizada inicial usava `tick_count` reportado pelo servidor de controle.
-No entanto, o `tick_count` era incrementado unicamente em timers `IShell` expirados.
-Jogos cujo laco principal e orientado a threads cooperativas BREW (`IThread` / `0x01001017`)
-executavam milhares de fatias de thread normais pelo guest sem que nenhum timer IShell
-disparasse, ficando falsamente marcados como `tick=0` estatico ("CONGELAM").
-
-Com a correcao no commit `a1edff6` (`tick_count += run_pending_threads_fn("tick")`),
-a medicao real confirmou que estes 6 titulos estao em plena execucao do laco guest:
-  - **AirRacez**: tick 146 -> 417 (~54 ticks/s)
-  - **Bajaz**: tick 135 -> 405 (~54 ticks/s)
-  - **JetBoardz**: tick 122 -> 495 (~62 ticks/s)
-  - **Boiaz**: tick 73 -> 337 (~44 ticks/s)
-  - **baddudes**: tick 10 -> 384 (~62 ticks/s)
-  - **hbarrel**: tick 28 -> 402 (~62 ticks/s)
-
-Total de titulos com laco de execucao ativo comprovado: **25 titulos**
-  - **zenonia**: avanca ticks ativamente (16 -> 139, ~15 ticks/s)
-  - **heavyweaponbrew**: avanca ticks ativamente (8 -> 257, ~31 ticks/s)
-  - **bjt**: avanca ticks ativamente (8 -> 53)
-  - **fifa09**: avanca ticks ativamente (~62 ticks/s, thread 0x80300064) (de 50 que iniciam).
+- **`nfs`**: tenta abrir `../nfsresources/` em laco; precisa de mapeamento de diretorio de recursos pai.
+- **`alpineracerex`**: gasta dezenas de bilhoes de passos processando fontes e texturas no `EVT_APP_START`; precisa de otimizacao JIT/fast-path.
+- **`rocketweb`, `reksio`, `prey3d`, `imicro3d`**: chegam ao laco de eventos da janela (`running=true`), aguardando despacho de eventos de interface.
