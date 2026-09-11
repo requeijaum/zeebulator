@@ -856,7 +856,17 @@ int main(int argc, char** argv) {
     // find where a given session starts/ends when reading the file
     // back later, without needing to parse timestamps out of every
     // line.
-    std::string playlog_path = std::string(argv[1]) + ".playlog";
+    // Same rule as save data: never write beside the ROM (see data_dir below).
+    std::string playlog_path = [&]() -> std::string {
+      if (const char* forced = std::getenv("ZEEB_DATA_DIR")) return std::string(forced) + "/" + BaseName(argv[1]) + ".playlog";
+      if (const char* home = std::getenv("HOME"))
+        return std::string(home) + "/.local/share/zeebulator/" + BaseName(argv[1]) + ".playlog";
+      return std::string(argv[1]) + ".playlog";
+    }();
+    {
+      std::error_code ec;
+      std::filesystem::create_directories(std::filesystem::path(playlog_path).parent_path(), ec);
+    }
     if (std::freopen(playlog_path.c_str(), "a", stdout) == nullptr ||
         std::freopen(playlog_path.c_str(), "a", stderr) == nullptr) {
       std::exit(1);
@@ -873,7 +883,30 @@ int main(int argc, char** argv) {
   // ROM itself, not the git-ignored research/games/ tree's own concern
   // (this file is real tooling output, not research material, but
   // colocating it is the simplest place a player would look for it).
-  const std::string save_state_path = std::string(argv[1]) + ".savestate";
+  // Player data does not belong next to the ROM. The corpus lives on removable,
+  // often read-only media, and writing there polluted it: a static audit of the
+  // NAND dump counted our own `.userdata` files as if they were shipped game
+  // content. Default to the XDG data directory, keep reading a legacy file that
+  // an older build left beside the module, and allow ZEEB_DATA_DIR to override.
+  const std::string module_key = BaseName(argv[1]);
+  const std::string data_dir = [&]() -> std::string {
+    if (const char* forced = std::getenv("ZEEB_DATA_DIR")) return forced;
+    if (const char* xdg = std::getenv("XDG_DATA_HOME")) return std::string(xdg) + "/zeebulator";
+    if (const char* home = std::getenv("HOME")) return std::string(home) + "/.local/share/zeebulator";
+    return ".";
+  }();
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(data_dir, ec);
+  }
+  auto pick_existing_legacy = [](const std::string& preferred, const std::string& legacy) {
+    std::error_code ec;
+    if (!std::filesystem::exists(preferred, ec) && std::filesystem::exists(legacy, ec)) return legacy;
+    return preferred;
+  };
+  const std::string save_state_path =
+      pick_existing_legacy(data_dir + "/" + module_key + ".savestate",
+                           std::string(argv[1]) + ".savestate");
   // Real save-game data (Double Dragon's own "./udata/ddz.sav", written
   // through FileHle's writable_files_ -- see file_hle.h) is a genuinely
   // separate concern from the save STATE above: a player's actual
@@ -882,7 +915,9 @@ int main(int argc, char** argv) {
   // this, writable_files_ was purely in-memory and silently reset to
   // empty on every process exit -- indistinguishable from the game "not
   // saving" at all (a real, live-reported bug this fixes).
-  const std::string userdata_path = std::string(argv[1]) + ".userdata";
+  const std::string userdata_path =
+      pick_existing_legacy(data_dir + "/" + module_key + ".userdata",
+                           std::string(argv[1]) + ".userdata");
 
   zeebulator::VirtualFilesystem vfs;
   // A title that doesn't ship a given ggz passes '-' for that slot (ABD is
@@ -1794,10 +1829,11 @@ int main(int argc, char** argv) {
     uint32_t requested_cls = core.GetRegister(zeebulator::kR1);
     uint32_t ppo = core.GetRegister(zeebulator::kR2);
     if (requested_cls == 0x01001045) {
-      cpu.GetMemory().Write32(ppo, unknown_0x01001045_obj);
+      if (ppo != 0) cpu.GetMemory().Write32(ppo, unknown_0x01001045_obj);
       core.SetRegister(zeebulator::kR0, 0);
     } else {
-      core.SetRegister(zeebulator::kR0, 1);
+      if (ppo != 0) cpu.GetMemory().Write32(ppo, 0);
+      core.SetRegister(zeebulator::kR0, 3); // ECLASSNOTSUPPORT per AEEError.h
     }
   };
   // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
@@ -1961,11 +1997,19 @@ int main(int argc, char** argv) {
     // Copia-para-gravavel: o banco original que veio com o jogo nunca e
     // aberto direto, porque o SQLite grava nele (journal, PRAGMA,
     // INSERT) e o pacote do jogo e material de pesquisa que precisa
-    // continuar intacto. A copia mora ao lado do .mod, na mesma
-    // convencao do <mod>.savestate/<mod>.userdata.
+    // continuar intacto. A copia vai para o diretorio de dados do usuario,
+    // nao para a midia da ROM: um strace da Z-Wheel mostrou este processo
+    // abrindo tt_prefs.db e asset_cache com O_RDWR|O_CREAT dentro de
+    // /media/.../debug_nand, que e removivel e pode estar so para leitura.
     namespace fs = std::filesystem;
     std::string mod_path = argv[1];
-    fs::path db_dir = fs::path(mod_path + ".sqldb");
+    fs::path db_dir = fs::path(data_dir) / (module_key + ".sqldb");
+    {
+      // Um banco ja criado pela convencao antiga continua valendo.
+      std::error_code ec;
+      fs::path legacy = fs::path(mod_path + ".sqldb");
+      if (!fs::exists(db_dir, ec) && fs::exists(legacy, ec)) db_dir = legacy;
+    }
     fs::path mod_dir = fs::absolute(mod_path).parent_path();
     sql_hle.SetPathResolver([db_dir, mod_dir, &vfs](const std::string& name) -> std::string {
       std::error_code ec;
@@ -2309,7 +2353,7 @@ int main(int argc, char** argv) {
       core.SetRegister(zeebulator::kR0, 0); // SUCCESS
     } else {
       if (ppo != 0) cpu.GetMemory().Write32(ppo, 0);
-      core.SetRegister(zeebulator::kR0, 20); // ECLASSNOTSUPPORT
+      core.SetRegister(zeebulator::kR0, 3);  // ECLASSNOTSUPPORT (AEEError.h: 3; 20 is EUNSUPPORTED)
     }
   };
   // Slot 3: GetBitmap(IImageDecoder*, IBitmap **ppiBitmap)

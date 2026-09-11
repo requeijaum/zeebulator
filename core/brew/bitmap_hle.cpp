@@ -56,15 +56,27 @@ void BitmapHle::QueryInterface(IArmCore& core) {
 }
 
 void BitmapHle::GetInfo(IArmCore& core) {
-  // void GetInfo(IBitmap *pIBitmap, AEEBitmapInfo *pInfo, int nSize)
+  // int GetInfo(IBitmap *pIBitmap, AEEBitmapInfo *pInfo, int nSize)
+  // Per official Qualcomm SDK (AEEIBitmap.h):
+  // typedef struct {
+  //    uint32  cx;
+  //    uint32  cy;
+  //    uint32  nDepth;
+  // } AEEBitmapInfo;
   uint32_t pinfo = core.GetRegister(kR1);
+  int32_t n_size = static_cast<int32_t>(core.GetRegister(kR2));
   if (pinfo != 0) {
-    // AEEBitmapInfo layout: cx (16), cy (16), nPitch (16), nDepth (8), nColorScheme (8)
-    memory_.Write16(pinfo + 0, static_cast<uint16_t>(width_));
-    memory_.Write16(pinfo + 2, static_cast<uint16_t>(height_));
-    memory_.Write16(pinfo + 4, static_cast<uint16_t>(pitch_));
-    memory_.Write8(pinfo + 6, static_cast<uint8_t>(depth_));
-    memory_.Write8(pinfo + 7, static_cast<uint8_t>(depth_ == 16 ? 16 : 0));
+    if (n_size >= 12) {
+      memory_.Write32(pinfo + 0, static_cast<uint32_t>(width_));
+      memory_.Write32(pinfo + 4, static_cast<uint32_t>(height_));
+      memory_.Write32(pinfo + 8, static_cast<uint32_t>(depth_));
+    } else {
+      // Legacy or small struct fallback
+      memory_.Write32(pinfo + 0, static_cast<uint32_t>(width_));
+      if (n_size >= 8) {
+        memory_.Write32(pinfo + 4, static_cast<uint32_t>(height_));
+      }
+    }
   }
   core.SetRegister(kR0, 0);
 }

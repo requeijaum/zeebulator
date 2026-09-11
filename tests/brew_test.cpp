@@ -130,8 +130,8 @@ TEST(IShellHle, CreateInstanceReturnsFailedForAnUnregisteredClass) {
   constexpr uint32_t kPpObjAddr = 0x90000;
   cpu.GetMemory().Write32(kPpObjAddr, 0xDEADBEEF);
   // int CreateInstance(IShell *po, AEECLSID cls, void **ppo)
-  // Real Qualcomm BREW returns ECLASSNOTSUPPORT (20) and zeroes *ppo on unknown class
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, /*cls=*/0x1234, kPpObjAddr), 20u);
+  // Real Qualcomm BREW returns ECLASSNOTSUPPORT (3, per AEEError.h) and zeroes *ppo on unknown class
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, /*cls=*/0x1234, kPpObjAddr), 3u);
   EXPECT_EQ(cpu.GetMemory().Read32(kPpObjAddr), 0u);
 }
 
@@ -804,9 +804,10 @@ TEST(IDisplayHle, CreateDIBitmapAllocatesUsableOffscreenDib) {
   uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
   uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
   constexpr uint32_t kInfoStruct = 0x80031000;
-  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 8);
-  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 0), 8);   // width
-  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 2), 4);   // height
+  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 12);
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 0), 8u);   // width
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 4), 4u);   // height
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 8), 16u);  // depth
 }
 
 TEST(IDisplayHle, CreateDIBitmapWithoutArenaFails) {
@@ -852,9 +853,10 @@ TEST(IDisplayHle, CreateDIBitmapExAllocatesUsableOffscreenDib) {
   uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
   uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
   constexpr uint32_t kInfoStruct = 0x80031000;
-  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 8);
-  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 0), 10);  // width
-  EXPECT_EQ(cpu.GetMemory().Read16(kInfoStruct + 2), 6);   // height
+  hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 12);
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 0), 10u);  // width
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 4), 6u);   // height
+  EXPECT_EQ(cpu.GetMemory().Read32(kInfoStruct + 8), 16u);  // depth
 }
 
 TEST(IDisplayHle, SetDestinationAndGetDestinationRouteCorrectly) {

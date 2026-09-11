@@ -63,7 +63,7 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
   if (it == instances_.end()) {
     if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> UNKNOWN (ECLASSNOTSUPPORT)\n", DescribeClsid(cls_id).c_str());
     if (ppobj != 0) memory_.Write32(ppobj, 0);
-    core.SetRegister(kR0, 20);  // ECLASSNOTSUPPORT (Qualcomm standard: 20)
+    core.SetRegister(kR0, 3);   // ECLASSNOTSUPPORT (Qualcomm standard: 3, per AEEError.h; 20 is EUNSUPPORTED)
     return;
   }
   if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> instance OK\n", DescribeClsid(cls_id).c_str());

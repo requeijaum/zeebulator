@@ -37,13 +37,12 @@ TEST(BitmapHle, LayoutAndVtableMethodsWorkCorrectly) {
   // Test GetInfo (slot 12)
   uint32_t info_struct_addr = 0x4000;
   cpu.SetRegister(kR1, info_struct_addr);
-  cpu.SetRegister(kR2, 8);  // size
-  uint32_t res = hle.CallArmFunction(memory.Read32(vtable_addr + 12 * 4), object_addr, info_struct_addr, 8);
+  cpu.SetRegister(kR2, 12);  // sizeof(AEEBitmapInfo)
+  uint32_t res = hle.CallArmFunction(memory.Read32(vtable_addr + 12 * 4), object_addr, info_struct_addr, 12);
   EXPECT_EQ(res, 0u);
-  EXPECT_EQ(memory.Read16(info_struct_addr + 0), 320);
-  EXPECT_EQ(memory.Read16(info_struct_addr + 2), 240);
-  EXPECT_EQ(memory.Read16(info_struct_addr + 4), 640);
-  EXPECT_EQ(memory.Read8(info_struct_addr + 6), 16);
+  EXPECT_EQ(memory.Read32(info_struct_addr + 0), 320u);
+  EXPECT_EQ(memory.Read32(info_struct_addr + 4), 240u);
+  EXPECT_EQ(memory.Read32(info_struct_addr + 8), 16u);
 
   // Test SetTransparencyColor (slot 14) and GetTransparencyColor (slot 15)
   res = hle.CallArmFunction(memory.Read32(vtable_addr + 14 * 4), object_addr, 0xF81F);
