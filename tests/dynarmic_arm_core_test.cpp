@@ -95,6 +95,19 @@ TEST(DynarmicArmCore, SemihostingSvcMatchesInterpreter) {
   EXPECT_EQ(jit.GetRegister(kPC), 4u);
 }
 
+TEST(DynarmicArmCore, UndefinedInstructionFailsLikeInterpreter) {
+  constexpr uint32_t kUdf = 0xE7F000F0;  // ARMv6 UDF #0
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  for (IArmCore* core : {static_cast<IArmCore*>(&interp), static_cast<IArmCore*>(&jit)}) {
+    core->Reset();
+    core->GetMemory().Write32(0, kUdf);
+    core->SetRegister(kPC, 0);
+  }
+  EXPECT_THROW(interp.Step(), zeebulator::UnimplementedInstruction);
+  EXPECT_THROW(jit.Step(), zeebulator::UnimplementedInstruction);
+}
+
 // Central-risk feature (design doc): the call-out trap must be a pure
 // control-flow decision in the adapter, never entangled with a JIT block.
 // A branch into the trap range must fire the handler with the trapped

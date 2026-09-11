@@ -77,6 +77,7 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
   std::uint32_t call_out_base = 0;
   std::uint32_t call_out_size = 0;
   bool trap_faulted = false;  // set when a NoExecuteFault halted the block
+  bool exception_faulted = false;  // non-trap guest exception; surfaced after JIT returns
   // Pages (4 KiB) we have executed code from — the only pages where a guest
   // store can invalidate a cached block.
   std::unordered_set<std::uint32_t> code_pages;
@@ -177,7 +178,13 @@ struct DynarmicArmCore::Callbacks final : Dynarmic::A32::UserCallbacks {
     if (e == Dynarmic::A32::Exception::NoExecuteFault && jit) {
       trap_faulted = true;
       jit->HaltExecution();
+      return;
     }
+    // Never continue after an undefined/unsupported guest exception. The
+    // interpreter throws; generated Dynarmic code cannot throw through its
+    // callback, therefore latch, halt, and let Step/Run raise safely.
+    exception_faulted = true;
+    if (jit) jit->HaltExecution();
     (void)pc;
   }
   // Never reached in practice: we don't request interpreter fallback for any
@@ -254,7 +261,11 @@ void DynarmicArmCore::Step() {
   // Keep the tick budget non-empty so cycle counting never halts a single
   // step early; Jit::Step() executes exactly one instruction regardless.
   callbacks_->ticks_left = 1;
+  callbacks_->exception_faulted = false;
   jit_->Step();
+  if (callbacks_->exception_faulted) {
+    throw UnimplementedInstruction("Dynarmic unsupported guest exception");
+  }
 }
 
 uint64_t DynarmicArmCore::Run(uint64_t max_instructions) {
@@ -275,7 +286,11 @@ uint64_t DynarmicArmCore::Run(uint64_t max_instructions) {
     const uint64_t budget = max_instructions - executed;
     callbacks_->ticks_left = budget;
     callbacks_->trap_faulted = false;
+    callbacks_->exception_faulted = false;
     jit_->Run();
+    if (callbacks_->exception_faulted) {
+      throw UnimplementedInstruction("Dynarmic unsupported guest exception");
+    }
     // AddTicks drained ticks_left by the number of instructions executed.
     uint64_t ran = budget - callbacks_->ticks_left;
     if (callbacks_->trap_faulted) {
