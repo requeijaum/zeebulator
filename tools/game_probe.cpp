@@ -1986,6 +1986,17 @@ int main(int argc, char** argv) {
   uint32_t sound_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, /*vtable=*/0x8006E000, /*object=*/0x8006F000, sound_methods);
   shell_hle.RegisterInstance(/*AEECLSID_SOUND=*/0x01001056, sound_obj);
+
+  // AEECLSID_TEXTCTL_10 (0x01003109) / AEECLSID_TEXTCTL (0x01003209) -- ITextCtl.
+  // Interface de controle de texto do BREW (AEEText.h / AEEControls.h, 28 slots).
+  // Medido no Zenonia (277455): a biblioteca WBLText cria 0x01003109 via
+  // ISHELL_CreateInstance e guarda em m_pITextCtl. Se a classe nao for encontrada
+  // (ECLASSNOTSUPPORT), dispara a assercao interna na linha 241 de WBLText.c
+  // (":AF![%s:%d]:%s(%d):") e entra num laco infinito (b 0x174634).
+  uint32_t textctl_obj = zeebulator::BuildGenericStubObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x800A0000, /*object=*/0x800A1000, /*slot_count=*/28);
+  shell_hle.RegisterInstance(0x01003109, textctl_obj);
+  shell_hle.RegisterInstance(0x01003209, textctl_obj);
   // A still-deeper gate (0x1b71c, a joystick/gamepad-init routine gating
   // the same "memory insufficient" state) calls
   // ISHELL_CreateInstance(shell, ClsId=0x0106c411, ...) then
