@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -24,6 +25,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include "core/audio/mixer.h"
@@ -639,7 +641,7 @@ uint32_t SdlKeyToAvk(SDL_Keycode key) {
 // Maps a subset of SDL keys to real HID `nButtonUID` values, for the
 // *other* real input path this codebase has wired up but never fed
 // live input into: the real HID/gamepad button-event mechanism
-// (`hid_device_methods[9]`/`captured_button_callback` below), separate
+// (`hid_device_methods[9]`/registered ISignal below), separate
 // from the classic AVK key path `SdlKeyToAvk` feeds.
 //
 // Real disassembly this round traced the whole real pipeline live, end
@@ -680,6 +682,16 @@ constexpr uint32_t kHidUidButton1 = 0x0106c40a;
 constexpr uint32_t kHidUidButton2 = 0x0106c40b;
 constexpr uint32_t kHidUidButton3 = 0x0106c40c;
 constexpr uint32_t kHidUidButton4 = 0x0106c40d;
+// Exact enumeration order from Zeebo hid_devices.cfg, retained with its
+// documented duplicate/mislabelled entries. Games identify controls by UID.
+constexpr std::array<uint32_t, 18> kHidButtonUids = {
+    kHidUidButton2, kHidUidRightShoulderUpper, kHidUidButton4, 0x0106c4d0,
+    kHidUidRightShoulderUpper, 0x0106c407, kHidUidLeftShoulderUpper, 0x0106c409,
+    0x0106c405, kHidUidBack, 0x0106c404, 0x0106c402,
+    kHidUidDPadUp, kHidUidDPadDown, kHidUidDPadLeft, kHidUidDPadRight,
+    kHidUidButton1, kHidUidButton3,
+};
+constexpr uint32_t kHidJoystickDeviceUid = 0x0106c3fd;
 
 uint32_t SdlKeyToHidButton(SDL_Keycode key) {
   switch (key) {
@@ -2328,40 +2340,89 @@ int main(int argc, char** argv) {
   // GetAxesInfo(13)/... -- slots 11-13 already matched real Double Dragon
   // call sites (`ddragonz.mod` offset 0x100af4-0x100b48) exactly.
   //
-  // Queue of simulated AEEHIDButtonInfo events for GetNextButtonEvent(9)
-  // to hand out one at a time -- how a real button *press* gets
-  // delivered to real code, once real code asks for it. Each entry is
-  // {nButtonID, nState, nButtonUID}; nButtonMin/nButtonMax are always
-  // 0/1 for a simple digital button per the real header's own docs.
-  auto simulated_button_events =
-      std::make_shared<std::vector<std::array<int32_t, 3>>>();
+  // Input follows the BREW shape: state lives in the HID device, each edge
+  // is queued as AEEHIDButtonInfo, and the registered ISignal schedules the
+  // guest callback. Directly calling a guessed callback bypassed signal
+  // ownership and made several titles ignore otherwise valid keyboard input.
+  struct HidButtonEvent { int32_t id; int32_t state; int32_t uid; };
+  struct HidSignal { uint32_t callback; uint32_t context; uint32_t device_slot; };
+  auto simulated_button_events = std::make_shared<std::deque<HidButtonEvent>>();
+  auto hid_signals = std::make_shared<std::unordered_map<uint32_t, HidSignal>>();
+  auto pending_hid_signals = std::make_shared<std::deque<uint32_t>>();
+  auto hid_button_state = std::make_shared<std::array<bool, kHidButtonUids.size()>>();
+  auto registered_button_signal = std::make_shared<uint32_t>(0);
+  auto next_signal_object = std::make_shared<uint32_t>(0x80065100);
+  auto next_signal_ctl_object = std::make_shared<uint32_t>(0x80065300);
   std::vector<zeebulator::HleRuntime::HleFunction> hid_device_methods(
       40, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  hid_device_methods[3] = [](zeebulator::IArmCore& core) {
+    // GetDeviceInfo(IHIDDevice*, AEEHIDDeviceInfo*): gamepad, PID, VID, wired.
+    uint32_t out = core.GetRegister(zeebulator::kR1);
+    if (out != 0) {
+      core.GetMemory().Write32(out, 1);       // HID_TYPE_GAMEPAD
+      core.GetMemory().Write16(out + 4, 0x0135);
+      core.GetMemory().Write16(out + 6, 0x1eaa);
+      core.GetMemory().Write32(out + 8, 0);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
   hid_device_methods[4] = [](zeebulator::IArmCore& core) {
-    // AEEResult GetDeviceStatus(IHIDDevice*, int *pnStatus)
     uint32_t pstatus = core.GetRegister(zeebulator::kR1);
-    if (pstatus != 0) core.GetMemory().Write32(pstatus, 1);  // 1 = CONNECTED
-    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+    if (pstatus != 0) core.GetMemory().Write32(pstatus, 1);
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  hid_device_methods[6] = [hid_button_state](zeebulator::IArmCore& core) {
+    // Accept both the real UID and a numerical enumeration index.
+    uint32_t requested = core.GetRegister(zeebulator::kR1);
+    uint32_t index = 0;
+    for (; index < kHidButtonUids.size(); ++index) {
+      if (kHidButtonUids[index] == requested) break;
+    }
+    if (index == kHidButtonUids.size() && requested < kHidButtonUids.size()) index = requested;
+    if (index == kHidButtonUids.size()) { core.SetRegister(zeebulator::kR0, 2); return; }
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) {
+      core.GetMemory().Write32(out, index);
+      core.GetMemory().Write32(out + 4, (*hid_button_state)[index] ? 1 : 0);
+      core.GetMemory().Write32(out + 8, kHidButtonUids[index]);
+      core.GetMemory().Write32(out + 12, 0);
+      core.GetMemory().Write32(out + 16, 1);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
   };
   hid_device_methods[7] = [](zeebulator::IArmCore& core) {
-    // AEEResult GetNumberOfButtons(IHIDDevice*, int *pnButtons)
     uint32_t pbuttons = core.GetRegister(zeebulator::kR1);
-    if (pbuttons != 0) core.GetMemory().Write32(pbuttons, 16);
-    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+    if (pbuttons != 0) core.GetMemory().Write32(pbuttons, kHidButtonUids.size());
+    core.SetRegister(zeebulator::kR0, 0);
   };
-  hid_device_methods[8] = [](zeebulator::IArmCore& core) {
-    // AEEResult RegisterForButtonEvent(IHIDDevice*, ISignal *piSignal)
-    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+  hid_device_methods[8] = [registered_button_signal](zeebulator::IArmCore& core) {
+    *registered_button_signal = core.GetRegister(zeebulator::kR1);
+    if (std::getenv("ZEEB_LOG_HID")) {
+      std::fprintf(stderr, "[hid] RegisterForButtonEvent signal=0x%08x\n",
+                   *registered_button_signal);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
   };
   hid_device_methods[9] = [simulated_button_events](zeebulator::IArmCore& core) {
     // AEEResult GetNextButtonEvent(IHIDDevice*, AEEHIDButtonInfo *pnButtonInfo,
     //   uint32 *pdwTimestamp, boolean *pbDroppedEvents)
     if (simulated_button_events->empty()) {
+      uint32_t info_addr = core.GetRegister(zeebulator::kR1);
+      if (info_addr != 0) {
+        for (uint32_t off = 0; off < 20; off += 4) core.GetMemory().Write32(info_addr + off, 0);
+      }
+      uint32_t timestamp_addr = core.GetRegister(zeebulator::kR2);
+      if (timestamp_addr != 0) core.GetMemory().Write32(timestamp_addr, SDL_GetTicks());
+      uint32_t dropped_addr = core.GetRegister(zeebulator::kR3);
+      if (dropped_addr != 0) core.GetMemory().Write32(dropped_addr, 0);
       core.SetRegister(zeebulator::kR0, 1);  // no more events (AEE_EFAILED-ish)
       return;
     }
-    auto [button_id, state, button_uid] = simulated_button_events->front();
-    simulated_button_events->erase(simulated_button_events->begin());
+    HidButtonEvent event = simulated_button_events->front();
+    simulated_button_events->pop_front();
+    int32_t button_id = event.id;
+    int32_t state = event.state;
+    int32_t button_uid = event.uid;
     uint32_t info_addr = core.GetRegister(zeebulator::kR1);
     // struct AEEHIDButtonInfo { int nButtonID; int nState; int nButtonUID;
     //   int nButtonMin; int nButtonMax; } -- confirmed field order/size
@@ -2372,7 +2433,7 @@ int main(int argc, char** argv) {
     core.GetMemory().Write32(info_addr + 12, 0);
     core.GetMemory().Write32(info_addr + 16, 1);
     uint32_t timestamp_addr = core.GetRegister(zeebulator::kR2);
-    if (timestamp_addr != 0) core.GetMemory().Write32(timestamp_addr, 0);
+    if (timestamp_addr != 0) core.GetMemory().Write32(timestamp_addr, SDL_GetTicks());
     uint32_t dropped_addr = core.GetRegister(zeebulator::kR3);
     if (dropped_addr != 0) core.GetMemory().Write32(dropped_addr, 0);
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
@@ -2427,19 +2488,30 @@ int main(int argc, char** argv) {
     }
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
   };
+  hid_methods[4] = [](zeebulator::IArmCore& core) {
+    // IHID_GetDeviceInfo(handle, AEEHIDDeviceInfo*), used while enumerating.
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) {
+      core.GetMemory().Write32(out, 1);
+      core.GetMemory().Write16(out + 4, 0x0135);
+      core.GetMemory().Write16(out + 6, 0x1eaa);
+      core.GetMemory().Write32(out + 8, 0);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
   hid_methods[7] = [](zeebulator::IArmCore& core) {
-    // AEEResult GetConnectedDevices(IHID*, int nDeviceType,
-    //   int *pnDevHandles, int pnDevHandlesLen, int *pnDevHandlesLenReq)
+    // GetConnectedDevices reports the simulated pad only to joystick queries;
+    // keyboard events use BREW EVT_KEY, not an invented HID keyboard device.
+    uint32_t wanted = core.GetRegister(zeebulator::kR1);
     uint32_t device_handles_addr = core.GetRegister(zeebulator::kR2);
     uint32_t device_handles_len = core.GetRegister(zeebulator::kR3);
     uint32_t num_handles_req_addr = zeebulator::HleRuntime::ReadStackArg(core, 0);
-    if (device_handles_addr != 0 && device_handles_len >= 1) {
+    bool match = wanted == kHidJoystickDeviceUid;
+    if (match && device_handles_addr != 0 && device_handles_len >= 1) {
       core.GetMemory().Write32(device_handles_addr, kSimulatedDeviceHandle);
     }
-    if (num_handles_req_addr != 0) {
-      core.GetMemory().Write32(num_handles_req_addr, 1);
-    }
-    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+    if (num_handles_req_addr != 0) core.GetMemory().Write32(num_handles_req_addr, match ? 1 : 0);
+    core.SetRegister(zeebulator::kR0, 0);
   };
   hid_methods[5] = [](zeebulator::IArmCore& core) {
     // AEEResult GetNextConnectEvent(IHID*, int *pnDevHandle, int *pnStatus,
@@ -2488,69 +2560,68 @@ int main(int argc, char** argv) {
   // bundled in this repo's research/ -- and updates real per-button
   // bitmasks) is captured here so a simulated button press can invoke it
   // directly later, the same way a real fired ISignal would.
-  auto captured_button_callback = std::make_shared<uint32_t>(0);
-  auto captured_button_context = std::make_shared<uint32_t>(0);
-  // pUser is title-owned. Keep the address of its actual IHIDDevice member;
-  // it is not universally the first word (Zenonia's WBL object uses +0xcc).
-  auto captured_button_device_slot = std::make_shared<uint32_t>(0);
-  // Was gated on the callback address matching Double Dragon's own real
-  // button-callback address literally (`ddragonz.mod` 0x11bdf4) -- a
-  // real, confirmed identification for that one title, but not a real
-  // general signal: every other title's own compiled code registers
-  // its own callback at its own, different address, so that check can
-  // never match for anyone else (found live bringing up Alien Breaker
-  // Deluxe: `CreateSignal` genuinely fires, but the address check
-  // silently never captures it, leaving `*captured_button_callback` at
-  // 0 for the rest of the process). The real, general signal -- per
-  // this same doc comment's own reference source
-  // (research/samples/conftest_source/conftest/GamepadMgr.c) -- is
-  // call *order*, not address: real code always registers exactly
-  // three signals through this same slot, in a fixed sequence (device
-  // connect, then button-event, then position-change). Capturing the
-  // second call generalizes to any title using this same real
-  // Signal-factory pattern, not just the one whose address happened to
-  // be reverse-engineered first.
-  auto signal_registration_count = std::make_shared<int>(0);
-  // ISignal (4 slots) and ISignalCtl (6 slots) objects returned by CreateSignal.
-  // Covered with 10 slots each so AddRef/Release/QueryInterface/Set/Detach/Enable are safe.
-  uint32_t signal_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x80065000, /*object=*/0x80065100, /*slot_count=*/10);
-  uint32_t signal_ctl_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x80065200, /*object=*/0x80065300, /*slot_count=*/10);
+  // ISignal objects own the guest callback. Unlike the old fixed-object
+  // shortcut, each CreateSignal returns a distinct object, so connect/button/
+  // position registrations cannot alias each other.
+  std::vector<zeebulator::HleRuntime::HleFunction> signal_methods(
+      4, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  signal_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out = core.GetRegister(zeebulator::kR2);
+    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  signal_methods[3] = [hid_signals, pending_hid_signals](zeebulator::IArmCore& core) {
+    uint32_t signal = core.GetRegister(zeebulator::kR0);
+    if (hid_signals->count(signal) != 0) pending_hid_signals->push_back(signal);
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  constexpr uint32_t kSignalVtable = 0x80065000;
+  constexpr uint32_t kSignalCtlVtable = 0x80065200;
+  // Install shared method tables once. Runtime instances below only need a
+  // four-byte object header pointing at the appropriate shared vtable.
+  zeebulator::BuildInterfaceObject(cpu.GetMemory(), hle, kSignalVtable,
+                                   /*object=*/0x80065100, signal_methods);
+  std::vector<zeebulator::HleRuntime::HleFunction> signal_ctl_methods(
+      6, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  signal_ctl_methods[3] = signal_methods[3];  // ISignalCtl_Set
+  signal_ctl_methods[4] = [hid_signals](zeebulator::IArmCore& core) {
+    hid_signals->erase(core.GetRegister(zeebulator::kR0));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  zeebulator::BuildInterfaceObject(cpu.GetMemory(), hle, kSignalCtlVtable,
+                                   /*object=*/0x80065300, signal_ctl_methods);
 
   std::vector<zeebulator::HleRuntime::HleFunction> signal_cb_factory_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
-  signal_cb_factory_methods[3] = [&cpu, captured_button_callback, captured_button_context,
-                                   captured_button_device_slot, signal_registration_count,
-                                   signal_obj, signal_ctl_obj](zeebulator::IArmCore& core) {
-    // AEEResult CreateSignal(ISignalCBFactory*, IDLECBFUNC pfn, void *pUser,
-    //   ISignal **ppISignal, ISignalCtl **ppISignalCtl)
+  signal_cb_factory_methods[3] = [&cpu, hid_signals, next_signal_object,
+                                   next_signal_ctl_object](zeebulator::IArmCore& core) {
+    // CreateSignal(factory, IDLECBFUNC, pUser, ISignal**, ISignalCtl**).
     uint32_t callback = core.GetRegister(zeebulator::kR1);
-    uint32_t user_data = core.GetRegister(zeebulator::kR2);
-    uint32_t pp_isignal = core.GetRegister(zeebulator::kR3);
-    uint32_t out_signal_ctl = zeebulator::HleRuntime::ReadStackArg(core, 0);
-    if (*signal_registration_count == 1) {
-      *captured_button_callback = callback;
-      *captured_button_context = user_data;
-      // The real pUser object owns the device reference. Record its exact
-      // member while it is live. Do not assume offset zero: Zenonia's first
-      // word is its WBL vtable and its IHIDDevice is at +0xcc.
-      for (uint32_t offset = 0; user_data != 0 && offset < 0x400; offset += 4) {
-        uint32_t member = user_data + offset;
-        if (cpu.GetMemory().Read32(member) == kHidDeviceObject) {
-          *captured_button_device_slot = member;
-          break;
-        }
+    uint32_t context = core.GetRegister(zeebulator::kR2);
+    uint32_t out_signal = core.GetRegister(zeebulator::kR3);
+    uint32_t out_ctl = zeebulator::HleRuntime::ReadStackArg(core, 0);
+    uint32_t device_slot = 0;
+    // pUser layout belongs to the title. Record the member that initially
+    // contains our IHIDDevice rather than assuming pUser itself is a device.
+    for (uint32_t offset = 0; context != 0 && offset < 0x400; offset += 4) {
+      uint32_t member = context + offset;
+      if (cpu.GetMemory().Read32(member) == kHidDeviceObject) {
+        device_slot = member;
+        break;
       }
     }
-    ++*signal_registration_count;
-    if (pp_isignal != 0) {
-      cpu.GetMemory().Write32(pp_isignal, signal_obj);
-    }
-    if (out_signal_ctl != 0) {
-      cpu.GetMemory().Write32(out_signal_ctl, signal_ctl_obj);
-    }
-    core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+    uint32_t signal = *next_signal_object;
+    *next_signal_object += 4;
+    uint32_t control = *next_signal_ctl_object;
+    *next_signal_ctl_object += 4;
+    cpu.GetMemory().Write32(signal, kSignalVtable);
+    cpu.GetMemory().Write32(control, kSignalCtlVtable);
+    HidSignal registration{callback, context, device_slot};
+    (*hid_signals)[signal] = registration;
+    (*hid_signals)[control] = registration;
+    if (out_signal != 0) cpu.GetMemory().Write32(out_signal, signal);
+    if (out_ctl != 0) cpu.GetMemory().Write32(out_ctl, control);
+    core.SetRegister(zeebulator::kR0, 0);
   };
   uint32_t unknown_0x01041207_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, /*vtable_address=*/0x8001E000, /*object_address=*/0x8001F000,
@@ -4328,36 +4399,27 @@ int main(int argc, char** argv) {
     backend.ShowStatusMessage(ok && gl_ok ? "STATE LOADED" : "LOAD FAILED");
   }
 
-  // Shared tail of the real HID button-event injection path (see
-  // SdlKeyToHidButton's own doc comment) -- feeds `hid_button_uid`'s
-  // press/release into the real HID/gamepad mechanism the same way a
-  // real fired ISignal would, regardless of which real input source
-  // (keyboard event or, below, a polled ZPadState edge) it came from.
+  // Queue a physical HID edge, then schedule the exact ISignal the game
+  // registered. Guest callbacks are dispatched later in the outer loop, not
+  // re-entered from the host event handler.
   auto InjectHidButtonEvent = [&](uint32_t hid_button_uid, bool pressed) {
-    int state = pressed ? 1 : 0;
-    // nButtonID (first field) is a don't-care: the real callback's own
-    // translation function overwrites it from nButtonUID (see
-    // SdlKeyToHidButton's doc comment) before ever reading it back.
-    simulated_button_events->push_back({0, state, static_cast<int32_t>(hid_button_uid)});
-    // Real code can clear its IHIDDevice member after a complete event.
-    // Re-arm the member recorded from the actual pUser layout. Double Dragon
-    // stores it at +0; Zenonia stores it at +0xcc, where writing pUser+0
-    // would corrupt the WBL object's vtable.
-    if (*captured_button_device_slot != 0) {
-      cpu.GetMemory().Write32(*captured_button_device_slot, kHidDeviceObject);
+    uint32_t index = 0;
+    for (; index < kHidButtonUids.size(); ++index) {
+      if (kHidButtonUids[index] == hid_button_uid) break;
     }
-    try {
-      auto cb_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size,
-                                               *captured_button_callback, *captured_button_context,
-                                               0, 0, 0,
-                                               /*trace=*/false, /*hle_trace=*/false, &display,
-                                               &backend);
-      std::printf("HID button callback(uid=0x%x, state=%d) ran%s\n", hid_button_uid, state,
-                  cb_result.wandered_outside_module ? " (wandered!)" : "");
-    } catch (const std::exception& e) {
-      std::printf("HID button callback threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n",
-                  e.what(), cpu.GetRegister(zeebulator::kPC),
-                  cpu.GetRegister(zeebulator::kPC) - kBase);
+    if (index == kHidButtonUids.size()) return;
+    if ((*hid_button_state)[index] == pressed) return;
+    (*hid_button_state)[index] = pressed;
+    simulated_button_events->push_back(
+        HidButtonEvent{static_cast<int32_t>(index), pressed ? 1 : 0,
+                       static_cast<int32_t>(hid_button_uid)});
+    uint32_t signal = *registered_button_signal;
+    if (signal != 0 && hid_signals->count(signal) != 0) {
+      pending_hid_signals->push_back(signal);
+      if (std::getenv("ZEEB_LOG_HID")) {
+        std::fprintf(stderr, "[hid] queued uid=0x%08x state=%d signal=0x%08x\n",
+                     hid_button_uid, pressed ? 1 : 0, signal);
+      }
     }
   };
 
@@ -4508,8 +4570,8 @@ int main(int argc, char** argv) {
       req->reply.set_value("{\"ok\":true,\"pong\":true}");
     } else if (c == "press" || c == "down" || c == "up") {
       uint32_t uid = ButtonUidByName(req->button);
-      if (uid == 0 || *captured_button_callback == 0) {
-        req->reply.set_value("{\"ok\":false,\"error\":\"bad button or no callback\"}");
+      if (uid == 0) {
+        req->reply.set_value("{\"ok\":false,\"error\":\"bad button\"}");
       } else {
         if (c == "press") {
           InjectHidButtonEvent(uid, true);
@@ -4940,7 +5002,7 @@ int main(int argc, char** argv) {
         // (real IDLECBFUNC signature: void (*)(void *pUser), confirmed
         // by this callback's own real disassembly taking exactly one
         // incoming argument).
-        if (hid_button_uid != 0 && *captured_button_callback != 0) {
+        if (hid_button_uid != 0) {
           InjectHidButtonEvent(hid_button_uid, event.type == SDL_KEYDOWN);
         }
       }
@@ -4958,7 +5020,7 @@ int main(int argc, char** argv) {
     // keyboard and a real controller still work simultaneously this way,
     // just never both driven off the same polled ZPadState.
     if (!guest_input_disabled && std::getenv("ZEEB_DISABLE_CONTROLLER") == nullptr &&
-        backend.HasController() && *captured_button_callback != 0) {
+        backend.HasController()) {
       zeebulator::ZPadState pad_state = zeebulator::NormalizeZPadState(backend.PollInput());
       for (const zeebulator::ZPadButtonEdge& edge :
            zeebulator::DiffZPadButtonEdges(previous_pad_state.buttons, pad_state.buttons)) {
@@ -4966,6 +5028,49 @@ int main(int argc, char** argv) {
         if (hid_button_uid != 0) InjectHidButtonEvent(hid_button_uid, edge.pressed);
       }
       previous_pad_state = pad_state;
+    }
+
+    // BREW signals are asynchronous. Drain only at this event-loop boundary,
+    // after host input has been queued and before normal guest timers run.
+    if (!dbg_paused && !callback_continuation_active) {
+      while (!pending_hid_signals->empty()) {
+        uint32_t signal = pending_hid_signals->front();
+        pending_hid_signals->pop_front();
+        auto it = hid_signals->find(signal);
+        if (it == hid_signals->end() || it->second.callback == 0) continue;
+        const HidSignal registration = it->second;
+        if (std::getenv("ZEEB_LOG_HID")) {
+          std::fprintf(stderr, "[hid] dispatch signal=0x%08x callback=0x%08x context=0x%08x device_slot=0x%08x\n",
+                       signal, registration.callback, registration.context, registration.device_slot);
+        }
+        if (registration.device_slot != 0) {
+          cpu.GetMemory().Write32(registration.device_slot, kHidDeviceObject);
+        }
+        try {
+          auto result = CallArmFunctionChecked(
+              cpu, kTrapBase, kBase, mod_size, registration.callback,
+              registration.context, 0, 0, 0, /*trace=*/false,
+              /*hle_trace=*/false, &display, &backend, &abd_text_state,
+              /*resume=*/false,
+              [&mod_runtime]() { return mod_runtime.ConsumeYieldRequest(); });
+          callback_continuation_active = result.yielded;
+          if (std::getenv("ZEEB_LOG_HID")) {
+            std::fprintf(stderr, "[hid] callback result yielded=%d pc=0x%08x r0=0x%08x\n",
+                         result.yielded ? 1 : 0, cpu.GetRegister(zeebulator::kPC), result.r0);
+          }
+          if (result.wandered_outside_module || result.exceeded_step_budget) {
+            std::printf("HID signal callback did not complete trustworthily -- stopping.\n");
+            running = false;
+            break;
+          }
+        } catch (const std::exception& e) {
+          std::printf("HID signal callback threw: %s (pc=0x%08x)\n", e.what(),
+                      cpu.GetRegister(zeebulator::kPC));
+          running = false;
+          break;
+        }
+        if (callback_continuation_active) break;
+      }
     }
 
     // Debugger pause gate (Fase 2). A breakpoint/watchpoint hit stops the
@@ -4992,6 +5097,10 @@ int main(int argc, char** argv) {
     // since the last tick -- see MediaHle::Tick's own doc comment; real
     // Double Dragon sound-channel bookkeeping depends on this firing.
     media_hle.Tick();
+    // Same asynchronous-notification contract as media: stream Readable
+    // callbacks are delivered here, never from inside the guest's own call.
+    mem_astream_hle.Tick();
+    unzip_stream_hle.Tick();
     // Real BREW timers are one-shot -- real game code re-arms its own via
     // ISHELL_SetTimer from inside the callback (see core/brew/ishell.h).
     // Driving these is what actually runs the game's per-frame logic;
@@ -5201,7 +5310,7 @@ int main(int argc, char** argv) {
       if (std::getenv("ZEEB_TICK_DIAG") && (tick_count % 60 == 0)) {
         std::fprintf(stderr, "[tickdiag] tick=%llu cb=0x%08x pc=0x%08x\n",
                      static_cast<unsigned long long>(tick_count),
-                     *captured_button_callback,
+                     *registered_button_signal,
                      cpu.GetRegister(zeebulator::kPC));
       }
       // real play session's own GL texture log otherwise grows without
@@ -5319,7 +5428,7 @@ int main(int argc, char** argv) {
       // X11 key-repeat timing, which didn't reproduce it under
       // simulated input.
       constexpr uint64_t kStartTick = 360;
-      if (tick_count >= kStartTick && *captured_button_callback != 0) {
+      if (tick_count >= kStartTick && *registered_button_signal != 0) {
         static uint64_t last_tick_acted = ~0ull;
         static bool state = false;
         if (tick_count != last_tick_acted) {
@@ -5340,7 +5449,7 @@ int main(int argc, char** argv) {
       // Tries both real input paths every ~2 real seconds, since a new
       // title's own real dispatch isn't known to depend on either one
       // specifically yet: the HID path (guarded on
-      // `*captured_button_callback != 0` exactly like the real
+      // `*registered_button_signal != 0` exactly like the real
       // keyboard handler above -- unguarded once already, live-caught
       // when it called through a still-unset, all-zero callback
       // pointer, that title's own real registration apparently not
@@ -5385,7 +5494,7 @@ int main(int argc, char** argv) {
         uint64_t pos = rel % kSlotTicks;
         uint32_t button = which < kNumCandidates ? kCandidates[which] : kHidUidButton2;
         static uint64_t last_pos_acted = ~0ull;
-        if (pos != last_pos_acted && *captured_button_callback != 0) {
+        if (pos != last_pos_acted && *registered_button_signal != 0) {
           if (pos == 0) {
             InjectHidButtonEvent(button, true);
             last_pos_acted = pos;
