@@ -1633,6 +1633,9 @@ int main(int argc, char** argv) {
     uint32_t height = 240;
   };
   auto compat_state = std::make_shared<CompatBitmapState>();
+  // Bump allocators for per-surface compatible bitmaps (see slot 13 below).
+  auto compat_next_object = std::make_shared<uint32_t>(0);
+  auto compat_next_pixels = std::make_shared<uint32_t>(0);
   // Zenonia's WIPI engine writes its 320x240 RGB565 surface directly through
   // the concrete compatible-IBitmap DIB fields (measured at 0x85000000).
   // Other titles use this generic scaffold differently, so scope the real DIB
@@ -1671,12 +1674,84 @@ int main(int argc, char** argv) {
   };
 
   // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
-  compat_bitmap_methods[12] = [&cpu, compat_state](zeebulator::IArmCore& core) {
+  // Reads the geometry back from this specific bitmap object: every
+  // CreateCompatibleBitmap call owns its own surface, so shared state would
+  // report one bitmap's size for all of them.
+  compat_bitmap_methods[12] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t self = core.GetRegister(zeebulator::kR0);
     uint32_t out = core.GetRegister(zeebulator::kR1);
     if (out != 0) {
-      cpu.GetMemory().Write32(out + 0, compat_state->width);
-      cpu.GetMemory().Write32(out + 4, compat_state->height);
+      cpu.GetMemory().Write32(out + 0, cpu.GetMemory().Read16(self + 20));
+      cpu.GetMemory().Write32(out + 4, cpu.GetMemory().Read16(self + 22));
       cpu.GetMemory().Write32(out + 8, 16); // 16-bit color depth (RGB565)
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Real IBitmap drawing operates on this surface's own pixel storage. These
+  // were blind stubs, so anything a title drew through IBitmap (a white clear
+  // before a logo, sprite blits, scanlines) silently produced nothing and the
+  // surface stayed black.
+  auto compat_geometry = [&cpu](uint32_t self, uint32_t* w, uint32_t* h, uint32_t* pitch,
+                                uint32_t* pixels) {
+    auto& m = cpu.GetMemory();
+    *pixels = m.Read32(self + 8);
+    *w = m.Read16(self + 20);
+    *h = m.Read16(self + 22);
+    *pitch = m.Read16(self + 24);
+    if (*pitch == 0) *pitch = *w * 2;
+    return *pixels != 0 && *w != 0 && *h != 0;
+  };
+  // Slot 5: DrawPixel(IBitmap*, int x, int y, NativeColor color)
+  compat_bitmap_methods[5] = [&cpu, compat_geometry](zeebulator::IArmCore& core) {
+    uint32_t w, h, pitch, pixels;
+    if (compat_geometry(core.GetRegister(zeebulator::kR0), &w, &h, &pitch, &pixels)) {
+      int32_t x = static_cast<int32_t>(core.GetRegister(zeebulator::kR1));
+      int32_t y = static_cast<int32_t>(core.GetRegister(zeebulator::kR2));
+      if (x >= 0 && y >= 0 && x < static_cast<int32_t>(w) && y < static_cast<int32_t>(h)) {
+        cpu.GetMemory().Write16(pixels + y * pitch + x * 2,
+                                static_cast<uint16_t>(core.GetRegister(zeebulator::kR3)));
+      }
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 6: GetPixel(IBitmap*, int x, int y, NativeColor *pColor)
+  compat_bitmap_methods[6] = [&cpu, compat_geometry](zeebulator::IArmCore& core) {
+    uint32_t w, h, pitch, pixels;
+    uint32_t out = core.GetRegister(zeebulator::kR3);
+    if (out != 0 && compat_geometry(core.GetRegister(zeebulator::kR0), &w, &h, &pitch, &pixels)) {
+      int32_t x = static_cast<int32_t>(core.GetRegister(zeebulator::kR1));
+      int32_t y = static_cast<int32_t>(core.GetRegister(zeebulator::kR2));
+      uint16_t value = 0;
+      if (x >= 0 && y >= 0 && x < static_cast<int32_t>(w) && y < static_cast<int32_t>(h)) {
+        value = cpu.GetMemory().Read16(pixels + y * pitch + x * 2);
+      }
+      cpu.GetMemory().Write32(out, value);
+    }
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 9: FillRect(IBitmap*, const AEERect *pRect, NativeColor color, AEERasterOp)
+  compat_bitmap_methods[9] = [&cpu, compat_geometry](zeebulator::IArmCore& core) {
+    uint32_t w, h, pitch, pixels;
+    if (compat_geometry(core.GetRegister(zeebulator::kR0), &w, &h, &pitch, &pixels)) {
+      auto& m = cpu.GetMemory();
+      uint32_t prect = core.GetRegister(zeebulator::kR1);
+      int32_t x0 = 0, y0 = 0, rw = static_cast<int32_t>(w), rh = static_cast<int32_t>(h);
+      if (prect != 0) {
+        x0 = static_cast<int16_t>(m.Read16(prect + 0));
+        y0 = static_cast<int16_t>(m.Read16(prect + 2));
+        rw = static_cast<int16_t>(m.Read16(prect + 4));
+        rh = static_cast<int16_t>(m.Read16(prect + 6));
+      }
+      uint16_t color = static_cast<uint16_t>(core.GetRegister(zeebulator::kR2));
+      for (int32_t y = std::max(0, y0); y < std::min<int32_t>(h, y0 + rh); ++y) {
+        for (int32_t x = std::max(0, x0); x < std::min<int32_t>(w, x0 + rw); ++x) {
+          m.Write16(pixels + y * pitch + x * 2, color);
+        }
+      }
+      if (std::getenv("ZEEB_LOG_DRAW")) {
+        std::fprintf(stderr, "[draw] IBitmap FillRect (%d,%d %dx%d) color=0x%04x\n", x0, y0, rw, rh,
+                     color);
+      }
     }
     core.SetRegister(zeebulator::kR0, 0);
   };
@@ -1717,21 +1792,56 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0);
   };
   // Slot 13: CreateCompatibleBitmap(IBitmap*, IBitmap **ppIBitmap, uint16 w, uint16 h)
-  device_bitmap_methods[13] = [&cpu, compat_bitmap_obj, compat_state, compat_dib_enabled](zeebulator::IArmCore& core) {
+  // Each call returns its own object with its own pixel storage. Handing the
+  // same object and the same buffer to every caller makes concurrently live
+  // surfaces (map tiles, sprites, UI) overwrite one another, which shows up as
+  // smearing and black frames once a title keeps several of them at once.
+  device_bitmap_methods[13] = [&cpu, &hle, compat_bitmap_obj, compat_state, compat_dib_enabled,
+                                compat_next_object, compat_next_pixels,
+                                compat_bitmap_methods](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);
     uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
     uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
-    if (w != 0) compat_state->width = std::min(w, 640u);
-    if (h != 0) compat_state->height = std::min(h, 480u);
-    if (compat_dib_enabled) {
-      auto& m = cpu.GetMemory();
-      m.Write16(compat_bitmap_obj + 20, static_cast<uint16_t>(compat_state->width));
-      m.Write16(compat_bitmap_obj + 22, static_cast<uint16_t>(compat_state->height));
-      m.Write16(compat_bitmap_obj + 24, static_cast<uint16_t>(compat_state->width * 2));
+    uint32_t width = w != 0 ? std::min(w, 640u) : compat_state->width;
+    uint32_t height = h != 0 ? std::min(h, 480u) : compat_state->height;
+    compat_state->width = width;
+    compat_state->height = height;
+    auto& m = cpu.GetMemory();
+    uint32_t obj = compat_bitmap_obj;
+    if (!compat_dib_enabled) {
+      if (out != 0) m.Write32(out, obj);
+      core.SetRegister(zeebulator::kR0, 0);
+      return;
     }
-    if (out != 0) {
-      cpu.GetMemory().Write32(out, compat_bitmap_obj);
+    if (*compat_next_object == 0) {
+      // First surface keeps the pre-built object so the proven WIPI path is
+      // unchanged; later surfaces get fresh ones.
+      *compat_next_object = compat_bitmap_obj + 0x1000;
+      *compat_next_pixels = kCompatBitmapPixels + kCompatBitmapBytes;
+    } else {
+      obj = zeebulator::BuildInterfaceObject(m, hle, /*vtable=*/0x8008C000, *compat_next_object,
+                                             compat_bitmap_methods);
+      *compat_next_object += 0x1000;
     }
+    uint32_t pixels = kCompatBitmapPixels;
+    if (obj != compat_bitmap_obj) {
+      pixels = *compat_next_pixels;
+      *compat_next_pixels += ((width * height * 2u) + 0xfffu) & ~0xfffu;
+    }
+    const uint32_t bytes = width * height * 2u;
+    for (uint32_t off = 0; off < bytes; off += 4) m.Write32(pixels + off, 0);
+    m.Write32(obj + 8, pixels);
+    m.Write32(obj + 16, 0xffffffffu);
+    m.Write16(obj + 20, static_cast<uint16_t>(width));
+    m.Write16(obj + 22, static_cast<uint16_t>(height));
+    m.Write16(obj + 24, static_cast<uint16_t>(width * 2));
+    m.Write8(obj + 28, 16);
+    m.Write8(obj + 29, 16);
+    if (std::getenv("ZEEB_LOG_DRAW")) {
+      std::fprintf(stderr, "[draw] CreateCompatibleBitmap %ux%u -> obj=0x%08x pixels=0x%08x\n",
+                   width, height, obj, pixels);
+    }
+    if (out != 0) m.Write32(out, obj);
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
 
