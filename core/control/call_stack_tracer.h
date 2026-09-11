@@ -102,6 +102,9 @@ class CallStackTracer {
 
  private:
   CallStackTracer() {
+    if (std::getenv("ZEEB_TRACE_CALLS") != nullptr) {
+      enabled_ = true;
+    }
     root_node_ = std::make_shared<CallTraceNode>();
     root_node_->name = "root";
     root_node_->depth = 0;
@@ -113,7 +116,7 @@ class CallStackTracer {
                        int max_depth, std::string& out) const;
 
   mutable std::mutex mu_;
-  bool enabled_ = true;
+  bool enabled_ = false;
 
   std::map<uint32_t, std::string> symbols_;
   std::map<uint32_t, std::pair<uint32_t, std::string>> range_symbols_;

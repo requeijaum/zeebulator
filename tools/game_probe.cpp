@@ -3288,7 +3288,8 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 25: SwapBuffers(this, dpy, surface)
-  unknown_0x0103d8ec_methods[25] = [](zeebulator::IArmCore& core) {
+  unknown_0x0103d8ec_methods[25] = [&backend](zeebulator::IArmCore& core) {
+    backend.SwapBuffers();
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   unknown_0x0103d8ec_methods[65] = [](zeebulator::IArmCore& core) {
@@ -3409,6 +3410,7 @@ int main(int argc, char** argv) {
       cpu.GetMemory(), hle,
       [&mod_runtime](uint32_t sz) { return mod_runtime.Allocate(sz); },
       nullptr);
+  thread_hle.SetYieldCallback([&mod_runtime]() { mod_runtime.RequestYield(); });
   shell_hle.SetThreadHle(&thread_hle);
   shell_hle.RegisterFactory(0x01001017, [&thread_hle]() {
     return thread_hle.CreateThreadObject();
@@ -3476,13 +3478,17 @@ int main(int argc, char** argv) {
                     phase_tag, th_obj, res.r0, res.yielded, res.wandered_outside_module, res.exceeded_step_budget,
                     state->suspended, state->finished, cpu.GetRegister(zeebulator::kPC));
         if (res.yielded && !state->finished) {
-          // Thread yielded (e.g. via SleepImpl or cooperative yield)
-          for (int r = 0; r <= 12; ++r) state->context[r] = cpu.GetRegister(r);
-          state->context[13] = cpu.GetRegister(zeebulator::kSP);
-          state->resume_pc = cpu.GetRegister(zeebulator::kPC);
-          state->suspended = true;
-          // Re-enqueue thread for next tick
-          thread_hle.EnqueueThread(th_obj);
+          if (!state->suspended) {
+            // Cooperative yield / sleep: save current PC and state
+            for (int r = 0; r <= 12; ++r) state->context[r] = cpu.GetRegister(r);
+            state->context[13] = cpu.GetRegister(zeebulator::kSP);
+            state->resume_pc = cpu.GetRegister(zeebulator::kPC);
+            state->suspended = true;
+            thread_hle.EnqueueThread(th_obj);
+          }
+          // Note: If state->suspended is already true, it was explicitly suspended via
+          // IThread::Suspend() which already saved registers and resume_pc correctly.
+          // It must wait for a real ISHELL_Resume(resume_cb) before running again!
         } else if (!state->suspended && !state->finished) {
           thread_hle.FinishThread(th_obj, res.r0);
         }
@@ -4109,22 +4115,8 @@ int main(int argc, char** argv) {
         if (boot_continuation_active) break;
       }
     }
-    bool is_first_party = zeebulator::compat::IsFirstPartyTitle(cls_id);
-    if (is_first_party && !boot_continuation_active) {
-      std::printf("Calling HandleEvent(EVT_APP_RESUME) for first-party title 0x%08x...\n", cls_id);
-      auto resume_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
-                                                   applet_ptr, kEvtAppResume, 0, kAppStartAddr,
-                                                   /*trace=*/false, /*hle_trace=*/false, &display, &backend);
-      if (resume_result.wandered_outside_module || resume_result.exceeded_step_budget) {
-        std::printf("HandleEvent(EVT_APP_RESUME) did not complete trustworthily -- stopping.\n");
-        return 1;
-      }
-      std::printf("HandleEvent(EVT_APP_RESUME) returned %u\n", resume_result.r0);
-    } else if (boot_continuation_active) {
-      std::printf("Deferring EVT_APP_RESUME: START timer yielded with a live guest continuation.\n");
-    } else {
-      std::printf("Skipping EVT_APP_RESUME: non-first-party title 0x%08x follows standard advance/event loop.\n", cls_id);
-    }
+    // Standard BREW lifecycle: directly advance to the event loop without faking EVT_APP_RESUME.
+    // (EVT_APP_RESUME is only valid when resuming from a previously suspended applet).
   } catch (const std::exception& e) {
     std::printf("%s threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n", stage, e.what(),
                 cpu.GetRegister(zeebulator::kPC), cpu.GetRegister(zeebulator::kPC) - kBase);

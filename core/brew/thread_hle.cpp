@@ -184,24 +184,20 @@ void ThreadHle::JoinImpl(IArmCore& core, uint32_t /*this_ptr*/) {
 }
 
 void ThreadHle::SuspendImpl(IArmCore& core, uint32_t this_ptr) {
-  std::printf("[thread_hle] Suspend called: this=0x%08x lr=0x%08x\n", this_ptr, core.GetRegister(kLR));
   auto it = threads_.find(this_ptr);
-  if (it == threads_.end()) {
-    core.SetRegister(kR0, kSuccess);
-    return;
+  if (it != threads_.end()) {
+    // Save current thread context (R0-R12, SP)
+    for (int i = 0; i <= 12; ++i) {
+      it->second.context[i] = core.GetRegister(i);
+    }
+    it->second.context[13] = core.GetRegister(kSP);
+    it->second.resume_pc = core.GetRegister(kLR);
+    it->second.suspended = true;
   }
-
-  // Save current thread context (R0-R12, SP)
-  for (int i = 0; i <= 12; ++i) {
-    it->second.context[i] = core.GetRegister(i);
-  }
-  it->second.context[13] = core.GetRegister(kSP);
-  it->second.resume_pc = core.GetRegister(kLR);
-  it->second.suspended = true;
-
-  // Return to host by redirecting LR to trap_base
-  core.SetRegister(kLR, hle_.trap_base());
   core.SetRegister(kR0, kSuccess);
+  if (yield_fn_) {
+    yield_fn_();
+  }
 }
 
 void ThreadHle::GetResumeCBKImpl(IArmCore& core, uint32_t this_ptr) {

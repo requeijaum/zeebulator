@@ -63,6 +63,9 @@ class ThreadHle {
   // Marks thread finished with exit code.
   void FinishThread(uint32_t thread_obj, uint32_t exit_code);
 
+  // Sets yield callback invoked when a thread calls Suspend()
+  void SetYieldCallback(std::function<void()> fn) { yield_fn_ = std::move(fn); }
+
  private:
   // IThread vtable methods (AEEThread.h: 12 methods)
   // 0: AddRef, 1: Release, 2: QueryInterface
@@ -78,6 +81,7 @@ class ThreadHle {
   HleRuntime& hle_;
   std::function<uint32_t(uint32_t)> malloc_fn_;
   std::function<void(uint32_t)> free_fn_;
+  std::function<void()> yield_fn_;
 
   std::map<uint32_t, ThreadState> threads_;
   std::map<uint32_t, uint32_t> resume_callbacks_; // pcb -> thread_obj
