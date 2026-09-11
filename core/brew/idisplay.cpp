@@ -15,12 +15,12 @@ namespace zeebulator {
 namespace {
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 
-// RGBVAL -> RGB565, assuming the common real-BREW 0x00RRGGBB packing
-// (see idisplay.h doc comment for how confident we are in that layout).
+// RGBVAL -> RGB565. Qualcomm AEERGBVAL.h defines
+// MAKE_RGB(r,g,b) = (r<<8) | (g<<16) | (b<<24).
 uint16_t ToRgb565(uint32_t rgbval) {
-  uint32_t r = (rgbval >> 16) & 0xFF;
-  uint32_t g = (rgbval >> 8) & 0xFF;
-  uint32_t b = rgbval & 0xFF;
+  uint32_t r = (rgbval >> 8) & 0xFF;
+  uint32_t g = (rgbval >> 16) & 0xFF;
+  uint32_t b = (rgbval >> 24) & 0xFF;
   return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 }  // namespace

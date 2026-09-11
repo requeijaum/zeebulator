@@ -1641,9 +1641,9 @@ int main(int argc, char** argv) {
   // Zeebo's display is RGB565 and the game calls this before every source blit.
   compat_bitmap_methods[3] = [](zeebulator::IArmCore& core) {
     uint32_t rgb = core.GetRegister(zeebulator::kR1);
-    uint32_t r = (rgb >> 16) & 0xff;
-    uint32_t g = (rgb >> 8) & 0xff;
-    uint32_t b = rgb & 0xff;
+    uint32_t r = (rgb >> 8) & 0xff;
+    uint32_t g = (rgb >> 16) & 0xff;
+    uint32_t b = (rgb >> 24) & 0xff;
     core.SetRegister(zeebulator::kR0, ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
   };
   // IBitmap slot 4: RGBVAL NativeToRGB(IBitmap*, NativeColor).
@@ -1653,9 +1653,9 @@ int main(int argc, char** argv) {
     uint32_t g6 = (pixel >> 5) & 0x3f;
     uint32_t b5 = pixel & 0x1f;
     core.SetRegister(zeebulator::kR0,
-                     ((r5 << 3 | r5 >> 2) << 16) |
-                     ((g6 << 2 | g6 >> 4) << 8) |
-                     (b5 << 3 | b5 >> 2));
+                     ((r5 << 3 | r5 >> 2) << 8) |
+                     ((g6 << 2 | g6 >> 4) << 16) |
+                     ((b5 << 3 | b5 >> 2) << 24));
   };
 
   // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)

@@ -624,7 +624,7 @@ TEST(IDisplayHle, DrawRectWithNullRectFillsWholeScreen) {
   // void DrawRect(iname *po, const AEERect *pRect, RGBVAL clrFrame, RGBVAL clrFill, uint32 dwFlags)
   uint32_t draw_rect_sentinel = cpu.GetMemory().Read32(kVtableAddr + 5 * 4);
   hle.CallArmFunction(draw_rect_sentinel, display_obj, /*pRect=*/0, /*clrFrame=*/0,
-                       /*clrFill=*/0x00FF0000);  // red
+                       /*clrFill=*/0x0000FF00);  // red: MAKE_RGB(255,0,0)
 
   uint32_t update_sentinel = cpu.GetMemory().Read32(kVtableAddr + 7 * 4);
   hle.CallArmFunction(update_sentinel, display_obj);
@@ -651,7 +651,7 @@ TEST(IDisplayHle, DrawRectWithExplicitRectFillsOnlyThatArea) {
 
   uint32_t draw_rect_sentinel = cpu.GetMemory().Read32(kVtableAddr + 5 * 4);
   hle.CallArmFunction(draw_rect_sentinel, display_obj, kRectAddr, /*clrFrame=*/0,
-                       /*clrFill=*/0x0000FF00);  // green
+                       /*clrFill=*/0x00FF0000);  // green: MAKE_RGB(0,255,0)
 
   uint32_t update_sentinel = cpu.GetMemory().Read32(kVtableAddr + 7 * 4);
   hle.CallArmFunction(update_sentinel, display_obj);
@@ -724,8 +724,8 @@ TEST(IDisplayHle, SetColorChangesDrawTextColorAndReturnsPrevious) {
   uint32_t set_color_sentinel = cpu.GetMemory().Read32(kVtableAddr + 10 * 4);
   // RGBVAL SetColor(iname *po, AEEClrItem clr, RGBVAL rgb)
   uint32_t previous =
-      hle.CallArmFunction(set_color_sentinel, display_obj, /*clr=*/0, /*rgb=*/0x000000FF);  // blue
-  EXPECT_EQ(previous, 0x00FFFFFFu) << "default color is white before any SetColor call";
+      hle.CallArmFunction(set_color_sentinel, display_obj, /*clr=*/0, /*rgb=*/0xFF000000);  // blue: MAKE_RGB(0,0,255)
+  EXPECT_EQ(previous, 0xFFFFFF00u) << "default color is white before any SetColor call";
 
   WriteAeeCharString(cpu.GetMemory(), 0x3000, "H");
   cpu.SetRegister(zeebulator::kSP, 0x9000);

@@ -26,11 +26,8 @@ namespace zeebulator {
 // reflects real games' actual color choices (confirmed real games set
 // one -- see PHASE8_LOG.md).
 //
-// DrawRect/SetColor treat RGBVAL as the common real-BREW 0x00RRGGBB
-// packing (`MAKE_RGB(r,g,b)`, per the real AEEIDisplay.h reference doc
-// comment) -- this specific bit layout wasn't independently confirmed
-// against a real header this session, unlike the vtable slot order
-// itself, which was.
+// DrawRect/SetColor use Qualcomm's real AEERGBVAL.h layout:
+// MAKE_RGB(r,g,b) = (r<<8) | (g<<16) | (b<<24); low byte is alpha/reserved.
 class IDisplayHle {
  public:
   IDisplayHle(Backend& backend, int width, int height);
@@ -231,7 +228,7 @@ class IDisplayHle {
   std::vector<uint16_t> framebuffer_;  // RGB565, width_ * height_
   std::vector<uint16_t> last_presented_;  // snapshot as of the last real Update() call
   bool has_presented_ = false;
-  uint32_t current_rgbval_ = 0x00FFFFFF;  // last color SetColor() set (white by default)
+  uint32_t current_rgbval_ = 0xFFFFFF00;  // last color SetColor() set (RGB_WHITE by default)
   int16_t clip_x_ = 0;
   int16_t clip_y_ = 0;
   int16_t clip_dx_ = 0;
