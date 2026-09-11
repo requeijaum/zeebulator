@@ -547,11 +547,23 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
       last_in_module_pc = pc;
       last_lr = cpu.GetRegister(zeebulator::kLR);
     }
-    if (trace) {
-      std::printf("[%4llu] pc=0x%08x r0=%08x r1=%08x r5=%08x r6=%08x sp=%08x lr=%08x\n",
+    static uint64_t trace_step_start = ~0ull;
+    static uint64_t trace_step_count = 50;
+    static bool trace_step_init = false;
+    if (!trace_step_init) {
+      trace_step_init = true;
+      if (const char* env_ts = std::getenv("ZEEB_TRACE_STEP")) {
+        std::sscanf(env_ts, "%llu,%llu",
+                    reinterpret_cast<unsigned long long*>(&trace_step_start),
+                    reinterpret_cast<unsigned long long*>(&trace_step_count));
+      }
+    }
+    bool step_trace = (steps >= trace_step_start && steps < trace_step_start + trace_step_count);
+    if (trace || step_trace) {
+      std::printf("[%4llu] pc=0x%08x r0=%08x r1=%08x r2=%08x r3=%08x sp=%08x lr=%08x\n",
                   static_cast<unsigned long long>(steps), pc,
                   cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1),
-                  cpu.GetRegister(5), cpu.GetRegister(6),
+                  cpu.GetRegister(zeebulator::kR2), cpu.GetRegister(zeebulator::kR3),
                   cpu.GetRegister(zeebulator::kSP), cpu.GetRegister(zeebulator::kLR));
     }
     if (hle_trace && in_trap_range && pc != trap_base) {
@@ -3069,6 +3081,20 @@ int main(int argc, char** argv) {
       cpu.GetMemory().Write32(out_ptr, obj);
     }
     core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 3: eglGetError(QEGL*, EGLint *pError)
+  // No Qualcomm QEGL (AEECLSID_QEGL, 0x0103d8ec), o slot 3 e eglGetError.
+  // Medido no Alpine Racer EX (0x1165d4): chama slot 3 com r1 = &sp e compara
+  // o valor retornado em [sp] com 0x3000 (EGL_SUCCESS).
+  // Sem este slot implementado, o stub retornava 0 sem escrever em [sp],
+  // fazendo a checagem de erro falhar e o jogo abortar os graficos (CleanupGraphics).
+  unknown_0x0103d8ec_methods[3] = [&cpu](zeebulator::IArmCore& core) {
+    uint32_t out_err = core.GetRegister(zeebulator::kR1);
+    constexpr uint32_t kEglSuccess = 0x3000;
+    if (out_err != 0) {
+      cpu.GetMemory().Write32(out_err, kEglSuccess);
+    }
+    core.SetRegister(zeebulator::kR0, kEglSuccess);
   };
   unknown_0x0103d8ec_methods[4] = [&cpu](zeebulator::IArmCore& core) {
     uint32_t interface_ptr = core.GetRegister(zeebulator::kR1);
