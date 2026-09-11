@@ -1621,9 +1621,12 @@ int main(int argc, char** argv) {
     uint32_t height = 240;
   };
   auto compat_state = std::make_shared<CompatBitmapState>();
-  // Some WIPI engines use the concrete DIB fields behind a compatible IBitmap
-  // directly. Keep this experimental until a title proves it writes the arena.
-  const bool compat_dib_enabled = std::getenv("ZEEB_COMPAT_DIB") != nullptr;
+  // Zenonia's WIPI engine writes its 320x240 RGB565 surface directly through
+  // the concrete compatible-IBitmap DIB fields (measured at 0x85000000).
+  // Other titles use this generic scaffold differently, so scope the real DIB
+  // to the proven module. ZEEB_COMPAT_DIB remains an explicit diagnostic force.
+  const bool is_zenonia_title = std::string(argv[1]).find("zenonia.mod") != std::string::npos;
+  const bool compat_dib_enabled = is_zenonia_title || std::getenv("ZEEB_COMPAT_DIB") != nullptr;
   constexpr uint32_t kCompatBitmapPixels = 0x85000000;
   constexpr uint32_t kCompatBitmapBytes = 640u * 480u * 2u;
   if (compat_dib_enabled) {
