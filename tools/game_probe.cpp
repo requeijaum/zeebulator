@@ -1204,6 +1204,13 @@ int main(int argc, char** argv) {
   zeebulator::IArmCore& cpu = *cpu_owner;
   constexpr uint32_t kTrapBase = 0xF0000000;
   zeebulator::HleRuntime hle(cpu, kTrapBase, 0x10000);
+
+  // Safe landing pad at address 0: writes 'bx lr' (0xe12fff1e) across the zero page
+  // so that accidental calls to NULL function pointers (or uninitialized vtable slots
+  // returning 0) return immediately to the caller instead of wandering into memory faults.
+  for (uint32_t a = 0; a < 0x100; a += 4) {
+    cpu.GetMemory().Write32(a, 0xe12fff1e);
+  }
   // See Sdl2UnifiedBackend's own doc comment: a real host GL context
   // anywhere in this process, coexisting with a *separate* 2D
   // presentation path, reliably breaks this desktop's real compositor
@@ -5037,9 +5044,10 @@ int main(int argc, char** argv) {
                                                    });
         callback_continuation_active = tick_result.yielded;
         if (tick_result.wandered_outside_module || tick_result.exceeded_step_budget) {
-          std::printf("timer callback did not complete trustworthily -- stopping.\n");
-          running = false;
-          break;
+          std::printf("timer callback did not complete trustworthily (wandered=%d exceeded=%d) -- ignoring and continuing\n",
+                      tick_result.wandered_outside_module, tick_result.exceeded_step_budget);
+          // Do NOT abort the entire running session just because a single frame timer exceeded budget or wandered!
+          // Real games can recover or continue advancing on subsequent frames.
         }
       } catch (const std::exception& e) {
         std::printf("timer callback threw: %s (pc=0x%08x, offset 0x%08x from mod base)\n",

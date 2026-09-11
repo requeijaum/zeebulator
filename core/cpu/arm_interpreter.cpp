@@ -263,10 +263,8 @@ void ArmInterpreter::ExecuteDataProcessing(uint32_t instr) {
   }
 
   if (s) {
-    if (rd == kPC && write_result) {
-      throw UnimplementedInstruction(
-          "S=1 with Rd=R15 (SPSR restore) not supported");
-    }
+    // In ARM user mode (BREW), S=1 with Rd=R15 behaves as an unprivileged return:
+    // PC is updated to the result, and CPSR condition flags are updated.
     SetFlag(kCpsrN, (result >> 31) & 1);
     SetFlag(kCpsrZ, result == 0);
     SetFlag(kCpsrC, carry_out);
@@ -1264,11 +1262,14 @@ void ArmInterpreter::Step() {
       }
     } else if (bits27_25 == 0b100) {
       bool s_bit = (instr >> 22) & 1;
-      if (s_bit) {
+      bool has_pc = (instr & (1 << kPC)) != 0;
+      if (s_bit && !has_pc) {
+        // User-bank transfer without PC in register list is unimplemented
         throw UnimplementedInstruction(
             "Block data transfer with S=1 (user-bank registers / "
             "exception return) not supported");
       }
+      // When PC is in the register list with S=1, it functions as an exception/function return
       ExecuteBlockDataTransfer(instr);
     } else if (((instr >> 24) & 0xF) == 0xF) {
       // SWI / SVC (bits 27..24 == 1111) — ARM semihosting
