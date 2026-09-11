@@ -69,8 +69,105 @@ sempre uniforme dentro da mesma família:
 | `279382` | *Zeeboids* | TTD Middleware | Loop de eventos ativo, tela em branco | Idem ao Tênis |
 | `278962` | *Peggle* | PopCap | Loop de eventos ativo, quads sólidos detectados | Implementar apresentação de quads genéricos no backend |
 | `274802` | *Quake* | id Tech / Tectoy | Loop de eventos ativo, splash carregado | Investigar inicialização do contexto de software rasterizer |
-| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Boot parcial**: applet, SQLite e widgets iniciais chegam a `EVT_APP_START`; animação, chime, instruções Z-Pad e carrossel não foram comprovados no Zeebulator. | Implementar ISourceUtil/IGetLine e callbacks dos widgets; validar a cadeia de boot |
+| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Boot parcial, avançou nesta sessão**: `EVT_APP_START` retorna sem exceção, o formulário de animação e o `LoadResStringEx` deixaram de falhar; **tela branca pura (307.200 px / 1 cor)** e nenhum desenho. Bloqueio medido: formulário do z-pad devolve `EUNABLETOLOAD` (6). | Ver a seção "Z-Wheel: o que foi medido" abaixo |
 | `277495` | *Opera Mini (reksio)*| Opera Software | Loop de eventos ativo (Requer stack de sockets/rede) | Fornecer bridge HLE para sockets TCP/IP |
+
+---
+
+## Z-Wheel: o que foi medido (sessão atual)
+
+Titulo: `mod/274755/tectoy.mod`, ClsId `17237912` (`0x0107...`), applet
+`0x01070798`. Todas as execucoes sao passivas (`ZEEB_DISABLE_INPUT=1`), sem JIT,
+com video SDL real e `DISPLAY=:0`.
+
+### Antes e depois, medido
+
+| Medicao | Antes | Depois das correcoes desta sessao |
+|---|---|---|
+| `IModule::CreateInstance` | terminava em excursao para `pc=0` e o `HandleEvent` lancava excecao | termina OK, sem excecao |
+| `HandleEvent(EVT_APP_START)` | excecao dentro do handler | retorna |
+| `Couldn't create animation video form (1)` (`tectoymain.c:807`) | presente | **desapareceu** |
+| `LoadResStringEx fail for ID (1002)` | presente | **desapareceu** no primeiro ciclo |
+| Quadro capturado | preto | **branco puro**, 307.200 px / 1 cor |
+
+### As correcoes, e por que cada uma e defensavel
+
+1. **`preloaded.cfg` existe e esta vazio.** Quem cria esse arquivo e o console, na
+   area do usuario; nenhum pacote o traz. O guest faz `IFileMgr::Test` ->
+   `GetInfo` -> `OpenFile` e, recebendo "nao existe", sai do caminho da lista de
+   pre-instalados. `fontsize.map` **nao** entra nessa lista: medicao independente
+   (varredura dos 128 MiB da NAND) confirma que ele nao existe em lugar nenhum, e
+   o documento da roda chega a mesma conclusao por outro caminho.
+2. **Slots 4 e 16 do widget devolvem o registro anterior.** O BREW encadeia
+   tratadores: o tratador novo le, da propria estrutura do chamador, para onde
+   desviar o que nao trata. Sem a devolucao, a estrutura continua descrevendo o
+   tratador recem-instalado e o desvio vira recursao.
+3. **`AEECLSID_MEDIAUTIL` (`0x0100550d`) registrada.** Nao e codec, e a fabrica
+   de objetos de midia -- por isso faltava na lista de classes de formato. O SDK
+   que temos traz interface e implementacao de referencia
+   (`platform/media/inc/AEEMediaUtil.h`, `.../src/mediautil/AEEMediaUtil.c`).
+   `CreateMedia` cria o objeto e aplica o `AEEMediaData` pelo mesmo caminho que o
+   guest usaria, porque o proprio SDK define
+   `IMedia_SetMediaData(p,pmd)` como `SetMediaParm(p, MM_PARM_MEDIA_DATA, (int32)pmd, 0)`
+   (`platform/media/inc/AEEIMedia.h`). Quem pede essa classe no corpus:
+   `tectoy.mod` (3 sitios), `rocketweb.mod` (2), `allstarcards.mod` (1),
+   `quake.mod` (1).
+4. **Estado do widget indexado por `(this, id)`.** As duas tabelas do acessador
+   eram indexadas so pelo id, como se existisse um widget unico. A
+   instrumentacao `ZEEB_LOG_WIDGET_ALL=1` (nova) mostra o guest falando com
+   `0x8006d000`, `0x8006d100`, `0x8006d140` e `0x8006c000` na mesma execucao, e o
+   item `0x5000` e o que cada formulario usa para pendurar o proprio conteudo.
+   Efeito medido no boot: nenhum ainda; a correcao entra porque o estado
+   compartilhado e comprovadamente errado.
+
+### Fatos do SDK que esta investigacao confirmou (fonte primaria)
+
+| Fato | Onde esta escrito |
+|---|---|
+| `AEECLSID_DOWNLOAD` **e** `0x01000000` | `platform/system/inc/AEEClassIDs.h`: `#define AEECLSID_DOWNLOAD (AEECLSID_PRIV)`, `AEECLSID_PRIV (QVERSION)`, `QVERSION 0x01000000` |
+| Codigos de erro | `platform/system/inc/AEEError.h`: `SUCCESS 0`, `EFAILED 1`, `ENOMEMORY 2`, `ECLASSNOTSUPPORT 3`, **`EUNABLETOLOAD 6`**, `EBADCLASS 10`, **`EBADPARM 14`**, `EUNSUPPORTED 20` |
+| `IMediaUtil` tem 6 slots | `AEEMediaUtil.h`: `AddRef, Release, QueryInterface, CreateMedia, EncodeMedia, CreateMediaEx` |
+| `IMedia_SetMediaData` nao e slot | `AEEIMedia.h`: e `SetMediaParm(MM_PARM_MEDIA_DATA, pmd, 0)` |
+
+O SDK corrige de passagem uma suspeita antiga: a Z-Wheel pedir a classe
+`0x01000000` em `Tectoy_FixupTime` e `ShopAction_Init` **nao** e valor truncado
+nem dado corrompido -- e exatamente `AEECLSID_DOWNLOAD`. Nos recusamos essa
+classe hoje, e as duas mensagens "Unable to create instance of IDOWNLOAD" vem
+dai.
+
+### Onde a Z-Wheel para agora (bloqueio medido, nao hipotese)
+
+O app passa o gate de 30 ticks do splash (o contador em `[r4+0x30]` do callback
+`0x1014ac`, rearmado por `IShell::SetTimer`, slot 11) e entao monta a proxima
+tela. Essa montagem falha:
+
+```
+[guest] Tectoy.c:743   Unable to launch z-pad intructions form: 6
+[guest] Tectoy.c:760   Couldn't create z-pad instruction form (6)
+[guest] tectoymain.c:1547 Unable to launch z-pad intructions form: 6
+```
+
+Cadeia estatica ate a falha: `0x16ed60 -> 0x17ec54` (cria o formulario da classe
+`0x01028e47`, escreve o item `0x5002`, e chama `0x17f580`) -> `0x17f580` devolve
+`6` (`EUNABLETOLOAD`). Perfil de chamadas HLE (`ZEEB_HLE_PROFILE=1`) em toda a
+faixa `0x17f...`: **todas as chamadas implementadas devolveram SUCCESS**. Ou
+seja, o `6` nasce dentro do proprio guest, em codigo que ainda nao foi lido por
+inteiro -- nao em um stub nosso. Depois disso o app fica num pulso de 1 s
+lendo pontos e fila de download, sem nunca chamar `IBitmap`/`IDisplay` para
+desenhar, que e exatamente o sintoma que o documento da roda descreve para o
+palco recusado.
+
+### Onde este projeto discorda do documento da roda (e por que)
+
+- O documento cita `Couldn't create z-pad instruction form (20)` (classe
+  `0x01028e36` recusada). Aqui o mesmo ponto devolve `6`, e a classe `0x01028e36`
+  **esta** registrada. Ou seja: o erro deles e de classe faltando; o nosso e de
+  carga de recurso. Mesmo sintoma, causa diferente.
+- Os enderecos do documento (`0x22d58`, `0x88338`, `0x78acc`) nao caem no mesmo
+  lugar do nosso `tectoy.mod`: `0x22d58` no nosso espaco e aritmetica de laco, e
+  o modulo deles aparentemente tem outro build. Onde os dois batem
+  (`0x101828` handler de boot, `0x178338` carregador chave:valor, `0x1783b8`
+  desreferencia nula do `fontsize.map`), as conclusoes concordam.
 
 ---
 
