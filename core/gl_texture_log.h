@@ -146,6 +146,7 @@ class GlTextureRecordingBackend : public GlBackend {
   void BindTexture(GLenum target, GLuint texture) override;
   void TexParameter(GLenum target, GLenum pname, GLint param) override;
   void TexImage2D(GLenum target, const GlTextureImage& image) override;
+  void TexSubImage2D(GLenum target, const GlTextureSubImage& image) override;
 
  private:
   GlBackend& real_;

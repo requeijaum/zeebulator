@@ -84,6 +84,7 @@ class SoftGlBackend : public GlBackend {
   void BindTexture(GLenum target, GLuint texture) override;
   void TexParameter(GLenum target, GLenum pname, GLint param) override;
   void TexImage2D(GLenum target, const GlTextureImage& image) override;
+  void TexSubImage2D(GLenum target, const GlTextureSubImage& image) override;
 
   // --- Superfície de teste (unit tests) ---------------------------------
   // Expostos para os testes verificarem cobertura de pixel/blend/textura

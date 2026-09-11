@@ -148,8 +148,11 @@ class GlHle {
   void GlDepthMask(IArmCore& core);
   void GlMatrixMode(IArmCore& core);
   void GlLoadIdentity(IArmCore& core);
+  void GlLoadMatrixf(IArmCore& core);
   void GlLoadMatrixx(IArmCore& core);
   void GlMultMatrixx(IArmCore& core);
+  void GlOrthof(IArmCore& core);
+  void GlTexEnvfv(IArmCore& core);
   void GlPushMatrix(IArmCore& core);
   void GlPopMatrix(IArmCore& core);
   void GlOrthox(IArmCore& core);
@@ -180,6 +183,7 @@ class GlHle {
   void GlBindTexture(IArmCore& core);
   void GlTexParameterx(IArmCore& core);
   void GlTexImage2D(IArmCore& core);
+  void GlTexSubImage2D(IArmCore& core);
   void GlCompressedTexImage2D(IArmCore& core);
 
   // One array-pointer binding, as set by glVertexPointer/glColorPointer/

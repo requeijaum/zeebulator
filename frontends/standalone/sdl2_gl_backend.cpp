@@ -111,4 +111,9 @@ void Sdl2GlBackend::TexImage2D(GLenum target, const GlTextureImage& image) {
                image.height, /*border=*/0, image.format, image.type, image.pixels);
 }
 
+void Sdl2GlBackend::TexSubImage2D(GLenum target, const GlTextureSubImage& image) {
+  glTexSubImage2D(target, image.level, image.xoffset, image.yoffset, image.width,
+                  image.height, image.format, image.type, image.pixels);
+}
+
 }  // namespace zeebulator

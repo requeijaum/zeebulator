@@ -726,10 +726,20 @@ void Sdl2UnifiedBackend::BindTexture(GLenum target, GLuint texture) {
 }
 void Sdl2UnifiedBackend::TexParameter(GLenum target, GLenum pname, GLint param) {
   glTexParameteri(target, pname, param);
+  GLenum err = glGetError();
+  if (err != GL_NO_ERROR && std::getenv("ZEEB_LOG_GPU")) {
+    std::fprintf(stderr, "[gl_err_texparam] target=0x%x pname=0x%x param=0x%x err=0x%x\n",
+                 target, pname, param, err);
+  }
 }
 void Sdl2UnifiedBackend::TexImage2D(GLenum target, const GlTextureImage& image) {
   glTexImage2D(target, image.level, static_cast<GLint>(image.internal_format), image.width,
                image.height, /*border=*/0, image.format, image.type, image.pixels);
+}
+
+void Sdl2UnifiedBackend::TexSubImage2D(GLenum target, const GlTextureSubImage& image) {
+  glTexSubImage2D(target, image.level, image.xoffset, image.yoffset, image.width,
+                  image.height, image.format, image.type, image.pixels);
 }
 
 bool Sdl2UnifiedBackend::CaptureScreenshot(const std::string& path) {

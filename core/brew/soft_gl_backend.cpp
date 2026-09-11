@@ -362,6 +362,8 @@ void SoftGlBackend::TexParameter(GLenum /*target*/, GLenum pname, GLint param) {
   }
 }
 
+void SoftGlBackend::TexSubImage2D(GLenum /*target*/, const GlTextureSubImage& /*image*/) {}
+
 void SoftGlBackend::TexImage2D(GLenum /*target*/, const GlTextureImage& image) {
   if (bound_texture_ == 0) return;
   Texture& tex = textures_[bound_texture_];

@@ -48,6 +48,17 @@ struct GlTextureImage {
   const uint8_t* pixels = nullptr;
 };
 
+struct GlTextureSubImage {
+  int level = 0;
+  int xoffset = 0;
+  int yoffset = 0;
+  int width = 0;
+  int height = 0;
+  GLenum format = 0;
+  GLenum type = 0;
+  const uint8_t* pixels = nullptr;
+};
+
 // The seam between GlHle's vtable dispatch and a real host graphics
 // context, mirroring how Backend (core/backend.h) seams the rest of the
 // core off from the outside world. GlHle marshals real IGL/IEGL vtable
@@ -150,6 +161,7 @@ class GlBackend {
   // unconverted, not scaled by 65536.
   virtual void TexParameter(GLenum target, GLenum pname, GLint param) = 0;
   virtual void TexImage2D(GLenum target, const GlTextureImage& image) = 0;
+  virtual void TexSubImage2D(GLenum /*target*/, const GlTextureSubImage& /*image*/) {}
 };
 
 }  // namespace zeebulator

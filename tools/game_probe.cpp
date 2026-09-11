@@ -1446,9 +1446,10 @@ int main(int argc, char** argv) {
   // a no-op rather than drawing anything wrong.
   std::optional<std::vector<uint8_t>> abd_font_atlas;
   AbdTextState abd_text_state;
+  const bool is_abd_title = (std::string(argv[1]).find("abd.mod") != std::string::npos);
   for (const std::string& bar_path : all_bar_paths) {
     std::vector<uint8_t> bar_bytes = ReadFile(bar_path.c_str());
-    if (!abd_font_atlas) abd_font_atlas = DecodeAbdFontAtlas(bar_bytes);
+    if (is_abd_title && !abd_font_atlas) abd_font_atlas = DecodeAbdFontAtlas(bar_bytes);
     // Also expose the same raw bytes as a plain, directly-openable VFS
     // file under its own basename -- the same real "the archive's own
     // raw bytes need to be a VFS entry too" shape MergeGgzInto's own
@@ -2615,14 +2616,14 @@ int main(int argc, char** argv) {
   std::vector<zeebulator::HleRuntime::HleFunction> unknown_0x0103d8ec_methods(
       200, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
   unknown_0x0103d8ec_methods[2] = [&cpu, &hle, &display, &backend, &abd_font_atlas, &abd_text_state,
-                                    kHeight, gles11_obj](zeebulator::IArmCore& core) {
+                                    kHeight, gles11_obj, is_abd_title](zeebulator::IArmCore& core) {
     // int QueryInterface(iname* _me, AEECLSID clsID, void** ppo) -- real
     uint32_t req_cls = core.GetRegister(zeebulator::kR1);
     uint32_t out_ptr_qi = core.GetRegister(zeebulator::kR2);
-    // For non-ABD titles (e.g. Zuma's Revenge, FIFA 09, Ridge Racer),
+    // For non-ABD titles (e.g. Zuma's Revenge, FIFA 09, Ridge Racer, Pac-Mania, Peggle),
     // AEEIID_GLES10 (0x0103d8dd) and AEEIID_GLES11 (0x0103d8ea) return
     // the real OpenGL ES 1.1 interface object (gles11_obj).
-    if (!abd_font_atlas.has_value() && (req_cls == 0x0103d8dd || req_cls == 0x0103d8ea)) {
+    if (!is_abd_title && (req_cls == 0x0103d8dd || req_cls == 0x0103d8ea)) {
       if (out_ptr_qi != 0) {
         cpu.GetMemory().Write32(out_ptr_qi, gles11_obj);
       }
@@ -5218,13 +5219,18 @@ int main(int argc, char** argv) {
     // same drawable against) the app's own real, current GL content --
     // confirmed on the real desktop that real GL content never actually
     // became visible until this guard was added.
-    if (!backend.HasRealGlActivity()) {
+    static uint64_t last_gl_draws_seen = 0;
+    uint64_t cur_gl_draws = zeebulator::DrawStats::Instance().gl_draw_arrays;
+    bool had_gl_draws_this_tick = (cur_gl_draws > last_gl_draws_seen);
+    last_gl_draws_seen = cur_gl_draws;
+
+    if (had_gl_draws_this_tick && !backend.HasRealGlActivity()) {
+      // Some IGLES11 titles render but never issue an explicit swap. Present their FBO;
+      // once an app proves it owns EGL swapping, never compete with its real frames.
+      backend.SwapBuffers();
+    } else if (!backend.HasRealGlActivity()) {
       display.RepresentLastFrame();
     }
-    // Alien Breaker Deluxe writes real pixels via BlitRgba into the 2D live framebuffer
-    // and ALSO calls QEGL SwapBuffers (which sets HasRealGlActivity=true).
-    // Gating PresentLiveFramebuffer on !HasRealGlActivity blinded ABD completely.
-    // Calling PresentLiveFramebuffer unconditionally for ABD restores its display.
     if (abd_font_atlas.has_value()) {
       display.PresentLiveFramebuffer();
     }

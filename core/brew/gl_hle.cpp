@@ -3,6 +3,7 @@
 #include "core/control/debug_sink.h"
 
 #include <cstdarg>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -15,6 +16,12 @@
 namespace zeebulator {
 
 namespace {
+
+float FloatArg(uint32_t bits) {
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
 
 // Env-gated GPU/GLES trace (ZEEB_LOG_GPU=1). Off by default.
 void GpuLog(const char* fmt, ...) {
@@ -405,6 +412,28 @@ void GlHle::GlDepthMask(IArmCore& core) {
 
 void GlHle::GlMatrixMode(IArmCore& core) { backend_.MatrixMode(core.GetRegister(kR0)); }
 void GlHle::GlLoadIdentity(IArmCore&) { backend_.LoadIdentity(); }
+
+void GlHle::GlLoadMatrixf(IArmCore& core) {
+  uint32_t ptr = core.GetRegister(kR0);
+  float m[16];
+  for (int i = 0; i < 16; ++i) m[i] = FloatArg(core.GetMemory().Read32(ptr + i * 4u));
+  backend_.LoadMatrix(m);
+}
+
+void GlHle::GlOrthof(IArmCore& core) {
+  backend_.Ortho(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                 FloatArg(core.GetRegister(kR2)), FloatArg(core.GetRegister(kR3)),
+                 FloatArg(HleRuntime::ReadStackArg(core, 0)),
+                 FloatArg(HleRuntime::ReadStackArg(core, 1)));
+}
+
+void GlHle::GlTexEnvfv(IArmCore& core) {
+  if (core.GetRegister(kR1) == 0x2200) {
+    uint32_t ptr = core.GetRegister(kR2);
+    if (ptr != 0) backend_.TexEnvMode(static_cast<GLenum>(FloatArg(core.GetMemory().Read32(ptr))));
+  }
+}
+
 void GlHle::GlLoadMatrixx(IArmCore& core) {
   // void glLoadMatrixx(const GLfixed *m) -- 16 GLfixed column-major em r0.
   uint32_t ptr = core.GetRegister(kR0);
@@ -729,11 +758,15 @@ void GlHle::GlBindTexture(IArmCore& core) {
 }
 
 void GlHle::GlTexParameterx(IArmCore& core) {
-  // void glTexParameterx(GLenum target, GLenum pname, GLfixed param) --
-  // param is the raw enum integer, not a true fixed-point value (see
-  // GlBackend::TexParameter's comment).
-  backend_.TexParameter(core.GetRegister(kR0), core.GetRegister(kR1),
-                         static_cast<GLint>(core.GetRegister(kR2)));
+  uint32_t target = core.GetRegister(kR0);
+  uint32_t pname = core.GetRegister(kR1);
+  uint32_t param = core.GetRegister(kR2);
+  if (std::getenv("ZEEB_LOG_GPU")) {
+    std::fprintf(stderr, "[tex_param_call] target=0x%x pname=0x%x param=0x%x\n", target, pname, param);
+  }
+  if (pname != 0) {
+    backend_.TexParameter(target, pname, static_cast<GLint>(param));
+  }
 }
 
 void GlHle::GlTexImage2D(IArmCore& core) {
@@ -767,6 +800,32 @@ void GlHle::GlTexImage2D(IArmCore& core) {
   backend_.TexImage2D(target, image);
 }
 
+void GlHle::GlTexSubImage2D(IArmCore& core) {
+  GLenum target = core.GetRegister(kR0);
+  GlTextureSubImage image;
+  image.level = static_cast<int>(core.GetRegister(kR1));
+  image.xoffset = static_cast<int>(core.GetRegister(kR2));
+  image.yoffset = static_cast<int>(core.GetRegister(kR3));
+  image.width = static_cast<int>(HleRuntime::ReadStackArg(core, 0));
+  image.height = static_cast<int>(HleRuntime::ReadStackArg(core, 1));
+  image.format = HleRuntime::ReadStackArg(core, 2);
+  image.type = HleRuntime::ReadStackArg(core, 3);
+  uint32_t pixels_ptr = HleRuntime::ReadStackArg(core, 4);
+
+  std::vector<uint8_t> pixel_bytes;
+  if (pixels_ptr != 0 && image.width > 0 && image.height > 0) {
+    size_t total = static_cast<size_t>(image.width) * static_cast<size_t>(image.height) *
+                    static_cast<size_t>(GlPixelSize(image.format, image.type));
+    pixel_bytes.resize(total);
+    Memory& memory = core.GetMemory();
+    for (size_t i = 0; i < total; ++i) {
+      pixel_bytes[i] = memory.Read8(pixels_ptr + static_cast<uint32_t>(i));
+    }
+    image.pixels = pixel_bytes.data();
+  }
+  backend_.TexSubImage2D(target, image);
+}
+
 void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   // void glCompressedTexImage2D(GLenum target, GLint level,
   //                              GLenum internalformat, GLsizei width,
@@ -781,7 +840,6 @@ void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   uint32_t image_size = HleRuntime::ReadStackArg(core, 2);
   uint32_t data_ptr = HleRuntime::ReadStackArg(core, 3);
   Memory& memory = core.GetMemory();
-
   // Real disassembly (TASKS.md/PHASE8_LOG.md Phase 8) found Double
   // Dragon's own `data.ggz` contains *only* real OBM1 images (this
   // project's own already-working core/loader/obm1.h format), never
@@ -964,7 +1022,7 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlTexEnvxv(c); },      // 73 glTexEnvxv
       [this](IArmCore& c) { GlTexImage2D(c); },   // 74 glTexImage2D
       [this](IArmCore& c) { GlTexParameterx(c); }, // 75 glTexParameterx
-      Stub,                                       // 76 glTexSubImage2D
+      [this](IArmCore& c) { GlTexSubImage2D(c); }, // 76 glTexSubImage2D
       [this](IArmCore& c) { GlTranslatex(c); },   // 77 glTranslatex
       [this](IArmCore& c) { GlVertexPointer(c); }, // 78 glVertexPointer
       [this](IArmCore& c) { GlViewport(c); },     // 79 glViewport
@@ -1127,6 +1185,7 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
                             uint32_t object_address) {
   auto GlesMethod = [](std::function<void(IArmCore&)> fn) -> HleRuntime::HleFunction {
     return [fn = std::move(fn)](IArmCore& c) {
+      c.SetRegister(kR0, 0);  // Default return code for BREW COM interface is AEE_SUCCESS (0)
       Gles11ArmCoreAdapter adapter(c);
       fn(adapter);
     };
@@ -1139,7 +1198,19 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   std::vector<HleRuntime::HleFunction> methods(150, Stub);
   methods[0] = Stub;  // AddRef
   methods[1] = Stub;  // Release
-  methods[2] = Stub;  // QueryInterface
+  // Float API, 0-based indices from AEEGLES10/11's INHERIT_IGLES table.
+  // Same COM ABI as fixed calls: `this` in R0 and AEE_SUCCESS in R0 on return.
+  methods[16] = GlesMethod([this](IArmCore& c) { GlLoadMatrixf(c); });         // 16 LoadMatrixf
+  methods[22] = GlesMethod([this](IArmCore& c) { GlOrthof(c); });              // 22 Orthof
+  methods[28] = GlesMethod([this](IArmCore& c) { GlTexEnvfv(c); });            // 28 TexEnvfv
+  methods[2] = [](IArmCore& core) {
+    // int QueryInterface(IGLES11* po, AEECLSID clsID, void** ppOut)
+    uint32_t out_ptr = core.GetRegister(kR2);
+    if (out_ptr != 0) {
+      core.GetMemory().Write32(out_ptr, core.GetRegister(kR0));
+    }
+    core.SetRegister(kR0, 0);  // AEE_SUCCESS
+  };
 
   // Core methods
   methods[31] = Stub;                                                          // 31 ActiveTexture
@@ -1171,25 +1242,62 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
     core.SetRegister(kR0, 0);  // GL_NO_ERROR
   };
   methods[66] = GlesMethod([this](IArmCore& c) { GlGetIntegerv(c); });         // 66 GetIntegerv
-  methods[67] = GlesMethod([this](IArmCore& c) { GlGetString(c); });           // 67 GetString
+  methods[67] = [this](IArmCore& core) {                                        // 67 GetString
+    // int GetString(IGLES11* po, GLenum name, const char** ppOut)
+    uint32_t name = core.GetRegister(kR1);
+    uint32_t pp_out = core.GetRegister(kR2);
+    constexpr GLenum kGlVendor = 0x1F00;
+    constexpr GLenum kGlRenderer = 0x1F01;
+    constexpr GLenum kGlVersion = 0x1F02;
+    constexpr GLenum kGlExtensions = 0x1F03;
+    const char* value = "";
+    switch (name) {
+      case kGlVendor: value = "Zeebulator"; break;
+      case kGlRenderer: value = "Zeebulator Software Rasterizer"; break;
+      case kGlVersion: value = "OpenGL ES-CM 1.1"; break;
+      case kGlExtensions: {
+        static const char* const kDefaultGlExtensions =
+            "GL_OES_draw_texture GL_ATI_imageon_misc "
+            "GL_QUALCOMM_vertex_buffer_object GL_OES_vertex_buffer_object "
+            "GL_ARB_vertex_buffer_object GL_OES_query_matrix "
+            "GL_OES_point_size_array GL_OES_blend_subtract "
+            "GL_OES_blend_func_separate GL_OES_blend_equation_separate "
+            "GL_EXT_blend_minmax GL_EXT_blend_func_separate "
+            "GL_EXT_blend_equation_separate ";
+        const char* genv = std::getenv("ZEEB_GL_EXTENSIONS");
+        value = (genv != nullptr) ? genv : kDefaultGlExtensions;
+        break;
+      }
+      default: break;
+    }
+    WriteCString(core.GetMemory(), kQueryStringBufferAddr, value);
+    if (pp_out != 0) {
+      core.GetMemory().Write32(pp_out, kQueryStringBufferAddr);
+    }
+    core.SetRegister(kR0, 0);  // AEE_SUCCESS
+  };
   methods[74] = GlesMethod([this](IArmCore& c) { GlLoadIdentity(c); });        // 74 LoadIdentity
   methods[75] = GlesMethod([this](IArmCore& c) { GlLoadMatrixx(c); });         // 75 LoadMatrixx
   methods[79] = GlesMethod([this](IArmCore& c) { GlMatrixMode(c); });          // 79 MatrixMode
   methods[80] = GlesMethod([this](IArmCore& c) { GlMultMatrixx(c); });         // 80 MultMatrixx
-  methods[84] = GlesMethod([this](IArmCore& c) { GlNormalPointer(c); });       // 84 NormalPointer
-  methods[85] = GlesMethod([this](IArmCore& c) { GlOrthox(c); });              // 85 Orthox
-  methods[89] = GlesMethod([this](IArmCore& c) { GlPopMatrix(c); });           // 89 PopMatrix
-  methods[90] = GlesMethod([this](IArmCore& c) { GlPushMatrix(c); });          // 90 PushMatrix
-  methods[92] = GlesMethod([this](IArmCore& c) { GlRotatex(c); });             // 92 Rotatex
-  methods[95] = GlesMethod([this](IArmCore& c) { GlScalex(c); });              // 95 Scalex
-  methods[101] = GlesMethod([this](IArmCore& c) { GlTexCoordPointer(c); });    // 101 TexCoordPointer
-  methods[102] = GlesMethod([this](IArmCore& c) { GlTexEnvx(c); });            // 102 TexEnvx
-  methods[103] = GlesMethod([this](IArmCore& c) { GlTexEnvxv(c); });           // 103 TexEnvxv
-  methods[104] = GlesMethod([this](IArmCore& c) { GlTexImage2D(c); });         // 104 TexImage2D
-  methods[105] = GlesMethod([this](IArmCore& c) { GlTexParameterx(c); });      // 105 TexParameterx
-  methods[107] = GlesMethod([this](IArmCore& c) { GlTranslatex(c); });         // 107 Translatex
-  methods[108] = GlesMethod([this](IArmCore& c) { GlVertexPointer(c); });      // 108 VertexPointer
-  methods[109] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 109 Viewport
+  methods[83] = GlesMethod([this](IArmCore& c) { GlNormalPointer(c); });       // 83 NormalPointer
+  methods[84] = GlesMethod([this](IArmCore& c) { GlOrthox(c); });              // 84 Orthox
+  methods[85] = Stub;                                                          // 85 PixelStorei
+  methods[88] = GlesMethod([this](IArmCore& c) { GlPopMatrix(c); });           // 88 PopMatrix
+  methods[89] = GlesMethod([this](IArmCore& c) { GlPushMatrix(c); });          // 89 PushMatrix
+  methods[91] = GlesMethod([this](IArmCore& c) { GlRotatex(c); });             // 91 Rotatex
+  methods[94] = GlesMethod([this](IArmCore& c) { GlScalex(c); });              // 94 Scalex
+  methods[96] = Stub;                                                          // 96 ShadeModel
+  methods[100] = GlesMethod([this](IArmCore& c) { GlTexCoordPointer(c); });    // 100 TexCoordPointer
+  methods[101] = GlesMethod([this](IArmCore& c) { GlTexEnvx(c); });            // 101 TexEnvx
+  methods[102] = GlesMethod([this](IArmCore& c) { GlTexEnvxv(c); });           // 102 TexEnvxv
+  methods[103] = GlesMethod([this](IArmCore& c) { GlTexImage2D(c); });         // 103 TexImage2D
+  methods[104] = GlesMethod([this](IArmCore& c) { GlTexParameterx(c); });      // 104 TexParameterx
+  methods[105] = GlesMethod([this](IArmCore& c) { GlTexSubImage2D(c); });       // 105 TexSubImage2D
+  methods[106] = GlesMethod([this](IArmCore& c) { GlTranslatex(c); });         // 106 Translatex
+  methods[107] = GlesMethod([this](IArmCore& c) { GlVertexPointer(c); });      // 107 VertexPointer
+  methods[108] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 108 Viewport
+  methods[109] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 109 Viewport alias
 
   gles11_object_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return gles11_object_;

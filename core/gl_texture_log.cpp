@@ -30,6 +30,10 @@ void GlTextureRecordingBackend::TexParameter(GLenum target, GLenum pname, GLint 
   real_.TexParameter(target, pname, param);
 }
 
+void GlTextureRecordingBackend::TexSubImage2D(GLenum target, const GlTextureSubImage& image) {
+  real_.TexSubImage2D(target, image);
+}
+
 void GlTextureRecordingBackend::TexImage2D(GLenum target, const GlTextureImage& image) {
   TexImage2DCall call;
   call.target = target;
