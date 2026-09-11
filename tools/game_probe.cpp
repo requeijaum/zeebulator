@@ -4468,6 +4468,9 @@ int main(int argc, char** argv) {
     }
   }
   bool running = true;
+  // Diagnostic-only: preserves SDL/window events but never forwards keyboard
+  // or controller input into guest state, for reproducible passive runs.
+  const bool guest_input_disabled = std::getenv("ZEEB_DISABLE_INPUT") != nullptr;
   zeebulator::ZPadState previous_pad_state;
   SDL_Event event;
   constexpr uint32_t kTickMs = 16;
@@ -4877,7 +4880,8 @@ int main(int argc, char** argv) {
           continue;
         }
       }
-      if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) && !event.key.repeat) {
+      if (!guest_input_disabled &&
+          (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) && !event.key.repeat) {
         uint32_t hid_button_uid = SdlKeyToHidButton(event.key.keysym.sym);
         // The classic AVK path only runs for keys with *no* real HID
         // mapping. SdlKeyToAvk's own doc comment already says its
@@ -4944,7 +4948,8 @@ int main(int argc, char** argv) {
     // own) alongside the real keyboard handling above -- both a real
     // keyboard and a real controller still work simultaneously this way,
     // just never both driven off the same polled ZPadState.
-    if (backend.HasController() && *captured_button_callback != 0) {
+    if (!guest_input_disabled && std::getenv("ZEEB_DISABLE_CONTROLLER") == nullptr &&
+        backend.HasController() && *captured_button_callback != 0) {
       zeebulator::ZPadState pad_state = zeebulator::NormalizeZPadState(backend.PollInput());
       for (const zeebulator::ZPadButtonEdge& edge :
            zeebulator::DiffZPadButtonEdges(previous_pad_state.buttons, pad_state.buttons)) {
