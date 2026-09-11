@@ -124,12 +124,35 @@ class IShellHle {
   // Sets guest memory allocator for resource loading (LoadResData)
   void SetAllocator(std::function<uint32_t(uint32_t)> malloc_fn) { malloc_fn_ = std::move(malloc_fn); }
 
+  // VFS para LoadResString ler os `.brf`. Antes disto o slot 17 era um stub, e
+  // os titulos que dependem de string de recurso (a Z-Wheel entre eles)
+  // recebiam 0 e tratavam como EUNABLETOLOAD. Ver o comentario do parser do
+  // formato em ishell.cpp.
+  void SetVirtualFilesystem(const class VirtualFilesystem* vfs) { vfs_ = vfs; }
+
   void SetAppletClassAndItemId(uint32_t clsid, uint32_t item_id) {
     applet_clsid_ = clsid;
     item_id_ = item_id;
   }
 
   void SetAppletPointer(uint32_t applet_ptr) { applet_ptr_ = applet_ptr; }
+
+  // Endereco do HandleEvent REAL do applet. Necessario porque
+  // ISHELL_SendEvent endereçado ao applet corrente tem de ser ENTREGUE a ele:
+  // ver o comentario de SendEventImpl.
+  void SetAppletHandleEvent(uint32_t fn) { applet_handle_event_ = fn; }
+
+  // Endereco do "ppObj" de IModule::CreateInstance -- onde o AEEApplet_New do
+  // guest JA escreveu o IApplet* antes de o codigo do proprio applet rodar.
+  //
+  // Isto existe por um fato medido, nao por simetria: a Z-Wheel pede o objeto
+  // de PrefsDB pelo evento 0x7b0a DENTRO do CreateInstance, antes de o
+  // chamador sequer receber o applet. O mesmo documento da roda descreve a
+  // regra geral ("para o shell, o applet passa a existir quando e registrado,
+  // nao quando e iniciado"): a fonte do ponteiro e esse ppObj, escrito pelo
+  // AEEApplet_New. Sem isto, o unico jeito seria a resposta chegar depois --
+  // tarde demais, porque o chamador le a resposta assim que a chamada volta.
+  void SetAppletOutAddress(uint32_t addr) { applet_out_address_ = addr; }
 
   // Optional ThreadHle hook for cooperative threads
   void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
@@ -194,7 +217,15 @@ class IShellHle {
   void SetTimerImpl(IArmCore& core);
   void CancelTimerImpl(IArmCore& core);
   void ResumeImpl(IArmCore& core);
+  void LoadResStringImpl(IArmCore& core);
+  // Container de recursos .brf no VFS (ver ishell.cpp).
+  const class VirtualFilesystem* Vfs() const { return vfs_; }
+  // Procura `<base>[_lang][li].brf` no VFS e devolve o arquivo (ver ishell.cpp).
+  const std::vector<uint8_t>* FindBrewResourceFile(const std::string& base,
+                                                   std::string* used_name) const;
   void SendEventImpl(IArmCore& core);
+  // Ver o comentario da definicao em ishell.cpp.
+  uint32_t ResolveApplet();
   void LoadResObjectImpl(IArmCore& core);
   void LoadResDataImpl(IArmCore& core);
   void LoadResDataExImpl(IArmCore& core);
@@ -214,6 +245,7 @@ class IShellHle {
   uint32_t next_mime_addr_ = 0x0008d000;
   class ThreadHle* thread_hle_ = nullptr;
   std::function<uint32_t(uint32_t)> malloc_fn_;
+  const class VirtualFilesystem* vfs_ = nullptr;
   // Real ISHELL_LoadResData hands back a cached, reference-counted pointer for
   // the same (file, id, type); it does not copy the resource again per call.
   // Titles routinely load the same id twice and free it once, so allocating a
@@ -223,6 +255,12 @@ class IShellHle {
   uint32_t applet_clsid_ = 0;
   uint32_t item_id_ = 0;
   uint32_t applet_ptr_ = 0;
+  // HandleEvent real do applet (ver SetAppletHandleEvent).
+  uint32_t applet_handle_event_ = 0;
+  // Onde o AEEApplet_New do guest escreveu o IApplet* (ver SetAppletOutAddress).
+  uint32_t applet_out_address_ = 0;
+  // Guarda de reentrancia da entrega de eventos (ver SendEventImpl).
+  bool delivering_event_ = false;
   void GetClassItemIdImpl(IArmCore& core);
   void GetDeviceInfoExImpl(IArmCore& core);
 };

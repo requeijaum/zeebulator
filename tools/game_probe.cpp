@@ -4767,6 +4767,11 @@ int main(int argc, char** argv) {
     std::printf("Calling IModule::CreateInstance(ClsId=%u)...\n", cls_id);
     constexpr uint32_t kPpObjAddr = 0x00090010;
     mod_runtime.SetAppletOutAddress(kPpObjAddr);
+    // O shell precisa do MESMO endereco: o applet manda evento para a propria
+    // classe durante o CreateInstance, antes de o chamador receber o ponteiro.
+    shell_hle.SetAppletOutAddress(kPpObjAddr);
+    // LoadResString le os .brf do VFS (era um stub ate agora).
+    shell_hle.SetVirtualFilesystem(&vfs);
     auto create_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, create_instance_fn,
                                                  module_ptr, shell, cls_id, kPpObjAddr,
                                                  /*trace=*/false, /*hle_trace=*/false, &display, &backend);
@@ -4789,6 +4794,8 @@ int main(int argc, char** argv) {
     std::printf("CreateInstance OK, applet=0x%08x HandleEvent=0x%08x\n", applet_ptr,
                 handle_event_fn);
     shell_hle.SetAppletPointer(applet_ptr);
+    // SendEvent passa a entregar ao HandleEvent real do applet (ver ishell.cpp).
+    shell_hle.SetAppletHandleEvent(handle_event_fn);
     // Real code reads/writes the third/fourth/fifth "app context"
     // fields (see mod_runtime.h) directly on the real IApplet instance
     // CreateInstance just returned, not on a separate fixed struct --

@@ -1,5 +1,8 @@
 #include "core/brew/ishell.h"
 
+#include "core/brew/virtual_filesystem.h"
+#include "core/brew/brew_resource_file.h"
+
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -175,6 +178,27 @@ void IShellHle::CancelTimerImpl(IArmCore& core) {
   core.SetRegister(kR0, erased ? 0 : 1);
 }
 
+// Resolve o IApplet corrente. Duas fontes, nesta ordem:
+//  1. o ponteiro que o probe ja leu do ppObj depois de CreateInstance;
+//  2. o proprio ppObj, lido AGORA -- necessario porque o guest manda eventos
+//     para a propria classe DURANTE o CreateInstance (medido na Z-Wheel: o
+//     evento 0x7b0a pedindo o PrefsDB sai de dentro do constructor do applet).
+// E de `*ppObj` que se le o IApplet*, e o HandleEvent e o slot 2 da vtable
+// dele (AddRef=0, Release=1, HandleEvent=2, ordem do AEEAppGen.c de
+// referencia).
+uint32_t IShellHle::ResolveApplet() {
+  if (applet_ptr_ == 0 && applet_out_address_ != 0) {
+    const uint32_t candidate = memory_.Read32(applet_out_address_);
+    if (candidate != 0) {
+      applet_ptr_ = candidate;
+      if (applet_handle_event_ == 0) {
+        applet_handle_event_ = memory_.Read32(memory_.Read32(candidate) + 2 * 4);
+      }
+    }
+  }
+  return applet_ptr_;
+}
+
 void IShellHle::SendEventImpl(IArmCore& core) {
   // int ISHELL_SendEvent(IShell *po, AEECLSID cls, AEEEvent evt, uint16 wParam, uint32 dwParam)
   uint32_t a1 = core.GetRegister(kR1);
@@ -194,6 +218,53 @@ void IShellHle::SendEventImpl(IArmCore& core) {
     w = static_cast<uint16_t>(s0);
     dw = s1;
   }
+  // ENTREGA REAL. A assinatura acima ja estava certa; o que faltava era
+  // entregar o evento. ISHELL_SendEvent(po, wFlags, clsApp, evt, wParam,
+  // dwParam) (AEEIShell.h) existe para o chamador pedir algo AO applet, e o
+  // applet responde escrevendo no dwParam -- portanto a resposta so pode vir do
+  // HandleEvent dele, de forma SINCRONA (o chamador le o dwParam assim que a
+  // chamada volta; adiar para o proximo tick quebraria o contrato).
+  //
+  // Medido no tectoy.mod (Z-Wheel): 0x1785a4 pergunta ao applet, pelo evento
+  // 0x7b0e, o objeto do ARQUIVO DE RECURSOS; 0x179518 usa a resposta para ler
+  // as strings de recurso e, recebendo nulo, devolve 0; 0x17f700 traduz esse 0
+  // em `mov r4,#6` (EUNABLETOLOAD, AEEError.h) e o formulario do z-pad nao
+  // monta -- "Couldn't create z-pad instruction form (6)" em Tectoy.c:760.
+  //
+  // Reentrancia: este trap roda DENTRO de uma chamada do guest, e o HandleEvent
+  // e outro codigo do guest. CallArmFunctionPreservingContext salva R0-R15+CPSR
+  // e mantem os efeitos de memoria, que e a regra deste projeto para qualquer
+  // callback do guest disparado de dentro de um trap (mesma correcao do SQL).
+  if (cls == applet_clsid_ && !delivering_event_ && ResolveApplet() != 0 &&
+      applet_handle_event_ != 0) {
+    delivering_event_ = true;
+    const uint32_t r = hle_.CallArmFunctionPreservingContext(applet_handle_event_, applet_ptr_, evt,
+                                                             w, dw);
+    delivering_event_ = false;
+    if (std::getenv("ZEEB_LOG_SENDEVENT")) {
+      // A RESPOSTA e o que o applet escreveu no dwParam -- e ela que o chamador
+      // usa. Logar tambem a vtable dela diz se a resposta e um objeto nosso
+      // (vtable 0x80xxxxxx) ou um objeto do proprio guest.
+      const uint32_t answer = dw != 0 ? memory_.Read32(dw) : 0;
+      const uint32_t answer_vtable = answer != 0 ? memory_.Read32(answer) : 0;
+      std::fprintf(stderr,
+                   "[sendevent] clsApp=0x%08x evt=0x%04x wParam=%u dwParam=0x%08x -> applet "
+                   "HandleEvent=0x%08x devolveu 0x%08x; resposta=0x%08x vtable=0x%08x\n",
+                   cls, evt, w, dw, applet_handle_event_, r, answer, answer_vtable);
+    }
+    core.SetRegister(kR0, r);
+    return;
+  }
+
+  if (std::getenv("ZEEB_LOG_SENDEVENT")) {
+    std::fprintf(stderr,
+                 "[sendevent-entrada] raw r1=0x%08x r2=0x%08x r3=0x%08x sp0=0x%08x sp4=0x%08x -> "
+                 "clsApp=0x%08x evt=0x%04x wParam=%u dwParam=0x%08x (applet_clsid=0x%08x "
+                 "applet=0x%08x handle_event=0x%08x)\n",
+                 a1, a2, a3, s0, s1, cls, evt, w, dw, applet_clsid_, applet_ptr_,
+                 applet_handle_event_);
+  }
+
   // Evento 0x7b0a da Z-Wheel
   if (evt == 0x7b0a) {
     if (w == 4) {  // PrefsDB
@@ -254,6 +325,62 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
   core.SetRegister(kR0, load_res_object_obj_);
 }
 
+// Sufixos de idioma do AEE_RES_LANGSUF, citado pela propria documentacao do
+// IShell_LoadResString. Os arquivos reais do tectoy em mod/274755 sao
+// tectoy_pt.brf, tectoy_es.brf, tectoy_esmx.brf e tectoyli.brf (`li` =
+// independente de idioma).
+namespace {
+const char* const kBrewResSuffixes[] = {"", "_pt", "li", "_en", "_es", "_esmx"};
+}  // namespace
+
+// Procura o container de recursos no VFS pelo nome que o guest passou.
+// Devolve o arquivo por ponteiro e escreve em `used_name` o nome que casou.
+const std::vector<uint8_t>* IShellHle::FindBrewResourceFile(const std::string& base,
+                                                            std::string* used_name) const {
+  if (vfs_ == nullptr) return nullptr;
+  for (const char* suffix : kBrewResSuffixes) {
+    *used_name = base + suffix + ".brf";
+    if (const std::vector<uint8_t>* f = vfs_->Find(*used_name)) return f;
+    *used_name = base + suffix;  // o chamador pode ja ter passado "tectoy_pt"
+    if (const std::vector<uint8_t>* f = vfs_->Find(*used_name)) return f;
+  }
+  return nullptr;
+}
+
+void IShellHle::LoadResStringImpl(IArmCore& core) {
+  // int LoadResString(IShell *po, const char *pszResFile, int16 nResID,
+  //                   AECHAR *pBuff, int nSize)  --  AEEIShell.h.
+  // Devolve o NUMERO DE CARACTERES preenchidos, ou 0 (documentado).
+  const std::string base = ReadCString(memory_, core.GetRegister(kR1));
+  const uint32_t id = core.GetRegister(kR2) & 0xFFFFu;
+  const uint32_t p_buff = core.GetRegister(kR3);
+  const uint32_t size_bytes = HleRuntime::ReadStackArg(core, 0);
+
+  std::string used_name;
+  const std::vector<uint8_t>* file = FindBrewResourceFile(base, &used_name);
+  uint32_t written = 0;
+  if (file != nullptr && p_buff != 0 && size_bytes >= 2) {
+    BrewResourceDirectory dir;
+    std::vector<uint16_t> chars;
+    if (ParseBrewResourceDirectory(*file, &dir) && ReadBrewResourceString(*file, dir, id, &chars)) {
+      // nSize e o tamanho do buffer EM BYTES (documentado); AECHAR e uint16.
+      const uint32_t capacity = size_bytes / 2;
+      const uint32_t to_copy = std::min<uint32_t>(static_cast<uint32_t>(chars.size()), capacity - 1);
+      for (uint32_t i = 0; i < to_copy; ++i) memory_.Write16(p_buff + i * 2, chars[i]);
+      memory_.Write16(p_buff + to_copy * 2, 0);
+      written = to_copy;
+    }
+  }
+  if (std::getenv("ZEEB_LOG_RES")) {
+    std::fprintf(stderr,
+                 "[res] LoadResString(base='%s' id=%u buf=0x%08x size=%u) -> arquivo '%s' %s, "
+                 "%u caracteres\n",
+                 base.c_str(), id, p_buff, size_bytes, used_name.c_str(),
+                 file != nullptr ? "achado" : "AUSENTE", written);
+  }
+  core.SetRegister(kR0, written);
+}
+
 void IShellHle::LoadResDataImpl(IArmCore& core) {
   // void * ISHELL_LoadResData(IShell * po, const char * pszResFile, uint16 nResID, ResType nType)
   // Real calling convention (Qualcomm BREW SDK AEE.h):
@@ -267,19 +394,39 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
   uint32_t type = core.GetRegister(kR3);
 
   auto file_it = resource_files_.find(filename);
-  if (file_it == resource_files_.end()) {
-    if (std::getenv("ZEEB_LOG_FILE")) {
-      std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> NO FILE REGISTERED\n",
-                   filename.c_str(), id, type);
-    }
-    core.SetRegister(kR0, 0);
-    return;
+  // Dois containers possiveis, nesta ordem:
+  //  1. um `.bar` REGISTRADO no shell (parser proprio, ver BarEntry);
+  //  2. um arquivo de recurso do BREW (`.brf`) ao lado do `.mod`, achado no VFS.
+  // O segundo faltava por completo: a Z-Wheel pede as strings de recurso pelo
+  // slot 41 (LoadResDataEx) com o nome do arquivo, e sem isto recebia 0 --
+  // o wrapper dela traduz esse 0 em EUNABLETOLOAD (6) e o formulario do z-pad
+  // nao monta. Ver o comentario do formato no topo deste arquivo.
+  const BarEntry* entry = nullptr;
+  std::vector<uint8_t> brf_data;
+  if (file_it != resource_files_.end()) {
+    entry = file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   }
-  const BarEntry* entry =
-      file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   if (entry == nullptr) {
+    std::string used_name;
+    if (const std::vector<uint8_t>* brf = FindBrewResourceFile(filename, &used_name)) {
+      BrewResourceDirectory dir;
+      uint32_t start = 0, size = 0;
+      if (ParseBrewResourceDirectory(*brf, &dir) &&
+          ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
+                                 /*type_match_any=*/true, &start, &size)) {
+        brf_data.assign(brf->begin() + start, brf->begin() + start + size);
+        if (std::getenv("ZEEB_LOG_RES")) {
+          std::fprintf(stderr, "[res] LoadResData('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
+                       filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+        }
+      }
+    }
+  }
+  if (entry == nullptr && brf_data.empty()) {
     if (std::getenv("ZEEB_LOG_FILE")) {
-      std::fprintf(stderr, "[res] LoadResData('%s', id=0x%x, type=0x%x) -> NO DIR ENTRY\n",
+      std::fprintf(stderr,
+                   "[res] LoadResData('%s', id=0x%x, type=0x%x) -> NAO ACHOU (nem .bar registrado "
+                   "nem .brf no VFS)\n",
                    filename.c_str(), id, type);
     }
     core.SetRegister(kR0, 0);
@@ -295,7 +442,7 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
     core.SetRegister(kR0, cached->second);
     return;
   }
-  std::vector<uint8_t> data = file_it->second.Extract(*entry);
+  std::vector<uint8_t> data = (entry != nullptr) ? file_it->second.Extract(*entry) : brf_data;
   uint32_t ptr = malloc_fn_ ? malloc_fn_(static_cast<uint32_t>(data.size() + 4)) : 0;
   if (ptr != 0) {
     resource_cache_[cache_key] = ptr;
@@ -322,38 +469,57 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
   uint32_t buffer = HleRuntime::ReadStackArg(core, 0);
   uint32_t len_addr = HleRuntime::ReadStackArg(core, 1);
 
+  // Mesmos dois containers do LoadResData (ver o comentario la): .bar
+  // registrado, ou o `.brf` no VFS. Os wrappers do guest usam ESTE slot para
+  // perguntar o tamanho (pBuffer = (void*)-1) e depois para copiar.
   auto file_it = resource_files_.find(filename);
-  if (file_it == resource_files_.end()) {
-    if (std::getenv("ZEEB_LOG_FILE")) {
-      std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NO FILE REGISTERED\n",
-                   filename.c_str(), id, type);
-    }
-    core.SetRegister(kR0, 1);  // EFAILED-ish: unregistered resource file
-    return;
+  const BarEntry* entry = nullptr;
+  std::vector<uint8_t> brf_data;
+  if (file_it != resource_files_.end()) {
+    entry = file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   }
-  const BarEntry* entry =
-      file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   if (entry == nullptr) {
+    std::string used_name;
+    if (const std::vector<uint8_t>* brf = FindBrewResourceFile(filename, &used_name)) {
+      BrewResourceDirectory dir;
+      uint32_t start = 0, size = 0;
+      if (ParseBrewResourceDirectory(*brf, &dir) &&
+          ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
+                                 /*type_match_any=*/true, &start, &size)) {
+        brf_data.assign(brf->begin() + start, brf->begin() + start + size);
+        if (std::getenv("ZEEB_LOG_RES")) {
+          std::fprintf(stderr,
+                       "[res] LoadResDataEx('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
+                       filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+        }
+      }
+    }
+  }
+  if (entry == nullptr && brf_data.empty()) {
     if (std::getenv("ZEEB_LOG_FILE")) {
-      std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NO DIR ENTRY\n",
+      std::fprintf(stderr,
+                   "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NAO ACHOU (nem .bar nem "
+                   ".brf)\n",
                    filename.c_str(), id, type);
     }
-    core.SetRegister(kR0, 1);  // EFAILED-ish: no directory entry for this (type, id)
+    core.SetRegister(kR0, 1);  // EFAILED
     return;
   }
-  if (std::getenv("ZEEB_LOG_FILE")) {
-    std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> OK size=%u\n",
-                 filename.c_str(), id, type, entry->size);
+  const uint32_t resource_size =
+      (entry != nullptr) ? entry->size : static_cast<uint32_t>(brf_data.size());
+  if (std::getenv("ZEEB_LOG_RES")) {
+    std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x, buf=0x%08x) -> size=%u\n",
+                 filename.c_str(), id, type, buffer, resource_size);
   }
 
   constexpr uint32_t kSizeOnlySentinel = 0xFFFFFFFF;
   if (buffer == kSizeOnlySentinel) {
-    if (len_addr != 0) memory_.Write32(len_addr, entry->size);
+    if (len_addr != 0) memory_.Write32(len_addr, resource_size);
     core.SetRegister(kR0, 0);  // SUCCESS
     return;
   }
 
-  std::vector<uint8_t> data = file_it->second.Extract(*entry);
+  std::vector<uint8_t> data = (entry != nullptr) ? file_it->second.Extract(*entry) : brf_data;
   uint32_t dest_buffer = buffer;
   bool caller_allocated = (dest_buffer != 0);
   if (!caller_allocated) {
@@ -366,7 +532,7 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
       memory_.Write8(dest_buffer + i, data[i]);
     }
   }
-  if (len_addr != 0) memory_.Write32(len_addr, entry->size);
+  if (len_addr != 0) memory_.Write32(len_addr, resource_size);
   // When caller supplied buffer, return 0 (AEE_SUCCESS); when allocated on demand, return pointer.
   core.SetRegister(kR0, caller_allocated ? 0 : dest_buffer);
 }
@@ -652,7 +818,7 @@ uint32_t IShellHle::Build(uint32_t vtable_address, uint32_t object_address) {
       LoggedStub("IShell", 14, "CreateDialog"),  // 14 CreateDialog
       LoggedStub("IShell", 15, "GetActiveDialog"),  // 15 GetActiveDialog
       LoggedStub("IShell", 16, "EndDialog"),  // 16 EndDialog
-      LoggedStub("IShell", 17, "LoadResString"),  // 17 LoadResString
+      [this](IArmCore& c) { LoadResStringImpl(c); },  // 17 LoadResString (le o .brf)
       [this](IArmCore& c) { LoadResDataImpl(c); },    // 18 LoadResData
       [this](IArmCore& c) { LoadResObjectImpl(c); },  // 19 LoadResObject
       LoggedStub("IShell", 20, "FreeResData"),  // 20 FreeResData

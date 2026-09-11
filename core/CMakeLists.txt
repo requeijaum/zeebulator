@@ -65,6 +65,7 @@ add_library(zeebulator_core STATIC
   brew/interface_object.h
   brew/scaffold_object.cpp
   brew/scaffold_object.h
+  brew/brew_resource_file.cpp
   brew/ishell.cpp
   brew/ishell.h
   brew/idisplay.cpp

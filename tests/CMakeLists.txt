@@ -18,6 +18,7 @@ add_executable(zeebulator_tests
   nid_table_test.cpp
   thumb_test.cpp
   bar_test.cpp
+  brew_resource_file_test.cpp
   aez_test.cpp
   fufs_test.cpp
   ggz_test.cpp
