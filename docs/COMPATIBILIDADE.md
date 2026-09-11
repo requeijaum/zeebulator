@@ -11,10 +11,10 @@ via `ExtractMifClassIds` e validados.
 
 | Estagio de Execucao | Titulos | Proporcao |
 |---|---|---|
-| **`EVT_APP_START = 1`** | **57** | **90,5%** |
+| **`EVT_APP_START = 1`** | **58** | **92,1%** |
 | **`EVT_APP_START` nao-zero** (`imicro3d`) | **1** | **1,6%** |
 | **Laco principal de eventos alcancado** (`tectoy`, `prey3d`, `reksio`, `rocketweb`) | **4** | **6,3%** |
-| **Total executando no laco de eventos / apos START** | **62** | **98,4%** |
+| **Total executando no laco de eventos / apos START** | **63** | **100,0%** |
 | `CreateInstance` OK (passa com orcamento expandido, ex. `fifa09`) | 1 | 1,6% |
 | `AEEMod_Load` OK | 0 | 0,0% |
 | **Falha em carregar (`AEEMod_Load` falhou)** | **0** | **0,0%** |
@@ -22,7 +22,7 @@ via `ExtractMifClassIds` e validados.
 
 - **Taxa de sucesso de carga (`AEEMod_Load`)**: **63 / 63 (100%)**
 - **Taxa de criacao de instancia (`CreateInstance`)**: **63 / 63 (100,0%)**
-- **Taxa de alcance do laco de eventos da aplicacao**: **62 / 63 (98,4%)**
+- **Taxa de alcance do laco de eventos da aplicacao**: **63 / 63 (100,0%)**
 - **Titulos com avanco ativo e continuo de ticks comprovado no guest**: **26 titulos**
 
 ---
@@ -86,7 +86,7 @@ via `ExtractMifClassIds` e validados.
 | 274755 | tectoy | 17237912 | EVENT_LOOP |
 | 274791 | zeebo_app | 17244565 | START_1 |
 | 274802 | quake | 17332796 | START_1 |
-| 274803 | fifa09 | 17332968 | CREATE_OK |
+| 274803 | fifa09 | 17332968 | START_1 |
 | 274804 | brainchallenge | 17332809 | START_1 |
 | 276121 | nfs | 17350844 | START_1 |
 | 276151 | alpineracerex | 17250341 | START_1 |
