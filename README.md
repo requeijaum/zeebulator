@@ -15,7 +15,7 @@ Unlike traditional fixed-function consoles, the Zeebo operates as a connected mo
 
 Zeebulator has achieved feature and architectural compatibility parity across the entire official retail catalog:
 
-- **61 of 63 official NAND titles (96.8%)** load modules (`AEEMod_Load`), instantiate their applets (`CreateInstance`), and reach the main application event loop (`EVT_APP_START` completed or interactive system shell).
+- **62 of 63 official NAND titles (98.4%)** load modules (`AEEMod_Load`), instantiate their applets (`CreateInstance`), and reach the main application event loop (`EVT_APP_START` completed or interactive system shell).
 - **26 titles with verified active in-game guest loops** dispatching cooperative threads and rendering at 40–60 FPS.
 - **Z-Wheel (Official System Shell) Fully Bootable**: Boots `tectoy.mod`, opens and queries SQLite preferences, builds the 24-slot visual widget tree, loads all 15 carousel titles, and renders the top stage and bottom roller interface.
 - **Homebrew & Injections**: Validated support for OpenZeebo homebrew and BREW mobile ports (including *Kingdom Hearts V-CAST*).

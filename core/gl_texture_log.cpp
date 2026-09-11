@@ -40,10 +40,13 @@ void GlTextureRecordingBackend::TexImage2D(GLenum target, const GlTextureImage& 
   call.format = image.format;
   call.type = image.type;
   call.has_pixels = image.pixels != nullptr;
-  if (call.has_pixels && image.width > 0 && image.height > 0) {
+  if (call.has_pixels && image.width > 0 && image.height > 0 &&
+      image.width <= 2048 && image.height <= 2048) {
     size_t total = static_cast<size_t>(image.width) * static_cast<size_t>(image.height) *
                     static_cast<size_t>(GlPixelSize(image.format, image.type));
-    call.pixels.assign(image.pixels, image.pixels + total);
+    if (total <= 32 * 1024 * 1024) {
+      call.pixels.assign(image.pixels, image.pixels + total);
+    }
   }
   log_.push_back(std::move(call));
   real_.TexImage2D(target, image);

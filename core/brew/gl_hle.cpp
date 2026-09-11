@@ -1088,8 +1088,45 @@ uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtab
   return surface_manip_obj_;
 }
 
+namespace {
+
+class Gles11ArmCoreAdapter : public IArmCore {
+ public:
+  explicit Gles11ArmCoreAdapter(IArmCore& real) : real_(real) {}
+  void Reset() override { real_.Reset(); }
+  void Step() override { real_.Step(); }
+  uint64_t Run(uint64_t max_instructions) override { return real_.Run(max_instructions); }
+  uint32_t GetRegister(int index) const override {
+    if (index == kR0) return real_.GetRegister(kR1);
+    if (index == kR1) return real_.GetRegister(kR2);
+    if (index == kR2) return real_.GetRegister(kR3);
+    if (index == kR3) return real_.GetMemory().Read32(real_.GetRegister(kSP));
+    if (index == kSP) return real_.GetRegister(kSP) + 4;
+    return real_.GetRegister(index);
+  }
+  void SetRegister(int index, uint32_t value) override {
+    real_.SetRegister(index, value);
+  }
+  uint32_t GetCpsr() const override { return real_.GetCpsr(); }
+  void SetCpsr(uint32_t value) override { real_.SetCpsr(value); }
+  Memory& GetMemory() override { return real_.GetMemory(); }
+  void SetCallOutRange(uint32_t base, uint32_t size) override { real_.SetCallOutRange(base, size); }
+  void SetCallOutHandler(CallOutHandler handler) override { real_.SetCallOutHandler(std::move(handler)); }
+ private:
+  IArmCore& real_;
+};
+
+}  // namespace
+
 uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_address,
                             uint32_t object_address) {
+  auto GlesMethod = [](std::function<void(IArmCore&)> fn) -> HleRuntime::HleFunction {
+    return [fn = std::move(fn)](IArmCore& c) {
+      Gles11ArmCoreAdapter adapter(c);
+      fn(adapter);
+    };
+  };
+
   // 150 slots total for IGLES11 (standard Qualcomm BREW SDK 4.0.2 / zeebx AEE slots):
   // 0..2: AddRef, Release, QueryInterface
   // 3..30: Float API (AlphaFunc..Translatef)
@@ -1100,27 +1137,27 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   methods[2] = Stub;  // QueryInterface
 
   // Core methods
-  methods[31] = Stub;                                                // 31 ActiveTexture
-  methods[32] = [this](IArmCore& c) { GlAlphaFuncx(c); };            // 32 AlphaFuncx
-  methods[33] = [this](IArmCore& c) { GlBindTexture(c); };           // 33 BindTexture
-  methods[34] = [this](IArmCore& c) { GlBlendFunc(c); };             // 34 BlendFunc
-  methods[35] = [this](IArmCore& c) { GlClear(c); };                 // 35 Clear
-  methods[36] = [this](IArmCore& c) { GlClearColorx(c); };           // 36 ClearColorx
-  methods[37] = [this](IArmCore& c) { GlClearDepthx(c); };           // 37 ClearDepthx
-  methods[39] = Stub;                                                // 39 ClientActiveTexture
-  methods[40] = [this](IArmCore& c) { GlColor4x(c); };               // 40 Color4x
-  methods[42] = [this](IArmCore& c) { GlColorPointer(c); };          // 42 ColorPointer
-  methods[43] = [this](IArmCore& c) { GlCompressedTexImage2D(c); }; // 43 CompressedTexImage2D
-  methods[48] = [this](IArmCore& c) { GlDeleteTextures(c); };        // 48 DeleteTextures
-  methods[49] = [this](IArmCore& c) { GlDepthFunc(c); };             // 49 DepthFunc
-  methods[50] = [this](IArmCore& c) { GlDepthMask(c); };             // 50 DepthMask
-  methods[52] = [this](IArmCore& c) { GlDisable(c); };               // 52 Disable
-  methods[53] = [this](IArmCore& c) { GlDisableClientState(c); };   // 53 DisableClientState
-  methods[54] = [this](IArmCore& c) { GlDrawArrays(c); };            // 54 DrawArrays
-  methods[55] = [this](IArmCore& c) { GlDrawElements(c); };          // 55 DrawElements
-  methods[56] = [this](IArmCore& c) { GlEnable(c); };                // 56 Enable
-  methods[57] = [this](IArmCore& c) { GlEnableClientState(c); };    // 57 EnableClientState
-  methods[64] = [this](IArmCore& c) { GlGenTextures(c); };           // 64 GenTextures
+  methods[31] = Stub;                                                          // 31 ActiveTexture
+  methods[32] = GlesMethod([this](IArmCore& c) { GlAlphaFuncx(c); });          // 32 AlphaFuncx
+  methods[33] = GlesMethod([this](IArmCore& c) { GlBindTexture(c); });         // 33 BindTexture
+  methods[34] = GlesMethod([this](IArmCore& c) { GlBlendFunc(c); });           // 34 BlendFunc
+  methods[35] = GlesMethod([this](IArmCore& c) { GlClear(c); });               // 35 Clear
+  methods[36] = GlesMethod([this](IArmCore& c) { GlClearColorx(c); });         // 36 ClearColorx
+  methods[37] = GlesMethod([this](IArmCore& c) { GlClearDepthx(c); });         // 37 ClearDepthx
+  methods[39] = Stub;                                                          // 39 ClientActiveTexture
+  methods[40] = GlesMethod([this](IArmCore& c) { GlColor4x(c); });             // 40 Color4x
+  methods[42] = GlesMethod([this](IArmCore& c) { GlColorPointer(c); });        // 42 ColorPointer
+  methods[43] = GlesMethod([this](IArmCore& c) { GlCompressedTexImage2D(c); });// 43 CompressedTexImage2D
+  methods[48] = GlesMethod([this](IArmCore& c) { GlDeleteTextures(c); });      // 48 DeleteTextures
+  methods[49] = GlesMethod([this](IArmCore& c) { GlDepthFunc(c); });           // 49 DepthFunc
+  methods[50] = GlesMethod([this](IArmCore& c) { GlDepthMask(c); });           // 50 DepthMask
+  methods[52] = GlesMethod([this](IArmCore& c) { GlDisable(c); });             // 52 Disable
+  methods[53] = GlesMethod([this](IArmCore& c) { GlDisableClientState(c); }); // 53 DisableClientState
+  methods[54] = GlesMethod([this](IArmCore& c) { GlDrawArrays(c); });          // 54 DrawArrays
+  methods[55] = GlesMethod([this](IArmCore& c) { GlDrawElements(c); });        // 55 DrawElements
+  methods[56] = GlesMethod([this](IArmCore& c) { GlEnable(c); });              // 56 Enable
+  methods[57] = GlesMethod([this](IArmCore& c) { GlEnableClientState(c); });  // 57 EnableClientState
+  methods[64] = GlesMethod([this](IArmCore& c) { GlGenTextures(c); });         // 64 GenTextures
   methods[65] = [](IArmCore& core) {
     uint32_t out_err = core.GetRegister(kR1);
     if (out_err != 0) {
@@ -1128,26 +1165,26 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
     }
     core.SetRegister(kR0, 0);  // GL_NO_ERROR
   };
-  methods[66] = [this](IArmCore& c) { GlGetIntegerv(c); };           // 66 GetIntegerv
-  methods[67] = [this](IArmCore& c) { GlGetString(c); };             // 67 GetString
-  methods[74] = [this](IArmCore& c) { GlLoadIdentity(c); };          // 74 LoadIdentity
-  methods[75] = [this](IArmCore& c) { GlLoadMatrixx(c); };           // 75 LoadMatrixx
-  methods[79] = [this](IArmCore& c) { GlMatrixMode(c); };            // 79 MatrixMode
-  methods[80] = [this](IArmCore& c) { GlMultMatrixx(c); };           // 80 MultMatrixx
-  methods[84] = [this](IArmCore& c) { GlNormalPointer(c); };         // 84 NormalPointer
-  methods[85] = [this](IArmCore& c) { GlOrthox(c); };                // 85 Orthox
-  methods[89] = [this](IArmCore& c) { GlPopMatrix(c); };             // 89 PopMatrix
-  methods[90] = [this](IArmCore& c) { GlPushMatrix(c); };            // 90 PushMatrix
-  methods[92] = [this](IArmCore& c) { GlRotatex(c); };               // 92 Rotatex
-  methods[95] = [this](IArmCore& c) { GlScalex(c); };                // 95 Scalex
-  methods[101] = [this](IArmCore& c) { GlTexCoordPointer(c); };      // 101 TexCoordPointer
-  methods[102] = [this](IArmCore& c) { GlTexEnvx(c); };              // 102 TexEnvx
-  methods[103] = [this](IArmCore& c) { GlTexEnvxv(c); };             // 103 TexEnvxv
-  methods[104] = [this](IArmCore& c) { GlTexImage2D(c); };           // 104 TexImage2D
-  methods[105] = [this](IArmCore& c) { GlTexParameterx(c); };        // 105 TexParameterx
-  methods[107] = [this](IArmCore& c) { GlTranslatex(c); };           // 107 Translatex
-  methods[108] = [this](IArmCore& c) { GlVertexPointer(c); };        // 108 VertexPointer
-  methods[109] = [this](IArmCore& c) { GlViewport(c); };             // 109 Viewport
+  methods[66] = GlesMethod([this](IArmCore& c) { GlGetIntegerv(c); });         // 66 GetIntegerv
+  methods[67] = GlesMethod([this](IArmCore& c) { GlGetString(c); });           // 67 GetString
+  methods[74] = GlesMethod([this](IArmCore& c) { GlLoadIdentity(c); });        // 74 LoadIdentity
+  methods[75] = GlesMethod([this](IArmCore& c) { GlLoadMatrixx(c); });         // 75 LoadMatrixx
+  methods[79] = GlesMethod([this](IArmCore& c) { GlMatrixMode(c); });          // 79 MatrixMode
+  methods[80] = GlesMethod([this](IArmCore& c) { GlMultMatrixx(c); });         // 80 MultMatrixx
+  methods[84] = GlesMethod([this](IArmCore& c) { GlNormalPointer(c); });       // 84 NormalPointer
+  methods[85] = GlesMethod([this](IArmCore& c) { GlOrthox(c); });              // 85 Orthox
+  methods[89] = GlesMethod([this](IArmCore& c) { GlPopMatrix(c); });           // 89 PopMatrix
+  methods[90] = GlesMethod([this](IArmCore& c) { GlPushMatrix(c); });          // 90 PushMatrix
+  methods[92] = GlesMethod([this](IArmCore& c) { GlRotatex(c); });             // 92 Rotatex
+  methods[95] = GlesMethod([this](IArmCore& c) { GlScalex(c); });              // 95 Scalex
+  methods[101] = GlesMethod([this](IArmCore& c) { GlTexCoordPointer(c); });    // 101 TexCoordPointer
+  methods[102] = GlesMethod([this](IArmCore& c) { GlTexEnvx(c); });            // 102 TexEnvx
+  methods[103] = GlesMethod([this](IArmCore& c) { GlTexEnvxv(c); });           // 103 TexEnvxv
+  methods[104] = GlesMethod([this](IArmCore& c) { GlTexImage2D(c); });         // 104 TexImage2D
+  methods[105] = GlesMethod([this](IArmCore& c) { GlTexParameterx(c); });      // 105 TexParameterx
+  methods[107] = GlesMethod([this](IArmCore& c) { GlTranslatex(c); });         // 107 Translatex
+  methods[108] = GlesMethod([this](IArmCore& c) { GlVertexPointer(c); });      // 108 VertexPointer
+  methods[109] = GlesMethod([this](IArmCore& c) { GlViewport(c); });           // 109 Viewport
 
   gles11_object_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return gles11_object_;

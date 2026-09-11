@@ -436,6 +436,13 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
   std::map<uint32_t, uint64_t> pc_hist;
   uint32_t win_lo = 0xffffffffu, win_hi = 0;
   uint32_t last_call_addr = 0;  // most recent BL target (in-module) before spin
+  uint64_t trace_step_start = ~0ull;
+  uint64_t trace_step_count = 50;
+  if (const char* env_ts = std::getenv("ZEEB_TRACE_STEP")) {
+    std::sscanf(env_ts, "%llu,%llu",
+                reinterpret_cast<unsigned long long*>(&trace_step_start),
+                reinterpret_cast<unsigned long long*>(&trace_step_count));
+  }
   for (uint64_t steps = 0; cpu.GetRegister(zeebulator::kPC) != trap_base; ++steps) {
     if (steps >= kMaxSteps) {
       std::printf("warning: exceeded %llu steps without returning -- aborting this call\n",
@@ -546,13 +553,6 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
     if (in_module) {
       last_in_module_pc = pc;
       last_lr = cpu.GetRegister(zeebulator::kLR);
-    }
-    static uint64_t trace_step_start = ~0ull;
-    static uint64_t trace_step_count = 50;
-    if (const char* env_ts = std::getenv("ZEEB_TRACE_STEP")) {
-      std::sscanf(env_ts, "%llu,%llu",
-                  reinterpret_cast<unsigned long long*>(&trace_step_start),
-                  reinterpret_cast<unsigned long long*>(&trace_step_count));
     }
     bool step_trace = (steps >= trace_step_start && steps < trace_step_start + trace_step_count);
     if (trace || step_trace) {
