@@ -154,6 +154,13 @@ class GlHle {
   void GlOrthof(IArmCore& core);
   void GlTexEnvfv(IArmCore& core);
   void GlPushMatrix(IArmCore& core);
+  void GlTranslatef(IArmCore& core);
+  void GlScalef(IArmCore& core);
+  void GlRotatef(IArmCore& core);
+  void GlMultMatrixf(IArmCore& core);
+  void GlColor4f(IArmCore& core);
+  void GlClearColorf(IArmCore& core);
+  void GlFrustumf(IArmCore& core);
   void GlPopMatrix(IArmCore& core);
   void GlOrthox(IArmCore& core);
   void GlFrustumx(IArmCore& core);

@@ -450,6 +450,51 @@ void GlHle::GlMultMatrixx(IArmCore& core) {
   backend_.MultMatrix(m);
 }
 void GlHle::GlPushMatrix(IArmCore&) { backend_.PushMatrix(); }
+
+// Float matrix/state entry points. IGLES11 slots 3..30 are the float API
+// (AEEGLES10.h/AEEGLES11.h order, mirrored in zeebx aee_slots.rs): without
+// Translatef/Rotatef/Scalef/MultMatrixf every model transform was dropped, so
+// titles that place sprites with the model matrix drew them all at the origin.
+void GlHle::GlTranslatef(IArmCore& core) {
+  backend_.Translate(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                     FloatArg(core.GetRegister(kR2)));
+}
+
+void GlHle::GlScalef(IArmCore& core) {
+  backend_.Scale(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                 FloatArg(core.GetRegister(kR2)));
+}
+
+void GlHle::GlRotatef(IArmCore& core) {
+  backend_.Rotate(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                  FloatArg(core.GetRegister(kR2)), FloatArg(core.GetRegister(kR3)));
+}
+
+void GlHle::GlMultMatrixf(IArmCore& core) {
+  uint32_t ptr = core.GetRegister(kR0);
+  std::array<float, 16> m{};
+  for (int i = 0; i < 16; ++i) {
+    m[static_cast<size_t>(i)] = FloatArg(core.GetMemory().Read32(ptr + static_cast<uint32_t>(i) * 4));
+  }
+  backend_.MultMatrix(m.data());
+}
+
+void GlHle::GlColor4f(IArmCore& core) {
+  backend_.Color4(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                   FloatArg(core.GetRegister(kR2)), FloatArg(core.GetRegister(kR3)));
+}
+
+void GlHle::GlClearColorf(IArmCore& core) {
+  backend_.ClearColor(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                      FloatArg(core.GetRegister(kR2)), FloatArg(core.GetRegister(kR3)));
+}
+
+void GlHle::GlFrustumf(IArmCore& core) {
+  backend_.Frustum(FloatArg(core.GetRegister(kR0)), FloatArg(core.GetRegister(kR1)),
+                   FloatArg(core.GetRegister(kR2)), FloatArg(core.GetRegister(kR3)),
+                   FloatArg(HleRuntime::ReadStackArg(core, 0)),
+                   FloatArg(HleRuntime::ReadStackArg(core, 1)));
+}
 void GlHle::GlPopMatrix(IArmCore&) { backend_.PopMatrix(); }
 
 void GlHle::GlOrthox(IArmCore& core) {
@@ -651,7 +696,8 @@ void GlHle::GlDrawElements(IArmCore& core) {
     indices.push_back(index);
   }
   ++DrawStats::Instance().gl_draw_arrays;
-  backend_.DrawArrays(mode, ExtractArrays(memory, indices));
+  GlVertexArrays arrays = ExtractArrays(memory, indices);
+  backend_.DrawArrays(mode, arrays);
   GpuLog("DrawElements mode=0x%x count=%d type=0x%x", mode, count, type);
 }
 
@@ -754,6 +800,7 @@ void GlHle::GlDeleteTextures(IArmCore& core) {
 }
 
 void GlHle::GlBindTexture(IArmCore& core) {
+  GpuLog("BindTexture target=0x%x name=%u", core.GetRegister(kR0), core.GetRegister(kR1));
   backend_.BindTexture(core.GetRegister(kR0), core.GetRegister(kR1));
 }
 
@@ -797,6 +844,9 @@ void GlHle::GlTexImage2D(IArmCore& core) {
     image.pixels = pixel_bytes.data();
   }
   ++DrawStats::Instance().gl_tex_image;
+  GpuLog("TexImage2D %dx%d internal=0x%x format=0x%x type=0x%x pixels=%s", image.width,
+         image.height, image.internal_format, image.format, image.type,
+         pixels_ptr != 0 ? "yes" : "null");
   backend_.TexImage2D(target, image);
 }
 
@@ -823,6 +873,8 @@ void GlHle::GlTexSubImage2D(IArmCore& core) {
     }
     image.pixels = pixel_bytes.data();
   }
+  GpuLog("TexSubImage2D %dx%d format=0x%x type=0x%x", image.width, image.height, image.format,
+         image.type);
   backend_.TexSubImage2D(target, image);
 }
 
@@ -1201,6 +1253,16 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   // Float API, 0-based indices from AEEGLES10/11's INHERIT_IGLES table.
   // Same COM ABI as fixed calls: `this` in R0 and AEE_SUCCESS in R0 on return.
   methods[16] = GlesMethod([this](IArmCore& c) { GlLoadMatrixf(c); });         // 16 LoadMatrixf
+  // Float API slots from AEEGLES10.h/AEEGLES11.h order (see zeebx aee_slots.rs):
+  // 3 AlphaFunc, 4 ClearColor, 6 Color4f, 10 Frustumf, 19 MultMatrixf,
+  // 25 Rotatef, 26 Scalef, 30 Translatef.
+  methods[4] = GlesMethod([this](IArmCore& c) { GlClearColorf(c); });          // 4 ClearColor
+  methods[6] = GlesMethod([this](IArmCore& c) { GlColor4f(c); });              // 6 Color4f
+  methods[10] = GlesMethod([this](IArmCore& c) { GlFrustumf(c); });            // 10 Frustumf
+  methods[19] = GlesMethod([this](IArmCore& c) { GlMultMatrixf(c); });         // 19 MultMatrixf
+  methods[25] = GlesMethod([this](IArmCore& c) { GlRotatef(c); });             // 25 Rotatef
+  methods[26] = GlesMethod([this](IArmCore& c) { GlScalef(c); });              // 26 Scalef
+  methods[30] = GlesMethod([this](IArmCore& c) { GlTranslatef(c); });          // 30 Translatef
   methods[22] = GlesMethod([this](IArmCore& c) { GlOrthof(c); });              // 22 Orthof
   methods[28] = GlesMethod([this](IArmCore& c) { GlTexEnvfv(c); });            // 28 TexEnvfv
   methods[2] = [](IArmCore& core) {
