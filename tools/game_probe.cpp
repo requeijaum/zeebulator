@@ -444,6 +444,16 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
                 reinterpret_cast<unsigned long long*>(&trace_step_start),
                 reinterpret_cast<unsigned long long*>(&trace_step_count));
   }
+  // Dynarmic only pays its block-compiler cost back through IArmCore::Run().
+  // Keep instruction-by-instruction execution as the universal/debuggable default;
+  // explicit ZEEB_JIT_BLOCK=1 opts into bounded blocks between HLE traps. Do not
+  // batch when any per-instruction diagnostic/PC patch is armed.
+  const bool jit_block_mode =
+      dynamic_cast<zeebulator::DynarmicArmCore*>(&cpu) != nullptr &&
+      std::getenv("ZEEB_JIT_BLOCK") != nullptr && !trace && !hle_trace &&
+      !spin_profile && !seed63c_active && std::getenv("ZEEB_TRACE") == nullptr &&
+      std::getenv("ZEEB_WWATCH") == nullptr && std::getenv("ZEEB_TRACE_STEP") == nullptr;
+  constexpr uint64_t kJitBlockQuantum = 4096;
   for (uint64_t steps = 0; cpu.GetRegister(zeebulator::kPC) != trap_base; ++steps) {
     if (steps >= kMaxSteps) {
       std::printf("warning: exceeded %llu steps without returning -- aborting this call\n",
@@ -578,7 +588,21 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
           last_in_module_pc, last_lr);
       result.wandered_outside_module = true;  // only warn once per call
     }
-    cpu.Step();
+    uint64_t retired = 1;
+    if (jit_block_mode) {
+      const uint64_t remaining = kMaxSteps - steps;
+      retired = cpu.Run(std::min(kJitBlockQuantum, remaining));
+      // A backend is not allowed to report zero progress here, but retain the
+      // single-step escape hatch so an unusual Dynarmic stop cannot spin host-side.
+      if (retired == 0) {
+        cpu.Step();
+        retired = 1;
+      }
+      // The `for` increment accounts for one; consume the rest of this bounded block.
+      steps += retired - 1;
+    } else {
+      cpu.Step();
+    }
     if (should_yield && should_yield()) {
       result.yielded = true;
       break;
