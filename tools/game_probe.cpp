@@ -3975,11 +3975,13 @@ int main(int argc, char** argv) {
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
   shell_hle.RegisterFactory(0x01005501,
                              [&media_hle]() { return media_hle.CreateMediaObject(); });
-  // Zenonia requests MediaPCM directly (0x01005511). Keep the historical
-  // generic instance below for unrelated scaffolding, but factories take
-  // precedence in IShellHle and must supply a real fresh IMedia here.
-  shell_hle.RegisterFactory(0x01005511,
-                             [&media_hle]() { return media_hle.CreateMediaObject(); });
+  // Zenonia requests MediaPCM directly (0x01005511). Double Dragon uses the
+  // same legacy class ID for its download-notification scaffold, so preserve
+  // that path and bind real PCM only for the proven WIPI caller.
+  if (is_zenonia_title) {
+    shell_hle.RegisterFactory(0x01005511,
+                               [&media_hle]() { return media_hle.CreateMediaObject(); });
+  }
   // Familia AEECLSID_MULTIMEDIA completa, com os nomes vindos do proprio SDK
   // BREW (testkit/shadow_inc/AEEClassIDs.h), nao de adivinhacao:
   //   #define AEECLSID_MULTIMEDIA (QVERSION + 0x5500)   -> 0x01005500
