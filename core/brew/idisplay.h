@@ -123,6 +123,13 @@ class IDisplayHle {
   // the same real transition. Both confirmed live, on a real desktop,
   // not assumed.
   void ClearLiveFramebuffer() { std::fill(framebuffer_.begin(), framebuffer_.end(), 0); }
+  // Panel state a title inherits from the shell: cleared to white. Presented
+  // once at boot so the window shows the same thing the console does.
+  void ResetToBlankPanel() {
+    std::fill(framebuffer_.begin(), framebuffer_.end(), 0xFFFF);
+    last_presented_ = framebuffer_;
+    backend_.PushVideoFrame(framebuffer_.data(), width_, height_, PixelFormat::kRGB565);
+  }
 
   // Alpha-composites a real RGBA source image (`w`*`h`*4 bytes,
   // row-major, straight alpha) onto the framebuffer at (`x`, `y`),

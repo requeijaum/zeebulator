@@ -569,6 +569,19 @@ TEST(IShellHle, LoadResDataExFailsForATypeIdPairNotInTheDirectory) {
   EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/9999, /*type=*/1), 1u);
 }
 
+TEST(IDisplayHle, ResetToBlankPanelPresentsAWhiteScreen) {
+  TestBackend backend;
+  IDisplayHle display(backend, 8, 4);
+  display.ResetToBlankPanel();
+
+  // The console shows a cleared panel while a title starts, not a dead black
+  // screen; the title paints its first frame over it.
+  EXPECT_EQ(backend.push_count, 1);
+  for (uint16_t pixel : display.LastPresentedFramebuffer()) {
+    EXPECT_EQ(pixel, 0xFFFF);
+  }
+}
+
 TEST(IDisplayHle, DrawTextThenUpdatePushesCorrectFrame) {
   ArmInterpreter cpu;
   HleRuntime hle(cpu, kTrapBase, kTrapSize);

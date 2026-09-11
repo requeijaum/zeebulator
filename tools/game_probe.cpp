@@ -1427,6 +1427,9 @@ int main(int argc, char** argv) {
 
   uint32_t display_obj =
       display.Build(cpu.GetMemory(), hle, /*vtable=*/0x80002000, /*object=*/0x80003000);
+  // Show the console's own start-up panel state (cleared to white) before the
+  // title draws anything, instead of an all-black window.
+  display.ResetToBlankPanel();
   // Dedicated offscreen-DIB arena for CreateDIBitmap (slot 13), isolated from
   // the ModRuntime heap so app allocations can never collide.
   display.SetDibArena(/*base=*/0x84000000, /*size=*/0x00400000);
@@ -1645,8 +1648,11 @@ int main(int argc, char** argv) {
   constexpr uint32_t kCompatBitmapPixels = 0x85000000;
   constexpr uint32_t kCompatBitmapBytes = 640u * 480u * 2u;
   if (compat_dib_enabled) {
+    // Same start-up panel state as the screen itself: a surface the title has
+    // not painted yet reads as cleared white, not black. Gamevil's intro draws
+    // its light-green logo over an unpainted background.
     for (uint32_t off = 0; off < kCompatBitmapBytes; off += 4) {
-      cpu.GetMemory().Write32(kCompatBitmapPixels + off, 0);
+      cpu.GetMemory().Write32(kCompatBitmapPixels + off, 0xFFFFFFFFu);
     }
   }
 
@@ -1673,6 +1679,19 @@ int main(int argc, char** argv) {
                      ((b5 << 3 | b5 >> 2) << 24));
   };
 
+  // Slots 14/15: Set/GetTransparencyColor(IBitmap*, NativeColor).
+  // IDisplay::BitBlt reads the transparent key from this object's own field
+  // (offset 16) when the raster op is AEE_RO_TRANSPARENT, so ignoring these
+  // left every sprite blit using whatever key the surface was created with.
+  compat_bitmap_methods[14] = [&cpu](zeebulator::IArmCore& core) {
+    cpu.GetMemory().Write32(core.GetRegister(zeebulator::kR0) + 16,
+                            core.GetRegister(zeebulator::kR1));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  compat_bitmap_methods[15] = [&cpu](zeebulator::IArmCore& core) {
+    core.SetRegister(zeebulator::kR0,
+                     cpu.GetMemory().Read32(core.GetRegister(zeebulator::kR0) + 16));
+  };
   // Slot 12: GetInfo(IBitmap*, AEEBitmapInfo *pinfo, int nSize)
   // Reads the geometry back from this specific bitmap object: every
   // CreateCompatibleBitmap call owns its own surface, so shared state would
@@ -1829,7 +1848,7 @@ int main(int argc, char** argv) {
       *compat_next_pixels += ((width * height * 2u) + 0xfffu) & ~0xfffu;
     }
     const uint32_t bytes = width * height * 2u;
-    for (uint32_t off = 0; off < bytes; off += 4) m.Write32(pixels + off, 0);
+    for (uint32_t off = 0; off < bytes; off += 4) m.Write32(pixels + off, 0xFFFFFFFFu);
     m.Write32(obj + 8, pixels);
     m.Write32(obj + 16, 0xffffffffu);
     m.Write16(obj + 20, static_cast<uint16_t>(width));
