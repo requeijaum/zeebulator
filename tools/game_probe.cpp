@@ -658,17 +658,17 @@ constexpr uint32_t kHidUidButton4 = 0x0106c40d;
 
 uint32_t SdlKeyToHidButton(SDL_Keycode key) {
   switch (key) {
-    case SDLK_UP: return kHidUidDPadUp;
-    case SDLK_DOWN: return kHidUidDPadDown;
-    case SDLK_LEFT: return kHidUidDPadLeft;
-    case SDLK_RIGHT: return kHidUidDPadRight;
-    case SDLK_BACKSPACE: case SDLK_RETURN: return kHidUidBack;
-    case SDLK_q: return kHidUidLeftShoulderUpper;
-    case SDLK_e: return kHidUidRightShoulderUpper;
-    case SDLK_z: return kHidUidButton1;
-    case SDLK_x: return kHidUidButton2;
-    case SDLK_c: return kHidUidButton3;
-    case SDLK_v: return kHidUidButton4;
+    case SDLK_UP: case SDLK_w: return kHidUidDPadUp;
+    case SDLK_DOWN: case SDLK_s: return kHidUidDPadDown;
+    case SDLK_LEFT: case SDLK_a: return kHidUidDPadLeft;
+    case SDLK_RIGHT: case SDLK_d: return kHidUidDPadRight;
+    case SDLK_BACKSPACE: case SDLK_RETURN: case SDLK_SPACE: return kHidUidBack;
+    case SDLK_q: case SDLK_1: return kHidUidLeftShoulderUpper;
+    case SDLK_e: case SDLK_2: return kHidUidRightShoulderUpper;
+    case SDLK_z: case SDLK_j: return kHidUidButton1;
+    case SDLK_x: case SDLK_k: return kHidUidButton2;
+    case SDLK_c: case SDLK_u: return kHidUidButton3;
+    case SDLK_v: case SDLK_i: return kHidUidButton4;
     default: return 0;  // 0 is not a real UID any real device would ever send
   }
 }
