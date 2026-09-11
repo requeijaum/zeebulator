@@ -64,8 +64,55 @@ class NopCoprocessor final : public Dynarmic::A32::Coprocessor {
  private:
   std::uint32_t scratch_ = 0;
   std::uint32_t scratch2_ = 0;
-};
+ };
 
+// Minimal CP15 model aligned with ArmInterpreter::ExecuteCoprocessor. BREW
+// userspace only relies on CPU/cache identity reads and the cache-clean poll;
+// writes and the remaining operations are cache-management hints and no-ops.
+class ZeeboCp15Coprocessor final : public Dynarmic::A32::Coprocessor {
+ public:
+  using CoprocReg = Dynarmic::A32::CoprocReg;
+  static std::uint64_t ZeroFn(void*, std::uint32_t, std::uint32_t) { return 0; }
+  static std::uint64_t CpuIdFn(void*, std::uint32_t, std::uint32_t) { return 0x4107b364u; }
+  static std::uint64_t CacheTypeFn(void*, std::uint32_t, std::uint32_t) { return 0x1d152152u; }
+  static std::uint64_t CacheCleanFn(void*, std::uint32_t, std::uint32_t) {
+    return 0x40000000u;  // CPSR Z when MRC destination is PC, matching interpreter.
+  }
+
+  std::optional<Callback> CompileInternalOperation(bool, unsigned, CoprocReg,
+                                                    CoprocReg, CoprocReg,
+                                                    unsigned) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  CallbackOrAccessOneWord CompileSendOneWord(bool, unsigned, CoprocReg,
+                                             CoprocReg, unsigned) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  CallbackOrAccessTwoWords CompileSendTwoWords(bool, unsigned, CoprocReg) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  CallbackOrAccessOneWord CompileGetOneWord(bool, unsigned /*opc1*/, CoprocReg crn,
+                                            CoprocReg crm, unsigned opc2) override {
+    const unsigned n = static_cast<unsigned>(crn);
+    const unsigned m = static_cast<unsigned>(crm);
+    if (n == 7 && m == 14 && opc2 == 3) return Callback{&CacheCleanFn, std::nullopt};
+    if (n == 0 && m == 0) {
+      return Callback{opc2 == 1 ? &CacheTypeFn : &CpuIdFn, std::nullopt};
+    }
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  CallbackOrAccessTwoWords CompileGetTwoWords(bool, unsigned, CoprocReg) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  std::optional<Callback> CompileLoadWords(bool, bool, CoprocReg,
+                                           std::optional<std::uint8_t>) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+  std::optional<Callback> CompileStoreWords(bool, bool, CoprocReg,
+                                            std::optional<std::uint8_t>) override {
+    return Callback{&ZeroFn, std::nullopt};
+  }
+};
 
 // Bridges the dynarmic JIT to our sparse Memory. Reads/writes are composed
 // from byte accesses so unaligned access (which dynarmic explicitly allows)
@@ -219,13 +266,18 @@ DynarmicArmCore::DynarmicArmCore()
   Dynarmic::A32::UserConfig cfg;
   cfg.callbacks = callbacks_.get();
   cfg.arch_version = ZeeboArchVersion();
+  // CP15 is architecturally visible to real BREW code. Match the interpreter's
+  // supported CPU-ID/cache-clean semantics instead of relying on a null slot.
+  cfg.coprocessors[15] = std::make_shared<ZeeboCp15Coprocessor>();
   // Opt-in benign coprocessor so the block compiler doesn't ASSERT/abort on a
   // coprocessor opcode embedded in a compiled-ahead block (see NopCoprocessor).
   // Gated to keep default/test behavior byte-identical unless requested.
   if (const char* c = std::getenv("ZEEB_NOP_COPROC")) {
     if (c[0] == '1') {
       auto nop = std::make_shared<NopCoprocessor>();
-      for (auto& slot : cfg.coprocessors) slot = nop;
+      for (size_t i = 0; i < cfg.coprocessors.size(); ++i) {
+        if (i != 15) cfg.coprocessors[i] = nop;  // keep CP15 interpreter parity
+      }
     }
   }
   jit_ = std::make_unique<Dynarmic::A32::Jit>(cfg);

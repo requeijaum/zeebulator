@@ -95,6 +95,22 @@ TEST(DynarmicArmCore, SemihostingSvcMatchesInterpreter) {
   EXPECT_EQ(jit.GetRegister(kPC), 4u);
 }
 
+TEST(DynarmicArmCore, Cp15CpuIdMatchesInterpreter) {
+  constexpr uint32_t kMrcP15CpuId = 0xEE100F10;  // MRC p15,0,R0,c0,c0,0
+  ArmInterpreter interp;
+  DynarmicArmCore jit;
+  for (IArmCore* core : {static_cast<IArmCore*>(&interp), static_cast<IArmCore*>(&jit)}) {
+    core->Reset();
+    core->GetMemory().Write32(0, kMrcP15CpuId);
+    core->SetRegister(kPC, 0);
+  }
+  EXPECT_NO_THROW(interp.Step());
+  EXPECT_NO_THROW(jit.Step());
+  EXPECT_EQ(interp.GetRegister(kR0), 0x4107b364u);
+  EXPECT_EQ(jit.GetRegister(kR0), interp.GetRegister(kR0));
+  EXPECT_EQ(jit.GetRegister(kPC), interp.GetRegister(kPC));
+}
+
 TEST(DynarmicArmCore, UndefinedInstructionFailsLikeInterpreter) {
   constexpr uint32_t kUdf = 0xE7F000F0;  // ARMv6 UDF #0
   ArmInterpreter interp;
