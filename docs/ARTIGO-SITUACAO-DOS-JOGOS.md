@@ -108,14 +108,14 @@ entrada do jogador nesta bateria. Contagem de cores mede imagem; um título com
 
 | veredito | títulos |
 |---|---|
-| renderiza e apresenta | 17 |
+| renderiza e apresenta | 18 |
 | renderiza, não apresenta | 3 |
-| vazio (os dois concordam) | 29 |
-| morto | 11 |
+| vazio (os dois concordam) | 32 |
+| morto | 7 |
 | indefinido / sem captura | 2 |
 
 Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
-27 iguais**. Mortos caíram de 30 para 11.
+27 iguais**. Mortos caíram de 30 para 7.
 
 ### Duas regressões, com causas diferentes
 
@@ -128,7 +128,10 @@ Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
 
 ### A causa dominante dos mortos é nossa, não dos jogos
 
-**Os 11 mortos morrem pelo mesmo motivo: estouro do orçamento de 64 M passos.**
+**Dos 11 mortos da primeira passagem, 7 eram ClsId errado** — o próprio despacho
+do jogo recusava a classe (`*ppObj=0`, sem estouro nem desvio). Oito ClsIds foram
+corrigidos ao todo. Dos **7 que restam**, as causas são distintas e estão
+listadas na tabela.
 Isso é um limite do emulador, não defeito do título. O `recklessracing` prova:
 estoura o orçamento e ainda assim tem **77.021 cores no FBO** — o maior conteúdo
 do corpus inteiro. Está renderizando e sendo abortado.
@@ -174,6 +177,7 @@ cores distintas; "antes" é o censo anterior.
 | `zeebopeteca` | renderiza e apresenta | 729 | 729 | 1 | +728 |  |
 | `allstarcards` | renderiza e apresenta | 634 | 634 | 2 | +632 |  |
 | `zeebotennis` | renderiza e apresenta | 611 | 611 | 1 | +610 |  |
+| `toyraidzeebo` | renderiza e apresenta | 350 | 355 | 1 | +354 |  |
 | `tectoy` | renderiza e apresenta | 275 | 275 | 1 | +274 |  |
 | `ddragonz` | renderiza e apresenta | 262 | 262 | 262 | +0 |  |
 | `game` | renderiza e apresenta | 79 | 79 | 1 | +78 |  |
@@ -186,13 +190,16 @@ cores distintas; "antes" é o censo anterior.
 | `chessbots` | indefinido (captura) | 1 | 1015 | 1 | +1014 |  |
 | `activitycenter` | sem captura de FBO | — | 2 | 2 | +0 |  |
 | `alice` | vazio | 2 | 2 | 2 | +0 |  |
+| `asq` | vazio | 2 | 2 | 1 | +1 |  |
 | `baddudes` | vazio | 2 | 2 | 2 | +0 |  |
 | `bjt` | vazio | 2 | 2 | 1 | +1 |  |
 | `Boiaz` | vazio | 2 | 2 | 2 | +0 |  |
 | `brainchallenge` | vazio | 2 | 2 | 1 | +1 |  |
 | `cninja` | vazio | 2 | 2 | 2 | +0 |  |
 | `darkseal` | vazio | 2 | 2 | 2 | +0 |  |
+| `dodgeball` | vazio | 2 | 2 | 1 | +1 |  |
 | `footparty` | vazio | 2 | 2 | 1 | +1 |  |
+| `funsoccer` | vazio | 2 | 2 | 1 | +1 |  |
 | `game` | vazio | 2 | 2 | 1 | +1 |  |
 | `hbarrel` | vazio | 2 | 2 | 2 | +0 |  |
 | `imicro3d` | vazio | 2 | 2 | 1 | +1 |  |
@@ -216,16 +223,11 @@ cores distintas; "antes" é o censo anterior.
 | `zumar` | vazio | 2 | 2 | 1 | +1 |  |
 | `recklessracing` | morto | 77021 | 1 | 1 | +77020 | estouro de 64M passos |
 | `a3d` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `asq` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `cnk2` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `dodgeball` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `fifa09` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `funsoccer` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `heavyweaponbrew` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `pbc` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `toyraidzeebo` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `zenonia` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-
 ---
 
 ## Z-Wheel: estado atual medido

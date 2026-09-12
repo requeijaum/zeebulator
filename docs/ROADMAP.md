@@ -203,6 +203,82 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
 - [ ] **`tt_dlqueue.db` cresce indevidamente**: 49 linhas DBINFO contra 14 do
   banco real — inserimos uma linha por execução.
 
+### 4.5 Censo de imagem do corpus (2026-09-12)
+
+62 títulos, Xvfb isolado, 22 s cada, captura **dupla** (janela X e FBO do host).
+Harness `testkit/smoke_now.py`, resultados em `testkit/census_now.jsonl`.
+
+| veredito | títulos |
+|---|---|
+| renderiza e apresenta | 18 |
+| renderiza, não apresenta | 3 |
+| vazio (os dois métodos concordam) | 32 |
+| morto | 7 |
+| indefinido / sem captura | 2 |
+
+Mortos: **30 → 7**. Títulos com imagem: **4 → 18**.
+
+Duas lições de método ficaram registradas:
+- **Captura única mente por título.** Medindo só a janela, `abd` marca 2 cores
+  tendo 1.957 no FBO. A divergência **não é universal** (em Tennis, Peteca,
+  Zeeboids e Volley os dois métodos batem exatamente), então o veredito só é
+  afirmativo quando os dois concordam.
+- **Parâmetro errado vira "defeito do emulador".** Oito títulos eram medidos com
+  ClsId errado e apareciam como mortos. Parte da má fama da Z-Wheel vinha daí.
+
+Este censo mede **imagem**, não jogabilidade: nenhum título recebeu entrada do
+jogador. A coluna que importa para "o jogo funciona" continua vazia.
+
+### 4.4 Quick wins, ordenados por evidência e custo
+
+Lista derivada do censo de 2026-09-12, não de intuição. Cada item traz o número que
+o sustenta e o motivo de ser barato.
+
+1. **ClsIds restantes: `a3d`, `zenonia`, `heavyweaponbrew`** — *custo baixo,
+   retorno imediato.*
+   Já foram corrigidos **8** ClsIds errados nesta rodada, e o efeito é imediato:
+   `tectoy` 1 → 275 cores, `zeebopeteca` 1 → 729, `toyraidzeebo` 1 → 350. A
+   assinatura é inequívoca: o próprio despacho do jogo recusa a classe
+   (`*ppObj=0`, sem estouro nem desvio). Nestes três a regra estrutural do
+   `.mif` (`len-20`/`len-40`) não produziu candidato; falta varrer o despacho do
+   `.mod`. Método de validação já pronto: exigir `CreateInstance OK` + laço de
+   eventos.
+
+2. **`chessbots`: captura do FBO em 1 cor contra 1.015 na janela** — *custo
+   baixo.* Direção inversa da divergência esperada; a hipótese é que o
+   `ZEEB_SHOT_EXIT` capture depois da destruição do contexto GL. É defeito da
+   instrumentação que sustenta o censo inteiro, então conserta a confiança de
+   todas as outras linhas.
+
+3. **Laço do HID em `cnk2`** — *custo médio, possível efeito compartilhado.*
+   Ele passa do `AEEApplet_New` e trava em `AEEHIDThumbsticks.c:104-106`,
+   imprimindo eixos em laço. A Z-Wheel usa o mesmo caminho (`Joystick.c:157`
+   "1 Joysticks connected", `Joystick.c:183` "No keyboard reported") e a entrada
+   por HID já está aberta como pendência. Uma correção pode atender os dois.
+
+4. **`fifa09`: `*** ES version 0.0`** — *custo baixo de diagnóstico.*
+   Vem de `DibSurface.cpp:428`. O nosso `glGetString(GL_VERSION)` devolve
+   "OpenGL ES-CM 1.1" corretamente, então o jogo lê a versão por **outro**
+   caminho. Achar esse caminho é barato e o título estoura o orçamento logo
+   depois de ler 0.0.
+
+5. **`pbc`: `eglGetProcAddress` devolve endereço que leva a `pc=0`** — *custo
+   baixo.* O log mostra as duas extensões resolvidas ("V2 EGLSurfaceManip",
+   "V2 GLESImageonExt") e em seguida um desvio para zero. É ponteiro de função
+   ausente, com o nome da extensão já impresso pelo próprio jogo.
+
+6. **Regressões `abd` e `torkandkral`** — *custo baixo.* Só há 5 commits novos
+   nesta linha e já está provado que **não** é o pipeline de imagem
+   (`ZEEB_NO_RES_IMAGE=1` não muda nada). Bissecção por commit resolve.
+
+7. **`tt_dlqueue.db` cresce 49 linhas DBINFO contra 14 do banco real** — *custo
+   baixo, isolado.* Inserimos uma linha por execução.
+
+**Não é quick win, apesar de parecer:** o orçamento de 64 M passos. Ele explica
+os mortos restantes, mas `recklessracing` estoura o orçamento **e** produz
+77.021 cores no FBO — o maior conteúdo do corpus. Subir o limite sem diagnóstico
+troca "morto rápido" por "travado devagar", e esconde a causa real.
+
 ### 4.3 Interruptores de bissecção disponíveis
 
 Nenhuma hipótese deste ciclo foi aceita sem A/B. Chaves de ambiente ativas:
