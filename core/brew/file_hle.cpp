@@ -131,13 +131,37 @@ void FileHle::OpenFileImpl(IArmCore& core) {
     // Abertura de diretorio em modo somente leitura (ex. nfs.mod abrindo "../nfsresources/").
     // Somente conceda handle se o diretorio de fato existir no VFS ou writable_dirs_.
     // Antes, qualquer nome arbitrario terminado em '/' recebia handle valido de arquivo vazio.
-    bool dir_exists = vfs_.Exists(name) || writable_dirs_.count(writable_name) != 0;
+    std::string dir_prefix = name;
+    if (dir_prefix.back() == '\\') dir_prefix.back() = '/';
+    std::string norm_dir = writable_name;
+    if (!norm_dir.empty() && norm_dir.back() == '/') norm_dir.pop_back();
+
+    bool dir_exists = vfs_.Exists(name) || writable_dirs_.count(norm_dir) != 0 ||
+                      writable_dirs_.count(writable_name) != 0;
     if (!dir_exists) {
-      // Checar se ha arquivos no VFS que comecam com este prefixo de diretorio
-      std::string dir_prefix = name;
-      if (dir_prefix.back() == '\\') dir_prefix.back() = '/';
-      // Se houver qualquer entrada sob esse caminho, o diretorio existe
-      dir_exists = vfs_.Exists(dir_prefix) || (vfs_.Find(dir_prefix) != nullptr);
+      // Checa se alguma entrada registrada no VFS ou arquivos gravaveis comeca com este prefixo
+      auto starts_with_ci = [](const std::string& str, const std::string& pfx) {
+        if (str.size() < pfx.size()) return false;
+        for (size_t i = 0; i < pfx.size(); ++i) {
+          if (std::tolower(static_cast<unsigned char>(str[i])) !=
+              std::tolower(static_cast<unsigned char>(pfx[i]))) return false;
+        }
+        return true;
+      };
+      for (const auto& entry_name : vfs_.Names()) {
+        if (starts_with_ci(entry_name, dir_prefix) || starts_with_ci(entry_name, norm_dir + "/")) {
+          dir_exists = true;
+          break;
+        }
+      }
+      if (!dir_exists) {
+        for (const auto& [wname, _] : writable_files_) {
+          if (starts_with_ci(wname, norm_dir + "/")) {
+            dir_exists = true;
+            break;
+          }
+        }
+      }
     }
     if (dir_exists) {
       static const std::vector<uint8_t> empty_dir_data;

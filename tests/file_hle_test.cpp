@@ -570,3 +570,19 @@ TEST(FileHle, GetFreeSpaceDiscountsUserWrites) {
   uint32_t free_after = f.hle.CallArmFunction(f.MgrSlot(kMgrGetFreeSpace), f.mgr, 0);
   EXPECT_EQ(free_after, (1024u * 1024u) - 4096u);
 }
+
+TEST(FileHle, OpenDirectorySucceedsIfVfsHasFilesUnderPrefixOrCreatedDirectory) {
+  Fixture f;
+  // f.vfs has "foo.txt" and "bar.bin". Let's add a file in a subfolder:
+  f.vfs.AddFile("assets/bg.png", {1, 2, 3});
+  WriteCString(f.cpu.GetMemory(), kScratch, "assets/");
+  uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 0);
+  EXPECT_NE(handle, 0u);
+
+  // Also test created writable directory via MkDir
+  WriteCString(f.cpu.GetMemory(), kScratch, "my_save_dir");
+  EXPECT_EQ(f.hle.CallArmFunction(f.MgrSlot(kMgrMkDir), f.mgr, kScratch), 0u);
+  WriteCString(f.cpu.GetMemory(), kScratch, "my_save_dir/");
+  uint32_t dir_handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 0);
+  EXPECT_NE(dir_handle, 0u);
+}
