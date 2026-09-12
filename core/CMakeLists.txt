@@ -52,6 +52,8 @@ add_library(zeebulator_core STATIC
   loader/tga.h
   loader/gif.cpp
   loader/gif.h
+  loader/bmp.cpp
+  loader/bmp.h
   audio/mixer.cpp
   audio/mixer.h
   audio/soundfont_synth.cpp
