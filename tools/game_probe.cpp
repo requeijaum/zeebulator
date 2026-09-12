@@ -459,7 +459,9 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
       !spin_profile && !seed63c_active && std::getenv("ZEEB_TRACE") == nullptr &&
       std::getenv("ZEEB_WWATCH") == nullptr && std::getenv("ZEEB_TRACE_STEP") == nullptr;
   constexpr uint64_t kJitBlockQuantum = 4096;
-  for (uint64_t steps = 0; cpu.GetRegister(zeebulator::kPC) != trap_base; ++steps) {
+  // `steps` fora do for: precisa sobreviver ao laco para o relatorio abaixo.
+  uint64_t steps = 0;
+  for (; cpu.GetRegister(zeebulator::kPC) != trap_base; ++steps) {
     if (steps >= kMaxSteps) {
       std::printf("warning: exceeded %llu steps without returning -- aborting this call\n",
                   static_cast<unsigned long long>(kMaxSteps));
@@ -659,6 +661,16 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
     }
   }
   result.r0 = cpu.GetRegister(zeebulator::kR0);
+  // Quantas instrucoes do guest esta chamada consumiu. Sem este numero,
+  // "estourou o orcamento" e "estourou por pouco" ficam indistinguiveis -- e e
+  // essa diferenca que decide se o orcamento padrao esta apertado ou se o
+  // titulo esta realmente travado. Ver kMaxSteps (64M hoje; ja foi subido de
+  // 5M em 35dc8df pelo mesmo motivo, copia/descompressao legitima de asset).
+  if (std::getenv("ZEEB_LOG_STEPS") != nullptr) {
+    std::fprintf(stderr, "[steps] chamada consumiu %llu instrucoes do guest%s\n",
+                 static_cast<unsigned long long>(steps),
+                 result.exceeded_step_budget ? " (ESTOUROU)" : "");
+  }
   return result;
 }
 

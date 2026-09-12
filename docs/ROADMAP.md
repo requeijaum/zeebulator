@@ -213,10 +213,20 @@ Harness `testkit/smoke_now.py`, resultados em `testkit/census_now.jsonl`.
 | renderiza e apresenta | 20 |
 | renderiza, não apresenta | 3 |
 | vazio (os dois concordam) | 33 |
-| morto | 4 |
+| morto | 2 |
 | indefinido / sem captura | 2 |
 
-Mortos: **30 → 4**. Títulos com imagem: **4 → 20**.
+Mortos: **30 → 2**. Títulos com imagem: **4 → 20**.
+
+**Atenção ao instrumento.** Este censo roda `zeebulator_game_probe`, que tem
+orçamento de passos (64 M por chamada), e roda sob Xvfb com **llvmpipe**
+(rasterizador por software). O frontend `zeebulator_standalone` **não tem esse
+orçamento**. Medido: o `CreateInstance` do `cnk2` consome **124.324.362
+instruções** numa única chamada (cópia/descompressão de asset) — quase o dobro
+do padrão, então o censo o marcava como morto enquanto no desktop ele roda.
+Um "morto" aqui significa "abortado pelo instrumento", não necessariamente
+"não funciona". O orçamento por título agora fica no corpus (`max_steps`),
+medido com `ZEEB_LOG_STEPS=1`.
 
 Duas lições de método ficaram registradas:
 - **Captura única mente por título.** Medindo só a janela, `abd` marca 2 cores
