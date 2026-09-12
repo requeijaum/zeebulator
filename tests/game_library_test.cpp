@@ -340,3 +340,81 @@ TEST(GameLibraryCorpus, Cnk2ComesFromTheMifNotFromTheModScan) {
       zeebulator::ExtractMifClassIds(mif.data(), mif.size());
   EXPECT_NE(std::find(ids.begin(), ids.end(), 0x01081984u), ids.end());
 }
+
+TEST(GameLibrary, LaunchArgsPutAssetsInPositionalSlotsAndClsidLast) {
+  GameEntry e;
+  e.mod_path = "/nand/mod/274214/cnk2.mod";
+  e.clsid = 0x01081984u;
+  e.launchable = true;
+  const std::vector<std::string> args = BuildLaunchArgs(e, "/bin/emu");
+  ASSERT_EQ(args.size(), 5u);
+  EXPECT_EQ(args[0], "/bin/emu");
+  EXPECT_EQ(args[1], "/nand/mod/274214/cnk2.mod");
+  EXPECT_EQ(args[2], "-");  // sem data.ggz: o slot existe e vai vazio
+  EXPECT_EQ(args[3], "-");  // sem sound.ggz
+  EXPECT_EQ(args[4], "17308036");  // 0x01081984 decimal, como o frontend espera
+}
+
+TEST(GameLibrary, LaunchArgsIncludeBarAsANamedOption) {
+  GameEntry e;
+  e.mod_path = "/nand/mod/277455/zenonia.mod";
+  e.bar = "/nand/mod/277455/zenonia.bar";
+  e.clsid = 0xBF2E2021u;
+  e.launchable = true;
+  const std::vector<std::string> args = BuildLaunchArgs(e, "/bin/emu");
+  ASSERT_EQ(args.size(), 7u);
+  EXPECT_EQ(args[5], "--bar");
+  EXPECT_EQ(args[6], "/nand/mod/277455/zenonia.bar");
+}
+
+TEST(GameLibrary, LaunchArgsAreEmptyWhenTheTitleIsNotLaunchable) {
+  GameEntry e;
+  e.mod_path = "/nand/mod/999/x.mod";
+  e.launchable = false;  // ClsId desconhecido
+  EXPECT_TRUE(BuildLaunchArgs(e, "/bin/emu").empty());
+  GameEntry ok;
+  ok.mod_path = "/x.mod";
+  ok.clsid = 1;
+  ok.launchable = true;
+  EXPECT_TRUE(BuildLaunchArgs(ok, "").empty());  // sem binario nao ha o que lancar
+}
+
+TEST(GameLibrary, ConfigPathFollowsTheXdgRule) {
+  EXPECT_EQ(DefaultUiConfigPath("/custom/data", "/home/u"), "/custom/data/zeebulator/ui.json");
+  // XDG vazio cai no home: e a regra, e o caso acontece em sessao grafica minima.
+  EXPECT_EQ(DefaultUiConfigPath("", "/home/u"), "/home/u/.local/share/zeebulator/ui.json");
+  EXPECT_EQ(DefaultUiConfigPath(nullptr, "/home/u"), "/home/u/.local/share/zeebulator/ui.json");
+}
+
+TEST(GameLibrary, ConfigRoundTripsAndClampsBadValues) {
+  const fs::path p = fs::temp_directory_path() /
+                     ("zeeb_ui_" + std::to_string(::getpid()) + "/ui.json");
+  std::error_code ec; fs::remove_all(p.parent_path(), ec);
+  UiConfig cfg;
+  cfg.nand_root = "/media/cartao/debug_nand";
+  cfg.scale = 3;
+  cfg.audio_enabled = false;
+  cfg.volume = 42;
+  ASSERT_TRUE(SaveUiConfig(p.string(), cfg));  // cria o diretorio sozinho
+  const UiConfig back = LoadUiConfig(p.string());
+  EXPECT_EQ(back.nand_root, cfg.nand_root);
+  EXPECT_EQ(back.scale, 3);
+  EXPECT_EQ(back.audio_enabled, false);
+  EXPECT_EQ(back.volume, 42);
+
+  // Valor fora da faixa nao pode virar estado: escala 99 derrubaria a janela.
+  std::ofstream out(p.string());
+  out << "{\n  \"nand_root\": \"/x\",\n  \"scale\": 99,\n  \"volume\": 500\n}\n";
+  out.close();
+  const UiConfig clamped = LoadUiConfig(p.string());
+  EXPECT_EQ(clamped.scale, 4);
+  EXPECT_EQ(clamped.volume, 100);
+  fs::remove_all(p.parent_path(), ec);
+}
+
+TEST(GameLibrary, MissingConfigGivesDefaultsNotGarbage) {
+  const UiConfig cfg = LoadUiConfig("/nonexistent/ui.json");
+  EXPECT_TRUE(cfg.nand_root.empty());
+  EXPECT_EQ(cfg.scale, 2);
+  EXPECT_TRUE(cfg.audio_enabled);
+}

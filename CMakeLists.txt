@@ -190,6 +190,8 @@ endif()
 
 if(ZEEBULATOR_BUILD_STANDALONE)
   add_subdirectory(frontends/standalone)
+  # GUI: alvo isolado, com opcao propria. Ver frontends/gui/CMakeLists.txt.
+  add_subdirectory(frontends/gui)
 endif()
 
 if(ZEEBULATOR_BUILD_LIBRETRO)

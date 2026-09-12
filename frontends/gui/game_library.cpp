@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <fstream>
 #include <filesystem>
+#include <cstdlib>
 #include <sstream>
 
 #include "core/loader/mif.h"
@@ -318,6 +319,85 @@ ScanResult ScanNand(const ScanOptions& options) {
               return a.folder < b.folder;
             });
   return result;
+}
+
+std::vector<std::string> BuildLaunchArgs(const GameEntry& entry,
+                                         const std::string& emulator_binary) {
+  std::vector<std::string> args;
+  if (!entry.launchable || entry.clsid == 0 || entry.mod_path.empty()) return args;
+  if (emulator_binary.empty()) return args;
+  args.push_back(emulator_binary);
+  args.push_back(entry.mod_path);
+  // Os dois slots de ggz sao posicionais no frontend: passar "-" quando nao ha.
+  args.push_back(entry.data_ggz.empty() ? "-" : entry.data_ggz);
+  args.push_back(entry.sound_ggz.empty() ? "-" : entry.sound_ggz);
+  args.push_back(std::to_string(entry.clsid));
+  // --bar e opcional e nomeado: so entra quando o titulo tem arquivo .bar.
+  if (!entry.bar.empty()) {
+    args.push_back("--bar");
+    args.push_back(entry.bar);
+  }
+  return args;
+}
+
+std::string DefaultUiConfigPath(const char* xdg_data_home, const char* home) {
+  // Regra XDG: $XDG_DATA_HOME vence; ausente ou vazio, cai em ~/.local/share.
+  if (xdg_data_home != nullptr && xdg_data_home[0] != '\0') {
+    return std::string(xdg_data_home) + "/zeebulator/ui.json";
+  }
+  if (home != nullptr && home[0] != '\0') {
+    return std::string(home) + "/.local/share/zeebulator/ui.json";
+  }
+  return {};
+}
+
+UiConfig LoadUiConfig(const std::string& path) {
+  UiConfig cfg;
+  const std::vector<uint8_t> bytes = ReadFile(path);
+  if (bytes.empty()) return cfg;
+  const std::string text(bytes.begin(), bytes.end());
+  auto read_string = [&](const char* key) -> std::string {
+    const size_t k = text.find(std::string("\"") + key + "\"");
+    if (k == std::string::npos) return {};
+    const size_t colon = text.find(':', k);
+    if (colon == std::string::npos) return {};
+    const size_t first = text.find('"', colon);
+    if (first == std::string::npos) return {};
+    const size_t last = text.find('"', first + 1);
+    if (last == std::string::npos) return {};
+    return text.substr(first + 1, last - first - 1);
+  };
+  auto read_int = [&](const char* key, int fallback) -> int {
+    const size_t k = text.find(std::string("\"") + key + "\"");
+    if (k == std::string::npos) return fallback;
+    const size_t colon = text.find(':', k);
+    if (colon == std::string::npos) return fallback;
+    return static_cast<int>(std::strtol(text.c_str() + colon + 1, nullptr, 10));
+  };
+  cfg.nand_root = read_string("nand_root");
+  cfg.scale = read_int("scale", cfg.scale);
+  cfg.volume = read_int("volume", cfg.volume);
+  cfg.audio_enabled = read_int("audio_enabled", cfg.audio_enabled ? 1 : 0) != 0;
+  if (cfg.scale < 1) cfg.scale = 1;
+  if (cfg.scale > 4) cfg.scale = 4;
+  if (cfg.volume < 0) cfg.volume = 0;
+  if (cfg.volume > 100) cfg.volume = 100;
+  return cfg;
+}
+
+bool SaveUiConfig(const std::string& path, const UiConfig& config) {
+  std::error_code ec;
+  const fs::path p(path);
+  if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+  std::ofstream out(path);
+  if (!out) return false;
+  out << "{\n"
+      << "  \"nand_root\": \"" << config.nand_root << "\",\n"
+      << "  \"scale\": " << config.scale << ",\n"
+      << "  \"audio_enabled\": " << (config.audio_enabled ? 1 : 0) << ",\n"
+      << "  \"volume\": " << config.volume << "\n"
+      << "}\n";
+  return out.good();
 }
 
 bool MatchesFilter(const GameEntry& entry, const std::string& filter) {

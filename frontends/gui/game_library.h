@@ -91,6 +91,33 @@ std::map<std::string, uint32_t> LoadManifest(const std::string& path);
 std::map<std::string, uint32_t> MergeManifests(const std::map<std::string, uint32_t>& base,
                                                const std::map<std::string, uint32_t>& user);
 
+// Argumentos para iniciar um titulo no frontend de emulacao. Devolve vetor vazio
+// quando a entrada nao e iniciavel -- melhor recusar do que montar uma linha que
+// o emulador vai rejeitar por falta de ClsId.
+//
+// Fica aqui, e nao dentro do codigo da janela, por um motivo pratico: e a parte
+// do lancamento que mais erra (ordem dos assets, quando passar --bar, titulo sem
+// ggz) e assim ela tem teste.
+std::vector<std::string> BuildLaunchArgs(const GameEntry& entry,
+                                         const std::string& emulator_binary);
+
+// Preferencias da interface. Persistidas em ~/.local/share/zeebulator/ui.json.
+// NUNCA no diretorio NAND: aquele e midia do jogo (requisito RF-8).
+struct UiConfig {
+  std::string nand_root;
+  int scale = 2;          // 1x..4x
+  bool audio_enabled = true;
+  int volume = 100;
+};
+
+// Caminho padrao das preferencias: $XDG_DATA_HOME/zeebulator/ui.json, caindo em
+// ~/.local/share/zeebulator/ui.json. Separado em funcao propria para o teste
+// poder verificar a regra sem escrever no diretorio do usuario.
+std::string DefaultUiConfigPath(const char* xdg_data_home, const char* home);
+
+UiConfig LoadUiConfig(const std::string& path);
+bool SaveUiConfig(const std::string& path, const UiConfig& config);
+
 // Filtro da busca da UI. Case-insensitive, casa em nome e em pasta, para o
 // usuario poder digitar "274214" e achar o titulo sem saber o nome.
 bool MatchesFilter(const GameEntry& entry, const std::string& filter);
