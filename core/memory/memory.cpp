@@ -1,5 +1,7 @@
 #include "core/memory/memory.h"
 
+#include <exception>
+
 #include "core/control/debug_hooks.h"
 
 #include <cstring>
@@ -233,15 +235,17 @@ bool Memory::Serialize(std::ostream& out) const {
 bool Memory::Deserialize(std::istream& in) {
   uint32_t page_count = 0;
   in.read(reinterpret_cast<char*>(&page_count), sizeof(page_count));
-  if (!in.good()) return false;
+  if (!in.good() || page_count > 65536u) return false;  // 256 MiB max snapshot
 
   std::unordered_map<uint32_t, std::unique_ptr<Page>> new_pages;
-  new_pages.reserve(page_count);
+  try { new_pages.reserve(page_count); } catch (const std::exception&) { return false; }
   for (uint32_t i = 0; i < page_count; ++i) {
     uint32_t page_index = 0;
     in.read(reinterpret_cast<char*>(&page_index), sizeof(page_index));
-    if (!in.good()) return false;
-    auto page = std::make_unique<Page>();
+    if (!in.good() || page_index >= (1u << 20) || new_pages.find(page_index) != new_pages.end())
+      return false;
+    std::unique_ptr<Page> page;
+    try { page = std::make_unique<Page>(); } catch (const std::exception&) { return false; }
     in.read(reinterpret_cast<char*>(page->data()), static_cast<std::streamsize>(page->size()));
     if (!in.good()) return false;
     new_pages.emplace(page_index, std::move(page));

@@ -57,6 +57,7 @@ class MemAStreamHle {
   uint32_t next_object_address_;
   std::unordered_map<uint32_t, StreamState> streams_;
   struct PendingReadable {
+    uint32_t stream;
     uint32_t fn;
     uint32_t user;
   };

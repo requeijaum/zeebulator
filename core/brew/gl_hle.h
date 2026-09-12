@@ -126,6 +126,7 @@ class GlHle {
   void EglTerminate(IArmCore& core);
   void EglChooseConfig(IArmCore& core);
   void EglCreateWindowSurface(IArmCore& core);
+  void EglCreatePbufferSurface(IArmCore& core);
   void EglDestroySurface(IArmCore& core);
   void EglQuerySurface(IArmCore& core);
   void EglGetConfigAttrib(IArmCore& core);
@@ -222,6 +223,16 @@ class GlHle {
   ArrayState color_array_;
   ArrayState texcoord_array_;
   ArrayState normal_array_;
+
+  struct EglSurfaceState {
+    int32_t width = 0;
+    int32_t height = 0;
+    uint32_t color_buffer = 0;  // RGB565 guest pointer; zero for window surface
+  };
+  std::map<uint32_t, EglSurfaceState> egl_surfaces_;
+  uint32_t next_egl_surface_ = 2;       // 1 e a janela
+  uint32_t current_draw_surface_ = 0;
+  uint32_t next_pbuffer_pixels_ = 0x8a000000u;
 };
 
 }  // namespace zeebulator

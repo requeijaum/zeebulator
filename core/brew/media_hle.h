@@ -189,6 +189,7 @@ class MediaHle {
   };
 
   struct Media {
+    uint64_t generation = 0;  // host-only; invalida notificacoes de endereco reutilizado
     bool has_data = false;
     int channels = 0;
     int sample_rate = 0;
@@ -232,6 +233,7 @@ class MediaHle {
   SoundFontSynth* soundfont_synth_;
   uint32_t vtable_address_ = 0;
   uint32_t next_object_address_;
+  uint64_t next_generation_ = 1;
   // Enderecos de objetos ja liberados por Release, prontos para reuso. Ver
   // AllocateMediaObject: sem isto a regiao de objetos so anda para a frente.
   std::vector<uint32_t> free_object_addresses_;
@@ -241,6 +243,8 @@ class MediaHle {
   // guest code while an outer guest call is still executing, which observably
   // breaks the caller's own frame loop. Queue here; Tick() drains.
   struct PendingNotify {
+    uint32_t object;
+    uint64_t generation;
     uint32_t fn;
     uint32_t user;
     uint32_t command;

@@ -90,3 +90,60 @@ TEST(UnzipStreamHle, ReadableNotifyIsDeliveredFromTickNotInline) {
   unzip.Tick();
   EXPECT_EQ(calls, 1);
 }
+
+TEST(UnzipStreamHle, FallbackSourceReadPreservesTheEnclosingHleCall) {
+  ArmInterpreter cpu;
+  HleRuntime hle{cpu, kTrapBase, kTrapSize};
+  UnzipStreamHle unzip{cpu.GetMemory(), hle, kObjectRegion};
+  unzip.Build(kVtable);
+  const std::vector<uint8_t> original = {'o', 'k'};
+  const std::vector<uint8_t> compressed = DeflateBytes(original);
+  bool delivered = false;
+  const uint32_t source_vtable = 0x80008000, source = 0x80008100;
+  const uint32_t source_read = hle.Register([&](zeebulator::IArmCore& c) {
+    if (delivered) { c.SetRegister(zeebulator::kR0, 0); return; }
+    const uint32_t dest = c.GetRegister(zeebulator::kR1);
+    for (size_t i = 0; i < compressed.size(); ++i) c.GetMemory().Write8(dest + i, compressed[i]);
+    delivered = true;
+    c.SetRegister(zeebulator::kR0, static_cast<uint32_t>(compressed.size()));
+  });
+  cpu.GetMemory().Write32(source, source_vtable);
+  cpu.GetMemory().Write32(source_vtable + 3 * 4, source_read);
+  const uint32_t stream = unzip.AllocateStream();
+  hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kSetStream * 4), stream, source);
+  EXPECT_EQ(hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kRead * 4), stream, kScratch, 8),
+            original.size());
+  EXPECT_EQ(cpu.GetMemory().Read8(kScratch), 'o');
+  EXPECT_EQ(cpu.GetMemory().Read8(kScratch + 1), 'k');
+}
+
+TEST(UnzipStreamHle, RejectsSourceReturningMoreThanRequestedChunk) {
+  ArmInterpreter cpu;
+  HleRuntime hle{cpu, kTrapBase, kTrapSize};
+  UnzipStreamHle unzip{cpu.GetMemory(), hle, kObjectRegion};
+  unzip.Build(kVtable);
+  const uint32_t source_vtable = 0x80008000, source = 0x80008100;
+  const uint32_t bad_read = hle.Register([](zeebulator::IArmCore& c) {
+    c.SetRegister(zeebulator::kR0, 4097);
+  });
+  cpu.GetMemory().Write32(source, source_vtable);
+  cpu.GetMemory().Write32(source_vtable + 3 * 4, bad_read);
+  const uint32_t stream = unzip.AllocateStream();
+  hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kSetStream * 4), stream, source);
+  EXPECT_EQ(hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kRead * 4), stream, kScratch, 8),
+            0xffffffffu);
+}
+
+TEST(UnzipStreamHle, ReleasePreventsQueuedReadableCallback) {
+  ArmInterpreter cpu;
+  HleRuntime hle{cpu, kTrapBase, kTrapSize};
+  UnzipStreamHle unzip{cpu.GetMemory(), hle, kObjectRegion};
+  unzip.Build(kVtable);
+  int calls = 0;
+  const uint32_t notify = hle.Register([&](zeebulator::IArmCore&) { ++calls; });
+  const uint32_t stream = unzip.AllocateStream();
+  hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kReadable * 4), stream, notify, 0);
+  hle.CallArmFunction(cpu.GetMemory().Read32(kVtable + kRelease * 4), stream);
+  unzip.Tick();
+  EXPECT_EQ(calls, 0);
+}

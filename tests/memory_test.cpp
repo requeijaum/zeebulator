@@ -156,3 +156,12 @@ TEST(Memory, MediaBindingGuardDisabledByDefault) {
   mem.Write32(kSlot, 0);
   EXPECT_EQ(mem.Read32(kSlot), 0u) << "guard must be opt-in; default is passthrough";
 }
+
+TEST(Memory, DeserializeRejectsImpossiblePageCountBeforeReserve) {
+  zeebulator::Memory memory;
+  std::stringstream in(std::ios::in | std::ios::out | std::ios::binary);
+  const uint32_t count = 0xffffffffu;
+  in.write(reinterpret_cast<const char*>(&count), sizeof(count));
+  in.seekg(0);
+  EXPECT_FALSE(memory.Deserialize(in));
+}

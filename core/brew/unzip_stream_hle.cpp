@@ -11,7 +11,9 @@ namespace zeebulator {
 namespace {
 
 bool InflateData(const uint8_t* src, size_t src_len, std::vector<uint8_t>& out) {
-  if (src == nullptr || src_len == 0) return false;
+  constexpr size_t kMaxCompressed = 64u * 1024u * 1024u;
+  constexpr size_t kMaxExpanded = 128u * 1024u * 1024u;
+  if (src == nullptr || src_len == 0 || src_len > kMaxCompressed) return false;
 
   auto try_inflate = [&](int window_bits) -> bool {
     z_stream strm{};
@@ -21,7 +23,11 @@ bool InflateData(const uint8_t* src, size_t src_len, std::vector<uint8_t>& out) 
     strm.avail_in = static_cast<uInt>(src_len);
 
     std::vector<uint8_t> buffer;
-    buffer.resize(src_len * 4 + 1024);
+    const size_t initial = std::min(kMaxExpanded, src_len * 4 + 1024);
+    try { buffer.resize(initial); } catch (const std::exception&) {
+      inflateEnd(&strm);
+      return false;
+    }
 
     for (;;) {
       strm.next_out = reinterpret_cast<Bytef*>(buffer.data() + strm.total_out);
@@ -39,7 +45,15 @@ bool InflateData(const uint8_t* src, size_t src_len, std::vector<uint8_t>& out) 
         return false;
       }
       if (strm.avail_out == 0) {
-        buffer.resize(buffer.size() * 2);
+        if (buffer.size() >= kMaxExpanded) {
+          inflateEnd(&strm);
+          return false;
+        }
+        const size_t next = std::min(kMaxExpanded, buffer.size() * 2);
+        try { buffer.resize(next); } catch (const std::exception&) {
+          inflateEnd(&strm);
+          return false;
+        }
       }
     }
   };
@@ -103,7 +117,13 @@ void UnzipStreamHle::Release(IArmCore& core) {
   if (it != streams_.end()) {
     if (it->second.ref_count > 0) it->second.ref_count--;
     uint32_t rem = it->second.ref_count;
-    if (rem == 0) streams_.erase(it);
+    if (rem == 0) {
+      streams_.erase(it);
+      pending_readable_.erase(
+          std::remove_if(pending_readable_.begin(), pending_readable_.end(),
+                         [this_obj](const PendingReadable& p) { return p.stream == this_obj; }),
+          pending_readable_.end());
+    }
     core.SetRegister(kR0, rem);
   } else {
     core.SetRegister(kR0, 0);
@@ -115,7 +135,7 @@ void UnzipStreamHle::Readable(IArmCore& core) {
   uint32_t pfn = core.GetRegister(kR1);
   uint32_t puser = core.GetRegister(kR2);
   if (pfn != 0) {
-    pending_readable_.push_back({pfn, puser});
+    pending_readable_.push_back({core.GetRegister(kR0), pfn, puser});
   }
   core.SetRegister(kR0, 0);
 }
@@ -125,14 +145,15 @@ void UnzipStreamHle::Tick() {
   std::vector<PendingReadable> deferred;
   deferred.swap(pending_readable_);
   for (const PendingReadable& notify : deferred) {
-    hle_.CallArmFunction(notify.fn, notify.user);
+    if (streams_.find(notify.stream) != streams_.end())
+      hle_.CallArmFunction(notify.fn, notify.user);
   }
 }
 
 bool UnzipStreamHle::Expand(UnzipState& state) {
   if (state.expanded) return true;
-  state.expanded = true;
-
+  if (state.expand_attempted) return false;
+  state.expand_attempted = true;
   if (state.source_stream == 0) return false;
 
   std::vector<uint8_t> compressed;
@@ -146,18 +167,19 @@ bool UnzipStreamHle::Expand(UnzipState& state) {
       constexpr uint32_t kChunk = 4096;
       uint32_t temp_buf = 0x00095000;
       for (;;) {
-        uint32_t n = hle_.CallArmFunction(read_slot, state.source_stream, temp_buf, kChunk);
+        const uint32_t n = hle_.CallArmFunctionPreservingContext(
+            read_slot, state.source_stream, temp_buf, kChunk);
         if (n == 0 || n == static_cast<uint32_t>(-1)) break;
-        for (uint32_t i = 0; i < n; ++i) {
-          compressed.push_back(memory_.Read8(temp_buf + i));
-        }
+        if (n > kChunk || compressed.size() + n > 64u * 1024u * 1024u) return false;
+        for (uint32_t i = 0; i < n; ++i) compressed.push_back(memory_.Read8(temp_buf + i));
         if (n < kChunk) break;
       }
     }
   }
 
   if (compressed.empty()) return false;
-  return InflateData(compressed.data(), compressed.size(), state.uncompressed);
+  state.expanded = InflateData(compressed.data(), compressed.size(), state.uncompressed);
+  return state.expanded;
 }
 
 void UnzipStreamHle::Read(IArmCore& core) {
@@ -173,8 +195,9 @@ void UnzipStreamHle::Read(IArmCore& core) {
   }
 
   UnzipState& s = it->second;
-  if (!s.expanded) {
-    Expand(s);
+  if (!s.expanded && !Expand(s)) {
+    core.SetRegister(kR0, static_cast<uint32_t>(-1));
+    return;
   }
 
   uint32_t avail = (s.uncompressed.size() > s.position)
@@ -190,6 +213,15 @@ void UnzipStreamHle::Read(IArmCore& core) {
 }
 
 void UnzipStreamHle::Cancel(IArmCore& core) {
+  const uint32_t stream = core.GetRegister(kR0);
+  const uint32_t fn = core.GetRegister(kR1);
+  const uint32_t user = core.GetRegister(kR2);
+  pending_readable_.erase(
+      std::remove_if(pending_readable_.begin(), pending_readable_.end(),
+                     [=](const PendingReadable& p) {
+                       return p.stream == stream && (fn == 0 || (p.fn == fn && p.user == user));
+                     }),
+      pending_readable_.end());
   core.SetRegister(kR0, 0);
 }
 
@@ -202,6 +234,7 @@ void UnzipStreamHle::SetStream(IArmCore& core) {
   if (it != streams_.end()) {
     it->second.source_stream = source;
     it->second.expanded = false;
+    it->second.expand_attempted = false;
     it->second.uncompressed.clear();
     it->second.position = 0;
   }

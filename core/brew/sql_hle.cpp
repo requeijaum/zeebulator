@@ -49,13 +49,18 @@ uint32_t SqlHle::BuildManager(uint32_t mgr_vtable_address, uint32_t mgr_object_a
       db_methods.push_back([this](IArmCore& core) { DbAddRef(core); });
     } else if (slot == 1) {
       db_methods.push_back([this](IArmCore& core) { DbRelease(core); });
+    } else if (slot == 2) {
+      db_methods.push_back([](IArmCore& core) {
+        const uint32_t out = core.GetRegister(kR2);
+        if (out != 0) core.GetMemory().Write32(out, 0);
+        core.SetRegister(kR0, 3);  // ECLASSNOTSUPPORT
+      });
     } else if (slot == 3) {
       db_methods.push_back([this](IArmCore& core) { Exec(core); });
     } else {
       db_methods.push_back([slot](IArmCore& core) {
-        std::printf("[sqlite] ISQLDatabase slot %zu chamado -- nao medido, nao implementado\n",
-                    slot);
-        core.SetRegister(kR0, kSuccess);
+        std::printf("[sqlite] ISQLDatabase slot %zu chamado -- nao implementado\n", slot);
+        core.SetRegister(kR0, 20);  // EUNSUPPORTED; nunca sucesso vazio
       });
     }
   }
@@ -79,12 +84,18 @@ uint32_t SqlHle::BuildManager(uint32_t mgr_vtable_address, uint32_t mgr_object_a
       mgr_methods.push_back([this](IArmCore& core) { MgrAddRef(core); });
     } else if (slot == 1) {
       mgr_methods.push_back([this](IArmCore& core) { MgrRelease(core); });
+    } else if (slot == 2) {
+      mgr_methods.push_back([](IArmCore& core) {
+        const uint32_t out = core.GetRegister(kR2);
+        if (out != 0) core.GetMemory().Write32(out, 0);
+        core.SetRegister(kR0, 3);
+      });
     } else if (slot == 3) {
       mgr_methods.push_back([this](IArmCore& core) { OpenDatabase(core); });
     } else {
       mgr_methods.push_back([slot](IArmCore& core) {
-        std::printf("[sqlite] ISQLMgr slot %zu chamado -- nao medido, nao implementado\n", slot);
-        core.SetRegister(kR0, kSuccess);
+        std::printf("[sqlite] ISQLMgr slot %zu chamado -- nao implementado\n", slot);
+        core.SetRegister(kR0, 20);
       });
     }
   }
@@ -143,6 +154,11 @@ void SqlHle::OpenDatabase(IArmCore& core) {
   const uint32_t out_address = core.GetRegister(2);
   const std::string name = ReadGuestString(name_address);
   ++stats_.opens;
+  if (out_address == 0) {
+    ++stats_.open_failures;
+    core.SetRegister(kR0, 14);  // EBADPARM
+    return;
+  }
 
   std::string host_path = resolver_ ? resolver_(name) : std::string();
   if (host_path.empty()) {
@@ -165,16 +181,35 @@ void SqlHle::OpenDatabase(IArmCore& core) {
     return;
   }
 
-  // Inicializacao de esquemas esperados pela Z-Wheel caso o arquivo esteja vazio
+  // Inicializacao minima apenas do banco que pode nascer vazio. Cada rc importa:
+  // antes OpenDatabase publicava sucesso mesmo com schema parcialmente falho.
   if (name == "tt_dlqueue.db" || host_path.find("tt_dlqueue.db") != std::string::npos) {
-    sqlite3_exec(handle, "CREATE TABLE IF NOT EXISTS DBINFO(version INTEGER, subversion INTEGER);", nullptr, nullptr, nullptr);
-    sqlite3_exec(handle, "INSERT OR IGNORE INTO DBINFO values (1, 0);", nullptr, nullptr, nullptr);
-    sqlite3_exec(handle, "CREATE TABLE IF NOT EXISTS DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, size INTEGER, titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER);", nullptr, nullptr, nullptr);
-  } else if (name == "tt_prefs.db" || host_path.find("tt_prefs.db") != std::string::npos) {
-    // 0x20207470 = "pt  " (Portugues do Brasil como idioma inicial)
-    sqlite3_exec(handle, "UPDATE PREFSINFO SET dwValue = 538997872 WHERE PREFSINFO.name = 'Lang' AND PREFSINFO.dwValue = 0;", nullptr, nullptr, nullptr);
+    const char* setup[] = {
+      "CREATE TABLE IF NOT EXISTS DBINFO(version INTEGER, subversion INTEGER);",
+      "INSERT INTO DBINFO(version,subversion) SELECT 1,0 "
+      "WHERE NOT EXISTS(SELECT 1 FROM DBINFO WHERE version=1 AND subversion=0);",
+      "CREATE TABLE IF NOT EXISTS DLITEMINFO(item_id INTEGER PRIMARY KEY, price INTEGER, "
+      "size INTEGER, titletext TEXT, boxart_path TEXT, flags INTEGER, upgrade_id INTEGER);"
+    };
+    for (const char* statement : setup) {
+      if (sqlite3_exec(handle, statement, nullptr, nullptr, nullptr) != SQLITE_OK) {
+        ++stats_.open_failures;
+        sqlite3_close(handle);
+        memory_.Write32(out_address, 0);
+        core.SetRegister(kR0, kEFailed);
+        return;
+      }
+    }
   }
+  // Nunca reescreva idioma/preferencia do jogador durante um simples Open.
 
+  if (next_db_object_ > scratch_address_ - 16u) {
+    ++stats_.open_failures;
+    sqlite3_close(handle);
+    memory_.Write32(out_address, 0);
+    core.SetRegister(kR0, 2);  // ENOMEMORY
+    return;
+  }
   uint32_t object = next_db_object_;
   next_db_object_ += 16;
   memory_.Write32(object, db_vtable_);

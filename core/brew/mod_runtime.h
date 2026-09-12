@@ -739,6 +739,7 @@ class ModRuntime {
   void WstrtostrImpl(IArmCore& core);
   void WstrncopynImpl(IArmCore& core);
   void StrcmpImpl(IArmCore& core);
+  void StribeginsImpl(IArmCore& core);
   void MemcmpImpl(IArmCore& core);
   void StrexpandImpl(IArmCore& core);
   void StrcatImpl(IArmCore& core);

@@ -46,6 +46,7 @@ class UnzipStreamHle {
     std::vector<uint8_t> uncompressed;
     uint32_t position = 0;
     bool expanded = false;
+    bool expand_attempted = false;
     uint32_t ref_count = 1;
   };
 
@@ -65,6 +66,7 @@ class UnzipStreamHle {
   StreamDrainer drainer_;
   std::unordered_map<uint32_t, UnzipState> streams_;
   struct PendingReadable {
+    uint32_t stream;
     uint32_t fn;
     uint32_t user;
   };

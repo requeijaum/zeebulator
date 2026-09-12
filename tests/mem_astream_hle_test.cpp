@@ -99,10 +99,22 @@ TEST(MemAStreamHle, ReadableNotifyIsDeliveredFromTickNotInline) {
     ++calls;
     core.SetRegister(zeebulator::kR0, 0);
   });
-  f.hle.CallArmFunction(f.SlotAddr(kReadable), 0, notify, 0);
+  const uint32_t stream = f.stream_hle.AllocateStream();
+  f.hle.CallArmFunction(f.SlotAddr(kReadable), stream, notify, 0);
   EXPECT_EQ(calls, 0) << "BREW must not re-enter guest code inside the call";
   f.stream_hle.Tick();
   EXPECT_EQ(calls, 1);
   f.stream_hle.Tick();
   EXPECT_EQ(calls, 1) << "one registration, one notification";
+}
+
+TEST(MemAStreamHle, CancelPreventsQueuedReadableCallback) {
+  Fixture f;
+  int calls = 0;
+  const uint32_t notify = f.hle.Register([&](zeebulator::IArmCore&) { ++calls; });
+  const uint32_t stream = f.stream_hle.AllocateStream();
+  f.hle.CallArmFunction(f.SlotAddr(kReadable), stream, notify, 7);
+  f.hle.CallArmFunction(f.SlotAddr(kCancel), stream, 0, 0);
+  f.stream_hle.Tick();
+  EXPECT_EQ(calls, 0);
 }

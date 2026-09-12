@@ -10,8 +10,8 @@ namespace zeebulator {
 
 namespace {
 constexpr uint32_t kSuccess = 0;
-constexpr uint32_t kEAlready = 8;
-constexpr uint32_t kENoMemory = 11;
+constexpr uint32_t kEAlready = 26;  // AEEError.h
+constexpr uint32_t kENoMemory = 2;   // AEEError.h
 constexpr uint32_t kMinThreadStack = 64 * 1024;
 constexpr uint32_t kCallbackSize = 28;
 }  // namespace
@@ -33,33 +33,48 @@ uint32_t ThreadHle::CreateThreadObject() {
   std::vector<HleRuntime::HleFunction> methods(12);
 
   // 0: AddRef
-  methods[0] = [](IArmCore& core) {
-    core.SetRegister(kR0, 1);
+  methods[0] = [this, thread_obj](IArmCore& core) {
+    auto it = threads_.find(thread_obj);
+    if (it == threads_.end()) { core.SetRegister(kR0, 0); return; }
+    if (it->second.ref_count != 0xffffffffu) ++it->second.ref_count;
+    core.SetRegister(kR0, it->second.ref_count);
   };
 
-  // 1: Release
+  // 1: Release. O codigo antigo liberava o objeto em TODA chamada e ainda o
+  // liberava de novo se a entrada ja tivesse sido apagada.
   methods[1] = [this, thread_obj](IArmCore& core) {
     auto it = threads_.find(thread_obj);
-    if (it != threads_.end()) {
-      if (it->second.resume_cb != 0) {
-        resume_callbacks_.erase(it->second.resume_cb);
-        if (free_fn_) free_fn_(it->second.resume_cb);
-      }
-      if (it->second.stack_base != 0) {
-        if (free_fn_) free_fn_(it->second.stack_base);
-      }
-      threads_.erase(it);
+    if (it == threads_.end()) { core.SetRegister(kR0, 0); return; }
+    if (it->second.ref_count > 1) {
+      core.SetRegister(kR0, --it->second.ref_count);
+      return;
     }
-    if (free_fn_) free_fn_(thread_obj);
+    const ThreadState dying = it->second;
+    if (dying.resume_cb != 0) {
+      resume_callbacks_.erase(dying.resume_cb);
+      if (free_fn_) free_fn_(dying.resume_cb);
+    }
+    pending_threads_.erase(std::remove(pending_threads_.begin(), pending_threads_.end(), thread_obj),
+                           pending_threads_.end());
+    if (dying.stack_base != 0 && free_fn_) free_fn_(dying.stack_base);
+    threads_.erase(it);
+    if (free_fn_) {
+      if (dying.vtable_addr != 0) free_fn_(dying.vtable_addr);
+      free_fn_(thread_obj);
+    }
     core.SetRegister(kR0, 0);
   };
 
-  // 2: QueryInterface
-  methods[2] = [thread_obj](IArmCore& core) {
+  // 2: QueryInterface adquire outra referencia.
+  methods[2] = [this, thread_obj](IArmCore& core) {
     uint32_t out_ptr = core.GetRegister(kR2);
-    if (out_ptr != 0) {
-      core.GetMemory().Write32(out_ptr, thread_obj);
+    auto it = threads_.find(thread_obj);
+    if (out_ptr == 0 || it == threads_.end()) {
+      core.SetRegister(kR0, 14);  // EBADPARM
+      return;
     }
+    if (it->second.ref_count != 0xffffffffu) ++it->second.ref_count;
+    core.GetMemory().Write32(out_ptr, thread_obj);
     core.SetRegister(kR0, kSuccess);
   };
 
@@ -119,6 +134,7 @@ uint32_t ThreadHle::CreateThreadObject() {
     memory_.Write32(vtable_addr + static_cast<uint32_t>(i * 4), trap_addr);
   }
   memory_.Write32(thread_obj, vtable_addr);
+  threads_[thread_obj].vtable_addr = vtable_addr;
 
   return thread_obj;
 }

@@ -25,7 +25,6 @@ void InputLog(const char* fmt, ...) {
   std::fprintf(stderr, "[input] %s\n", buf);
 }
 
-void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 
 // Opaque device handle real code only ever passes back into
 // IHID_CreateDevice/GetDeviceInfo, never interprets directly -- any
@@ -175,7 +174,17 @@ uint32_t HidHle::Build(uint32_t hid_vtable_address, uint32_t hid_object_address,
   // GetMinPositionInfo(11)/GetMaxPositionInfo(12)/GetAxesInfo(13)/... --
   // slots 11-13 matched a real Double Dragon call site exactly
   // (ddragonz.mod offset 0x100af4-0x100b48).
-  std::vector<HleRuntime::HleFunction> device_methods(40, Stub);
+  auto unsupported = [](IArmCore& core) { core.SetRegister(kR0, 20); };
+  auto immortal_ref = [](IArmCore& core) { core.SetRegister(kR0, 1); };
+  auto unsupported_qi = [](IArmCore& core) {
+    const uint32_t out = core.GetRegister(kR2);
+    if (out != 0) core.GetMemory().Write32(out, 0);
+    core.SetRegister(kR0, 3);
+  };
+  std::vector<HleRuntime::HleFunction> device_methods(40, unsupported);
+  device_methods[0] = immortal_ref;
+  device_methods[1] = immortal_ref;
+  device_methods[2] = unsupported_qi;
   device_methods[8] = [this](IArmCore& core) { RegisterForButtonEventImpl(core); };
   device_methods[9] = [this](IArmCore& core) { GetNextButtonEventImpl(core); };
   BuildInterfaceObject(memory_, hle_, device_vtable_address, device_object_address,
@@ -185,7 +194,10 @@ uint32_t HidHle::Build(uint32_t hid_vtable_address, uint32_t hid_object_address,
   // GetDeviceInfo/GetNextConnectEvent/RegisterForConnectEvents/
   // GetConnectedDevices(7) -- confirmed against the real bundled sample
   // source research/samples/conftest_source/conftest/GamepadMgr.c.
-  std::vector<HleRuntime::HleFunction> hid_methods(10, Stub);
+  std::vector<HleRuntime::HleFunction> hid_methods(10, unsupported);
+  hid_methods[0] = immortal_ref;
+  hid_methods[1] = immortal_ref;
+  hid_methods[2] = unsupported_qi;
   hid_methods[3] = [this](IArmCore& core) { CreateDeviceImpl(core); };
   hid_methods[4] = [this](IArmCore& core) { GetDeviceInfoImpl(core); };
   hid_methods[5] = [this](IArmCore& core) { GetNextConnectEventImpl(core); };

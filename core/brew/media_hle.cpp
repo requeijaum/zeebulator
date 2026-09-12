@@ -33,7 +33,6 @@ void MediaLog(const char* fmt, ...) {
   std::fprintf(stderr, "[media] %s\n", buf);
 }
 
-void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 void StubFailed(IArmCore& core) { core.SetRegister(kR0, 1); }  // AEE_EFAILED-ish
 
 // Real MM_PARM_* values from AEEIMedia.h (numeric constants, not
@@ -64,9 +63,14 @@ constexpr uint32_t kMmdBuffer = 1;
 // this grows the output buffer as needed rather than assuming a fixed
 // size, same approach as that other real gzip consumer.
 std::optional<std::vector<uint8_t>> Gunzip(const std::vector<uint8_t>& compressed) {
+  constexpr size_t kMaxCompressed = 64u * 1024u * 1024u;
+  constexpr size_t kMaxExpanded = 128u * 1024u * 1024u;
+  if (compressed.empty() || compressed.size() > kMaxCompressed) return std::nullopt;
   z_stream strm{};
   if (inflateInit2(&strm, 15 + 16) != Z_OK) return std::nullopt;
-  std::vector<uint8_t> out(std::max<size_t>(compressed.size() * 4, 4096));
+  std::vector<uint8_t> out;
+  try { out.resize(std::min(kMaxExpanded, std::max<size_t>(compressed.size() * 4, 4096))); }
+  catch (const std::exception&) { inflateEnd(&strm); return std::nullopt; }
   strm.next_in = const_cast<Bytef*>(compressed.data());
   strm.avail_in = static_cast<uInt>(compressed.size());
   strm.next_out = out.data();
@@ -80,7 +84,9 @@ std::optional<std::vector<uint8_t>> Gunzip(const std::vector<uint8_t>& compresse
     }
     if (strm.avail_out == 0 && ret != Z_STREAM_END) {
       size_t old_size = out.size();
-      out.resize(old_size * 2);
+      if (old_size >= kMaxExpanded) { inflateEnd(&strm); return std::nullopt; }
+      try { out.resize(std::min(kMaxExpanded, old_size * 2)); }
+      catch (const std::exception&) { inflateEnd(&strm); return std::nullopt; }
       strm.next_out = out.data() + old_size;
       strm.avail_out = static_cast<uInt>(out.size() - old_size);
     }
@@ -132,7 +138,10 @@ std::optional<WavAudio> DecodeAudioBuffer(const std::vector<uint8_t>& data, int 
 
 std::string ReadCString(Memory& memory, uint32_t addr) {
   std::string s;
-  for (uint8_t c = memory.Read8(addr); c != 0; c = memory.Read8(++addr)) {
+  if (addr == 0) return s;
+  for (uint32_t i = 0; i < 4096 && addr + i >= addr; ++i) {
+    const uint8_t c = memory.Read8(addr + i);
+    if (c == 0) break;
     s.push_back(static_cast<char>(c));
   }
   return s;
@@ -216,7 +225,9 @@ uint32_t MediaHle::AllocateMediaObject() {
   for (uint32_t off = 0x0c; off < 0x40; off += 4) {
     memory_.Write32(obj_addr + off, 0);
   }
-  media_by_object_[obj_addr] = Media{};
+  Media fresh;
+  fresh.generation = next_generation_++;
+  media_by_object_[obj_addr] = std::move(fresh);
   return obj_addr;
 }
 
@@ -258,7 +269,14 @@ void MediaHle::ReleaseImpl(IArmCore& core) {
       mixer_.Stop(it->second.voice);
       it->second.has_voice = false;
     }
+    const uint64_t generation = it->second.generation;
     media_by_object_.erase(it);
+    pending_notifications_.erase(
+        std::remove_if(pending_notifications_.begin(), pending_notifications_.end(),
+                       [=](const PendingNotify& n) {
+                         return n.object == obj && n.generation == generation;
+                       }),
+        pending_notifications_.end());
     memory_.Write32(obj, 0);
     free_object_addresses_.push_back(obj);
   }
@@ -334,7 +352,17 @@ void MediaHle::SetMediaParmImpl(IArmCore& core) {
       }
       decoded = DecodeAudioFile(name, *file_data, mixer_.OutputSampleRate(), soundfont_synth_);
     } else if (cls_data == kMmdBuffer) {
-      std::vector<uint8_t> raw(data_size);
+      constexpr uint32_t kMaxMediaBuffer = 64u * 1024u * 1024u;
+      if (data_ptr == 0 || data_size == 0 || data_size > kMaxMediaBuffer ||
+          static_cast<uint64_t>(data_ptr) + data_size > 0x100000000ull) {
+        core.SetRegister(kR0, 1);
+        return;
+      }
+      std::vector<uint8_t> raw;
+      try { raw.resize(data_size); } catch (const std::exception&) {
+        core.SetRegister(kR0, 1);
+        return;
+      }
       for (uint32_t i = 0; i < data_size; ++i) raw[i] = memory_.Read8(data_ptr + i);
       // Real sound.ggz entries are gzip-compressed (see kMmdBuffer's own
       // doc comment) -- gunzip first, matching the real magic bytes,
@@ -481,7 +509,8 @@ void MediaHle::PlayImpl(IArmCore& core) {
       constexpr uint32_t kMmCmdPlay = 4;
       constexpr uint32_t kMmStatusAbort = 3;
       pending_notifications_.push_back(
-          {media.notify_fn, media.notify_user, kMmCmdPlay, kMmStatusAbort});
+          {it->first, media.generation, media.notify_fn, media.notify_user,
+            kMmCmdPlay, kMmStatusAbort});
     }
   }
   media.voice =
@@ -506,6 +535,9 @@ void MediaHle::Tick() {
     std::vector<PendingNotify> deferred;
     deferred.swap(pending_notifications_);
     for (const PendingNotify& notify : deferred) {
+      auto live = media_by_object_.find(notify.object);
+      if (live == media_by_object_.end() || live->second.generation != notify.generation ||
+          live->second.notify_fn != notify.fn || live->second.notify_user != notify.user) continue;
       memory_.Write32(notify_scratch_address_ + 8, notify.command);
       memory_.Write32(notify_scratch_address_ + 16, notify.status);
       hle_.CallArmFunction(notify.fn, notify.user, notify_scratch_address_);
@@ -525,7 +557,8 @@ void MediaHle::Tick() {
   // guest re-entry: first snapshot finished notifications, then invoke them.
   struct FinishedNotify {
     uint32_t object_addr;
-    int voice;
+    Mixer::VoiceId voice;
+    uint64_t generation;
     uint32_t fn;
     uint32_t user;
   };
@@ -535,10 +568,14 @@ void MediaHle::Tick() {
     if (mixer_.IsPlaying(media.voice)) continue;
     media.has_voice = false;
     media.state = kStateReady;
-    finished.push_back({object_addr, media.voice, media.notify_fn, media.notify_user});
+    finished.push_back(
+        {object_addr, media.voice, media.generation, media.notify_fn, media.notify_user});
   }
   for (const FinishedNotify& done : finished) {
-    MediaLog("obj=0x%08x voice=%d FINISHED -> notify fn=0x%08x user=0x%08x",
+    auto live = media_by_object_.find(done.object_addr);
+    if (live == media_by_object_.end() || live->second.generation != done.generation ||
+        live->second.notify_fn != done.fn || live->second.notify_user != done.user) continue;
+    MediaLog("obj=0x%08x voice=%u FINISHED -> notify fn=0x%08x user=0x%08x",
              done.object_addr, done.voice, done.fn, done.user);
     hle_.CallArmFunction(done.fn, done.user, notify_scratch_address_);
   }
@@ -575,7 +612,8 @@ void MediaHle::StopImpl(IArmCore& core) {
     constexpr uint32_t kMmCmdPlay = 4;
     constexpr uint32_t kMmStatusAbort = 3;
     pending_notifications_.push_back(
-        {media.notify_fn, media.notify_user, kMmCmdPlay, kMmStatusAbort});
+        {it->first, media.generation, media.notify_fn, media.notify_user,
+            kMmCmdPlay, kMmStatusAbort});
   }
   core.SetRegister(kR0, 0);
 }
@@ -642,7 +680,11 @@ void MediaHle::Build(uint32_t vtable_address) {
   std::vector<HleRuntime::HleFunction> methods = {
       [this](IArmCore& c) { AddRefImpl(c); },             // 0  AddRef
       [this](IArmCore& c) { ReleaseImpl(c); },            // 1  Release
-      Stub,                                              // 2  QueryInterface
+      [](IArmCore& c) {                                   // 2 QueryInterface
+        const uint32_t out = c.GetRegister(kR2);
+        if (out != 0) c.GetMemory().Write32(out, 0);
+        c.SetRegister(kR0, 3);  // ECLASSNOTSUPPORT
+      },
       [this](IArmCore& c) { RegisterNotifyImpl(c); },     // 3  RegisterNotify
       [this](IArmCore& c) { SetMediaParmImpl(c); },       // 4  SetMediaParm
       [this](IArmCore& c) { GetMediaParmImpl(c); },       // 5  GetMediaParm
@@ -694,7 +736,7 @@ bool MediaHle::Deserialize(std::istream& in) {
   uint32_t next_object_address = 0;
   if (!ReadPod(in, next_object_address)) return false;
   uint32_t count = 0;
-  if (!ReadPod(in, count)) return false;
+  if (!ReadPod(in, count) || count > 65536u) return false;
 
   std::unordered_map<uint32_t, Media> loaded;
   loaded.reserve(count);
@@ -702,11 +744,12 @@ bool MediaHle::Deserialize(std::istream& in) {
     uint32_t object_addr = 0;
     if (!ReadPod(in, object_addr)) return false;
     Media media;
+    media.generation = next_generation_++;
     if (!ReadPod(in, media.has_data)) return false;
     if (!ReadPod(in, media.channels)) return false;
     if (!ReadPod(in, media.sample_rate)) return false;
     uint32_t sample_count = 0;
-    if (!ReadPod(in, sample_count)) return false;
+    if (!ReadPod(in, sample_count) || sample_count > 64u * 1024u * 1024u) return false;
     auto samples = std::make_shared<std::vector<int16_t>>(sample_count);
     if (sample_count != 0) {
       in.read(reinterpret_cast<char*>(samples->data()),

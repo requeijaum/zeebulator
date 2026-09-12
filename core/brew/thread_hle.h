@@ -20,6 +20,8 @@ constexpr uint32_t kAeeClsidThread = 0x01001017;
 // 14 integer registers (R0-R12, SP), resume_pc, stack allocation, and resume callback.
 struct ThreadState {
   uint32_t thread_obj = 0;
+  uint32_t vtable_addr = 0;
+  uint32_t ref_count = 1;
   bool started = false;
   bool finished = false;
   bool suspended = false;

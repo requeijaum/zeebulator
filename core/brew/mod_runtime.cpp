@@ -209,7 +209,9 @@ void ModRuntime::DecompressGzipInPlaceImpl(IArmCore& core) {
   uint32_t ptr = core.GetRegister(kR0);
 
   constexpr uint32_t kChunk = 4096;
-  constexpr uint32_t kMaxCompressed = 4 * 1024 * 1024;  // defensive cap
+  constexpr uint32_t kMaxCompressed = 4 * 1024 * 1024;
+  constexpr size_t kMaxExpanded = 64u * 1024u * 1024u;
+  if (ptr == 0) { core.SetRegister(kR0, 1); return; }
 
   z_stream strm{};
   if (inflateInit2(&strm, 15 + 16) != Z_OK) {
@@ -242,7 +244,9 @@ void ModRuntime::DecompressGzipInPlaceImpl(IArmCore& core) {
     }
     if (strm.avail_out == 0) {
       size_t old_size = decompressed.size();
-      decompressed.resize(old_size + kChunk);
+      if (old_size >= kMaxExpanded) { failed = true; break; }
+      try { decompressed.resize(old_size + kChunk); }
+      catch (const std::exception&) { failed = true; break; }
       strm.next_out = decompressed.data() + old_size;
       strm.avail_out = static_cast<uInt>(kChunk);
     }
@@ -255,7 +259,7 @@ void ModRuntime::DecompressGzipInPlaceImpl(IArmCore& core) {
   size_t produced = decompressed.size() - strm.avail_out;
   inflateEnd(&strm);
 
-  if (failed) {
+  if (failed || static_cast<uint64_t>(ptr) + produced > 0x100000000ull) {
     core.SetRegister(kR0, 1);
     return;
   }
@@ -283,17 +287,17 @@ void ModRuntime::SortPointerArrayImpl(IArmCore& core) {
   // should degrade to "did nothing" rather than let a runaway loop hang
   // the tool.
   constexpr int32_t kMaxCount = 4096;
-  if (count <= 1 || size <= 0 || count > kMaxCount || compar == 0) {
+  const uint64_t total_bytes = count > 0 && size > 0
+                                   ? static_cast<uint64_t>(count) * size : 0;
+  if (count <= 1 || size <= 0 || count > kMaxCount || compar == 0 ||
+      total_bytes > 64u * 1024u * 1024u ||
+      static_cast<uint64_t>(base) + total_bytes > 0x100000000ull) {
     core.SetRegister(kR0, 0);
     return;
   }
 
-  // CallArmFunction repurposes LR as its own return sentinel, so it
-  // must be saved/restored around every nested call -- this HLE
-  // function is itself invoked from inside another real ARM call's own
-  // Dispatch(), and the real caller of *this* slot still needs its
-  // original LR intact once we return.
-  uint32_t saved_lr = core.GetRegister(kLR);
+  // O comparador e guest chamado de dentro de um trap HLE: preservar apenas LR
+  // era insuficiente; R0-R15 e CPSR pertencem a chamada externa.
 
   // Real in-place insertion sort (stable, and correct regardless of
   // whether the real comparator forms a strict weak ordering -- unlike
@@ -319,7 +323,8 @@ void ModRuntime::SortPointerArrayImpl(IArmCore& core) {
     while (j > 0) {
       uint32_t a_addr = base + static_cast<uint32_t>(j - 1) * size;
       uint32_t b_addr = base + static_cast<uint32_t>(j) * size;
-      int32_t result = static_cast<int32_t>(hle_.CallArmFunction(compar, b_addr, a_addr));
+      int32_t result = static_cast<int32_t>(
+          hle_.CallArmFunctionPreservingContext(compar, b_addr, a_addr));
       if (result >= 0) break;
       for (int32_t k = 0; k < size; ++k) {
         uint8_t tmp = memory_.Read8(a_addr + k);
@@ -330,7 +335,6 @@ void ModRuntime::SortPointerArrayImpl(IArmCore& core) {
     }
   }
 
-  core.SetRegister(kLR, saved_lr);
   core.SetRegister(kR0, 0);
 }
 
@@ -441,6 +445,12 @@ void ModRuntime::StrncpyImpl(IArmCore& core) {
   uint32_t dest = core.GetRegister(kR0);
   uint32_t src = core.GetRegister(kR1);
   uint32_t maxlen = core.GetRegister(kR2);
+  if (maxlen > 64u * 1024u * 1024u ||
+      static_cast<uint64_t>(dest) + maxlen > 0x100000000ull ||
+      static_cast<uint64_t>(src) + maxlen > 0x100000000ull) {
+    core.SetRegister(kR0, dest);
+    return;
+  }
   bool src_ended = false;
   for (uint32_t i = 0; i < maxlen; ++i) {
     uint8_t byte = src_ended ? 0 : memory_.Read8(src + i);
@@ -897,6 +907,10 @@ void ModRuntime::MemchrImpl(IArmCore& core) {
   uint32_t s = core.GetRegister(kR0);
   uint8_t c = static_cast<uint8_t>(core.GetRegister(kR1));
   uint32_t n = core.GetRegister(kR2);
+  if (n > 64u * 1024u * 1024u || static_cast<uint64_t>(s) + n > 0x100000000ull) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
   for (uint32_t i = 0; i < n; ++i) {
     if (memory_.Read8(s + i) == c) {
       core.SetRegister(kR0, s + i);
@@ -1236,7 +1250,7 @@ void ModRuntime::ErrReallocImpl(IArmCore& core) {
   uint32_t current = (pp != 0) ? memory_.Read32(pp) : 0;
   uint32_t new_ptr = Reallocate(current, size);
   if (new_ptr == 0 && size != 0) {
-    core.SetRegister(kR0, 10); // ENOMEMORY
+    core.SetRegister(kR0, 2); // ENOMEMORY, AEEError.h
   } else {
     if (pp != 0) memory_.Write32(pp, new_ptr);
     core.SetRegister(kR0, 0);  // SUCCESS
@@ -1251,7 +1265,7 @@ void ModRuntime::ErrStrdupImpl(IArmCore& core) {
   while (memory_.Read8(src + len) != 0) ++len;
   uint32_t dst = Allocate(len + 1);
   if (dst == 0) {
-    core.SetRegister(kR0, 10); // ENOMEMORY
+    core.SetRegister(kR0, 2); // ENOMEMORY, AEEError.h
   } else {
     for (uint32_t i = 0; i <= len; ++i) {
       memory_.Write8(dst + i, memory_.Read8(src + i));
@@ -1449,6 +1463,11 @@ void ModRuntime::StrexpandImpl(IArmCore& core) {
 
 void ModRuntime::MemcmpImpl(IArmCore& core) {
   uint32_t a = core.GetRegister(kR0), b = core.GetRegister(kR1), n = core.GetRegister(kR2);
+  if (n > 64u * 1024u * 1024u || static_cast<uint64_t>(a) + n > 0x100000000ull ||
+      static_cast<uint64_t>(b) + n > 0x100000000ull) {
+    core.SetRegister(kR0, 1);
+    return;
+  }
   for (uint32_t i = 0; i < n; ++i) {
     uint8_t ca = memory_.Read8(a + i), cb = memory_.Read8(b + i);
     if (ca != cb) {
@@ -1540,6 +1559,44 @@ void ModRuntime::StristrImpl(IArmCore& core) {
     }
   }
   core.SetRegister(kR0, 0);
+}
+
+// 0x1a4 STRIBEGINS (aee_stribegins). Prototipo do proprio SDK, em dois lugares:
+//   platform/system/inc/AEEStdLib.h:217
+//     boolean (*aee_stribegins)(const char *cpszPrefix, const char *psz);
+//   platform/system/inc/OEM/AEEStdLib_static.h:103
+//     extern AEE_EXPORTS boolean aee_stribegins(const char *cpszPrefix, const char *cpsz);
+// Ou seja: r0 = PREFIXO, r1 = string; devolve boolean (1 = "r1 comeca com r0").
+// Esta era uma das slots rotuladas que ficavam como stub mudo, devolvendo 0 --
+// o que responde "nao comeca com" para TODA comparacao. Medido na Z-Wheel
+// (ZEEB_STUB_TRACE=1): dezenas de chamadas por execucao, sempre com 0, enquanto
+// o guest varria uma tabela de chaves no BSS (0x80304ae0, passo 0x13c) contra
+// uma string do modulo -- entre as strings do modulo estao chaves como
+// "game_id" e "BrowserClassID" (0x1282D8). Uma varredura dessas que sempre
+// falha derruba justamente o caminho de dados que o formulario do z-pad usa.
+//
+// Sensibilidade a caixa: o SDK nao documenta aqui, e existem DUAS funcoes
+// distintas na mesma struct -- 0x0f8 `strbegins` e 0x1a4 `aee_stribegins` -- o
+// que faz do "i" a mesma convencao de strstr (0x0d8) contra stristr (0x0e8),
+// cujo caso semantico foi confirmado antes. Implementado sem diferenciar caixa,
+// e anotado como decisao: se algum titulo mostrar o contrario, e aqui que muda.
+void ModRuntime::StribeginsImpl(IArmCore& core) {
+  const uint32_t prefix = core.GetRegister(kR0);
+  const uint32_t psz = core.GetRegister(kR1);
+  auto lower = [](uint8_t c) { return static_cast<uint8_t>(std::tolower(c)); };
+  uint32_t a = psz;
+  for (uint32_t b = prefix;; ++a, ++b) {
+    const uint8_t cb = memory_.Read8(b);
+    if (cb == 0) {
+      core.SetRegister(kR0, 1);
+      return;
+    }
+    const uint8_t ca = memory_.Read8(a);
+    if (ca == 0 || lower(ca) != lower(cb)) {
+      core.SetRegister(kR0, 0);
+      return;
+    }
+  }
 }
 
 void ModRuntime::StricmpImpl(IArmCore& core) {
@@ -2063,7 +2120,6 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t free_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
   uint32_t get_uptime_ms_fn = hle_.Register([this](IArmCore& core) { GetUpTimeMsImpl(core); });
   uint32_t get_app_context_fn = hle_.Register([this](IArmCore& core) { GetAppContextImpl(core); });
-  uint32_t bounded_strcpy_fn = hle_.Register([this](IArmCore& core) { BoundedStrcpyImpl(core); });
   uint32_t strtoul_fn = hle_.Register([this](IArmCore& core) { StrtoulImpl(core); });
   uint32_t strncmp_fn = hle_.Register([this](IArmCore& core) { StrncmpImpl(core); });
   uint32_t f_op_fn = hle_.Register([this](IArmCore& core) { FOpImpl(core); });
@@ -2162,8 +2218,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t strrchr_fn = hle_.Register([this](IArmCore& core) { StrrchrImpl(core); });
   uint32_t atoi_fn = hle_.Register([this](IArmCore& core) { AtoiImpl(core); });
   uint32_t stristr_fn = hle_.Register([this](IArmCore& core) { StristrImpl(core); });
-  uint32_t unknown_0xdc_fn =
-      hle_.Register([this](IArmCore& core) { DecompressGzipInPlaceImpl(core); });
+  uint32_t stribegins_fn = hle_.Register([this](IArmCore& core) { StribeginsImpl(core); });
   uint32_t sleep_fn = hle_.Register([this](IArmCore& core) { SleepImpl(core); });
   uint32_t unknown_0x1b4_fn =
       hle_.Register([this](IArmCore& core) { SortPointerArrayImpl(core); });
@@ -2210,7 +2265,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t err_strdup_fn = hle_.Register([this](IArmCore& core) { ErrStrdupImpl(core); });
   uint32_t lockmem_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 1); });
   uint32_t noop_success_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
-  uint32_t dbgheapmark_fn = hle_.Register([](IArmCore& core) { /* returns a0 */ });
+  uint32_t dbgheapmark_fn = hle_.Register([](IArmCore&) { /* r0 already holds a0 */ });
   uint32_t unknown_0x64_fn = hle_.Register([this](IArmCore& core) {
     // Disney All Star Cards: BMP decode. Convention pinned down via
     // capstone disassembly of allstarcards.mod 0x10ee18-0x10ee48 (see
@@ -2302,6 +2357,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kStrcpySlotOffset, strcpy_fn);
   memory_.Write32(table_address + kBoundedStrcpySlotOffset, strexpand_fn);  // 0x0e4 STREXPAND
   memory_.Write32(table_address + kStrstrSlotOffset, stristr_fn);      // 0x0e8 STRISTR
+  memory_.Write32(table_address + 0x1a4, stribegins_fn);               // 0x1a4 STRIBEGINS
   memory_.Write32(table_address + kSprintfSlotOffset, sprintf_fn);
   memory_.Write32(table_address + kMallocSlotOffset, malloc_fn);
   memory_.Write32(table_address + kFreeSlotOffset, free_fn);

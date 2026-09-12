@@ -63,6 +63,9 @@ void WriteEGLintIfNonNull(Memory& memory, uint32_t addr, EGLint value) {
 // disassembly of Double Dragon, see PHASE8_LOG.md: fed straight into a
 // strstr-shaped call), so a single reused buffer is enough.
 constexpr uint32_t kQueryStringBufferAddr = 0x8001B000;
+constexpr int32_t kMaxDrawVertices = 1 << 20;
+constexpr int32_t kMaxTextureObjectsPerCall = 1 << 16;
+constexpr uint64_t kMaxTextureUploadBytes = 64ull * 1024ull * 1024ull;
 
 void WriteCString(Memory& memory, uint32_t addr, const char* text) {
   size_t i = 0;
@@ -114,7 +117,7 @@ void GlHle::EglQueryInterface(IArmCore& core) {
   if (ret_obj != 0) {
     core.SetRegister(kR0, 0); // SUCCESS
   } else {
-    core.SetRegister(kR0, 1); // ECLASSNOTSUPPORT
+    core.SetRegister(kR0, 3); // ECLASSNOTSUPPORT, AEEError.h
   }
 }
 
@@ -174,12 +177,11 @@ void GlHle::EglQueryString(IArmCore& core) {
     // EGL_QUALCOMM_COLOR_BUFFER e distinta de EGL_QUALCOMM_get_color_buffer
     // (o "get_" no meio quebra a substring) e e a que o Double Dragon exige.
     // Ajustavel por ZEEB_EGL_EXTENSIONS para A/B sem recompilar.
+    // Anuncie apenas extensoes cujo caminho funcional existe. Anunciar
+    // rotate/overlay/transparency/scale com stubs de sucesso fazia o guest
+    // escolher um caminho acelerado que nao produzia estado nem pixels.
     static const char* const kDefaultEglExtensions =
-        "EGL_QUALCOMM_surface_scale EGL_QUALCOMM_get_color_buffer "
-        "EGL_QUALCOMM_COLOR_BUFFER EGL_EXT_swap_control "
-        "EGL_QUALCOMM_surface_transparency EGL_QUALCOMM_surface_rotate "
-        "EGL_QUALCOMM_surface_overlay EGL_QUALCOMM_surface_color_key "
-        "EGL_QUALCOMM_get_power_level ";
+        "EGL_QUALCOMM_get_color_buffer EGL_QUALCOMM_COLOR_BUFFER";
     const char* env = std::getenv("ZEEB_EGL_EXTENSIONS");
     value = (env != nullptr) ? env : kDefaultEglExtensions;
   } else if (name == kEglClientApis) {
@@ -212,10 +214,50 @@ void GlHle::EglChooseConfig(IArmCore& core) {
 }
 
 void GlHle::EglCreateWindowSurface(IArmCore& core) {
+  egl_surfaces_[kSurfaceHandle] = EglSurfaceState{640, 480, 0};
   core.SetRegister(kR0, kSurfaceHandle);
 }
 
-void GlHle::EglDestroySurface(IArmCore& core) { core.SetRegister(kR0, kEglTrue); }
+void GlHle::EglCreatePbufferSurface(IArmCore& core) {
+  // EGLSurface eglCreatePbufferSurface(EGLDisplay,EGLConfig,const EGLint*).
+  // A lista termina em EGL_NONE; Z-Wheel pede explicitamente 640x330.
+  constexpr uint32_t kEglNone = 0x3038;
+  constexpr uint32_t kEglHeight = 0x3056;
+  constexpr uint32_t kEglWidth = 0x3057;
+  const uint32_t attrs = core.GetRegister(kR2);
+  int32_t width = 0, height = 0;
+  if (attrs != 0) {
+    for (uint32_t i = 0; i < 64; ++i) {
+      const uint32_t name = core.GetMemory().Read32(attrs + i * 8);
+      if (name == kEglNone) break;
+      const int32_t value = static_cast<int32_t>(core.GetMemory().Read32(attrs + i * 8 + 4));
+      if (name == kEglWidth) width = value;
+      if (name == kEglHeight) height = value;
+    }
+  }
+  const uint64_t bytes = static_cast<uint64_t>(std::max(width, 0)) *
+                         static_cast<uint64_t>(std::max(height, 0)) * 2u;
+  if (width <= 0 || height <= 0 || width > 640 || height > 480 ||
+      bytes > kMaxTextureUploadBytes ||
+      static_cast<uint64_t>(next_pbuffer_pixels_) + bytes > 0x8c000000ull) {
+    core.SetRegister(kR0, 0);  // EGL_NO_SURFACE
+    return;
+  }
+  const uint32_t pixels = next_pbuffer_pixels_;
+  next_pbuffer_pixels_ = static_cast<uint32_t>((static_cast<uint64_t>(pixels) + bytes + 0xfffu) &
+                                               ~0xfffull);
+  for (uint32_t off = 0; off < bytes; off += 2) core.GetMemory().Write16(pixels + off, 0);
+  const uint32_t handle = next_egl_surface_++;
+  egl_surfaces_[handle] = EglSurfaceState{width, height, pixels};
+  core.SetRegister(kR0, handle);
+}
+
+void GlHle::EglDestroySurface(IArmCore& core) {
+  const uint32_t surface = core.GetRegister(kR1);
+  if (surface == current_draw_surface_) current_draw_surface_ = 0;
+  const bool erased = egl_surfaces_.erase(surface) != 0;
+  core.SetRegister(kR0, erased ? kEglTrue : kEglFalse);
+}
 
 // Shared EGL config/surface attribute table (mirrors zeebx gles::config_attrib;
 // used as an RE oracle, no code copied). 640x480 is the console screen.
@@ -274,11 +316,14 @@ void GlHle::EglQuerySurface(IArmCore& core) {
   uint32_t value = core.GetRegister(kR3);
   int32_t out = 0;
   bool ok = true;
-  if (attribute == kEglWidth) {
-    out = kScreenW;
-  } else if (attribute == kEglHeight) {
-    out = kScreenH;
-  } else {
+  const uint32_t surface = core.GetRegister(kR1);
+  auto it = egl_surfaces_.find(surface);
+  if (it == egl_surfaces_.end()) ok = false;
+  if (ok && attribute == kEglWidth) {
+    out = it->second.width;
+  } else if (ok && attribute == kEglHeight) {
+    out = it->second.height;
+  } else if (ok) {
     ok = EglConfigAttrib(attribute, &out);
   }
   if (ok) {
@@ -300,29 +345,37 @@ void GlHle::EglDestroyContext(IArmCore& core) {
 }
 
 void GlHle::EglMakeCurrent(IArmCore& core) {
-  // EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
-  //                           EGLSurface read, EGLContext ctx)
-  uint32_t ctx = core.GetRegister(kR3);
-  if (ctx != 0 && !context_current_) {
-    context_current_ = backend_.CreateContext();
-  } else if (ctx == 0) {
+  const uint32_t draw = core.GetRegister(kR1);
+  const uint32_t read = core.GetRegister(kR2);
+  const uint32_t ctx = core.GetRegister(kR3);
+  if (ctx == 0) {
+    current_draw_surface_ = 0;
     context_current_ = false;
+    core.SetRegister(kR0, kEglTrue);
+    return;
   }
+  if (ctx != kContextHandle || egl_surfaces_.find(draw) == egl_surfaces_.end() ||
+      egl_surfaces_.find(read) == egl_surfaces_.end()) {
+    core.SetRegister(kR0, kEglFalse);
+    return;
+  }
+  if (!context_current_ && !backend_.CreateContext()) {
+    core.SetRegister(kR0, kEglFalse);
+    return;
+  }
+  context_current_ = true;
+  current_draw_surface_ = draw;
   core.SetRegister(kR0, kEglTrue);
 }
 
 void GlHle::EglGetColorBufferQualcomm(IArmCore& core) {
-  // Forma ainda nao confirmada -- medir pelo uso. Registra os quatro
-  // registradores de argumento AAPCS e dois da pilha; o chamador real dira
-  // quantos parametros existem de fato (ver a tecnica de reconstituicao de
-  // ABI em zeebo-lle/notes/MORE_INFO.md 5.4).
-  std::fprintf(stderr,
-               "[eglColorBuf] r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
-               "sp0=0x%08x sp1=0x%08x lr=0x%08x\n",
-               core.GetRegister(kR0), core.GetRegister(kR1), core.GetRegister(kR2),
-               core.GetRegister(kR3), HleRuntime::ReadStackArg(core, 0),
-               HleRuntime::ReadStackArg(core, 1), core.GetRegister(kLR));
-  core.SetRegister(kR0, 0);
+  // SDK platform/ui/inc/deprecated/gles/EGLext.h:
+  //   void *eglGetColorBufferQUALCOMM(void)
+  // Sem argumentos. Devolve o RGB565 cru da superficie corrente. O buffer
+  // possui identidade/tamanho reais; readback do backend host ainda e uma
+  // etapa separada quando a renderizacao nao for software.
+  const auto it = egl_surfaces_.find(current_draw_surface_);
+  core.SetRegister(kR0, it != egl_surfaces_.end() ? it->second.color_buffer : 0);
 }
 
 void GlHle::EglGetProcAddress(IArmCore& core) {
@@ -566,36 +619,42 @@ void GlHle::GlDrawTexxOES(IArmCore& core) {
 // --- Vertex arrays / draw calls -------------------------------------------
 
 void GlHle::GlVertexPointer(IArmCore& core) {
-  // void glVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-  vertex_array_.size = static_cast<int>(core.GetRegister(kR0));
-  vertex_array_.type = core.GetRegister(kR1);
-  vertex_array_.stride = static_cast<int>(core.GetRegister(kR2));
-  vertex_array_.pointer = core.GetRegister(kR3);
+  // GLES 1.x: size 2..4, stride nao negativo, tipo conhecido.
+  const int size = static_cast<int32_t>(core.GetRegister(kR0));
+  const GLenum type = core.GetRegister(kR1);
+  const int stride = static_cast<int32_t>(core.GetRegister(kR2));
+  vertex_array_ = (size >= 2 && size <= 4 && GlTypeSize(type) > 0 && stride >= 0)
+                      ? ArrayState{vertex_array_.enabled, size, type, stride, core.GetRegister(kR3)}
+                      : ArrayState{};
 }
 
 void GlHle::GlColorPointer(IArmCore& core) {
-  // void glColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-  color_array_.size = static_cast<int>(core.GetRegister(kR0));
-  color_array_.type = core.GetRegister(kR1);
-  color_array_.stride = static_cast<int>(core.GetRegister(kR2));
-  color_array_.pointer = core.GetRegister(kR3);
+  // GLES exige quatro componentes de cor. Aceitar size=1 fazia o backend ler
+  // quatro floats de um vetor com um, um OOB host controlado pelo guest.
+  const int size = static_cast<int32_t>(core.GetRegister(kR0));
+  const GLenum type = core.GetRegister(kR1);
+  const int stride = static_cast<int32_t>(core.GetRegister(kR2));
+  color_array_ = (size == 4 && GlTypeSize(type) > 0 && stride >= 0)
+                     ? ArrayState{color_array_.enabled, size, type, stride, core.GetRegister(kR3)}
+                     : ArrayState{};
 }
 
 void GlHle::GlTexCoordPointer(IArmCore& core) {
-  // void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer)
-  texcoord_array_.size = static_cast<int>(core.GetRegister(kR0));
-  texcoord_array_.type = core.GetRegister(kR1);
-  texcoord_array_.stride = static_cast<int>(core.GetRegister(kR2));
-  texcoord_array_.pointer = core.GetRegister(kR3);
+  const int size = static_cast<int32_t>(core.GetRegister(kR0));
+  const GLenum type = core.GetRegister(kR1);
+  const int stride = static_cast<int32_t>(core.GetRegister(kR2));
+  texcoord_array_ = (size >= 2 && size <= 4 && GlTypeSize(type) > 0 && stride >= 0)
+                        ? ArrayState{texcoord_array_.enabled, size, type, stride,
+                                     core.GetRegister(kR3)}
+                        : ArrayState{};
 }
 
 void GlHle::GlNormalPointer(IArmCore& core) {
-  // void glNormalPointer(GLenum type, GLsizei stride, const GLvoid *pointer)
-  // -- no size argument, a normal is always 3 components.
-  normal_array_.size = 3;
-  normal_array_.type = core.GetRegister(kR0);
-  normal_array_.stride = static_cast<int>(core.GetRegister(kR1));
-  normal_array_.pointer = core.GetRegister(kR2);
+  const GLenum type = core.GetRegister(kR0);
+  const int stride = static_cast<int32_t>(core.GetRegister(kR1));
+  normal_array_ = (GlTypeSize(type) > 0 && stride >= 0)
+                      ? ArrayState{normal_array_.enabled, 3, type, stride, core.GetRegister(kR2)}
+                      : ArrayState{};
 }
 
 void GlHle::GlEnableClientState(IArmCore& core) {
@@ -621,45 +680,44 @@ void GlHle::GlDisableClientState(IArmCore& core) {
 }
 
 GlVertexArrays GlHle::ExtractArrays(Memory& memory,
-                                     const std::vector<uint32_t>& indices) const {
+                                      const std::vector<uint32_t>& indices) const {
   GlVertexArrays out;
   out.vertex_count = static_cast<int>(indices.size());
 
-  auto extract = [&](const ArrayState& array, std::vector<float>& dest, bool normalize_ubyte) {
-    int component_bytes = GlTypeSize(array.type);
-    int stride = array.stride != 0 ? array.stride : array.size * component_bytes;
-    dest.reserve(dest.size() + indices.size() * static_cast<size_t>(array.size));
+  auto extract = [&](const ArrayState& array, std::vector<float>& dest, bool normalize_ubyte,
+                     int min_components, int max_components) -> bool {
+    const int component_bytes = GlTypeSize(array.type);
+    if (!array.enabled || array.pointer == 0 || array.size < min_components ||
+        array.size > max_components || component_bytes <= 0 || array.stride < 0) return false;
+    const uint64_t packed = static_cast<uint64_t>(array.size) * component_bytes;
+    const uint64_t stride = array.stride != 0 ? static_cast<uint32_t>(array.stride) : packed;
+    if (stride < packed) return false;
+    const uint64_t values = static_cast<uint64_t>(indices.size()) * array.size;
+    if (values > static_cast<uint64_t>(kMaxDrawVertices) * 4u) return false;
+    dest.reserve(static_cast<size_t>(values));
     for (uint32_t index : indices) {
-      uint32_t base = array.pointer + index * static_cast<uint32_t>(stride);
+      const uint64_t base64 = static_cast<uint64_t>(array.pointer) +
+                              static_cast<uint64_t>(index) * stride;
+      if (base64 + packed > 0x100000000ull) {
+        dest.clear();
+        return false;
+      }
       for (int c = 0; c < array.size; ++c) {
-        float value = ReadGlComponent(memory, base + static_cast<uint32_t>(c * component_bytes),
-                                       array.type);
-        if (normalize_ubyte && array.type == kGlUnsignedByte) {
-          value /= 255.0f;
-        }
+        float value = ReadGlComponent(memory, static_cast<uint32_t>(base64 + c * component_bytes),
+                                      array.type);
+        if (normalize_ubyte && array.type == kGlUnsignedByte) value /= 255.0f;
         dest.push_back(value);
       }
     }
+    return true;
   };
 
-  if (vertex_array_.enabled) {
-    out.has_position = true;
-    out.position_size = vertex_array_.size;
-    extract(vertex_array_, out.positions, false);
-  }
-  if (color_array_.enabled) {
-    out.has_color = true;
-    extract(color_array_, out.colors, true);
-  }
-  if (texcoord_array_.enabled) {
-    out.has_texcoord = true;
-    out.texcoord_size = texcoord_array_.size;
-    extract(texcoord_array_, out.texcoords, false);
-  }
-  if (normal_array_.enabled) {
-    out.has_normal = true;
-    extract(normal_array_, out.normals, false);
-  }
+  out.has_position = extract(vertex_array_, out.positions, false, 2, 4);
+  if (out.has_position) out.position_size = vertex_array_.size;
+  out.has_color = extract(color_array_, out.colors, true, 4, 4);
+  out.has_texcoord = extract(texcoord_array_, out.texcoords, false, 2, 4);
+  if (out.has_texcoord) out.texcoord_size = texcoord_array_.size;
+  out.has_normal = extract(normal_array_, out.normals, false, 3, 3);
   return out;
 }
 
@@ -669,8 +727,10 @@ void GlHle::GlDrawArrays(IArmCore& core) {
   auto first = static_cast<int32_t>(core.GetRegister(kR1));
   auto count = static_cast<int32_t>(core.GetRegister(kR2));
 
+  if (first < 0 || count <= 0 || count > kMaxDrawVertices ||
+      static_cast<int64_t>(first) + count > 0x100000000ll) return;
   std::vector<uint32_t> indices;
-  indices.reserve(static_cast<size_t>(count > 0 ? count : 0));
+  indices.reserve(static_cast<size_t>(count));
   for (int32_t i = 0; i < count; ++i) {
     indices.push_back(static_cast<uint32_t>(first + i));
   }
@@ -686,8 +746,13 @@ void GlHle::GlDrawElements(IArmCore& core) {
   GLenum type = core.GetRegister(kR2);
   uint32_t indices_ptr = core.GetRegister(kR3);
 
+  if (count <= 0 || count > kMaxDrawVertices || indices_ptr == 0 ||
+      (type != kGlUnsignedByte && type != kGlUnsignedShort)) return;
+  const uint64_t index_bytes = static_cast<uint64_t>(count) *
+                               (type == kGlUnsignedShort ? 2u : 1u);
+  if (static_cast<uint64_t>(indices_ptr) + index_bytes > 0x100000000ull) return;
   std::vector<uint32_t> indices;
-  indices.reserve(static_cast<size_t>(count > 0 ? count : 0));
+  indices.reserve(static_cast<size_t>(count));
   Memory& memory = core.GetMemory();
   for (int32_t i = 0; i < count; ++i) {
     uint32_t index = (type == kGlUnsignedShort)
@@ -707,7 +772,8 @@ void GlHle::GlGenTextures(IArmCore& core) {
   // void glGenTextures(GLsizei n, GLuint *textures)
   auto n = static_cast<int32_t>(core.GetRegister(kR0));
   uint32_t textures_ptr = core.GetRegister(kR1);
-  if (n <= 0) return;
+  if (n <= 0 || n > kMaxTextureObjectsPerCall || textures_ptr == 0 ||
+      static_cast<uint64_t>(textures_ptr) + static_cast<uint64_t>(n) * 4u > 0x100000000ull) return;
 
   std::vector<GLuint> textures(static_cast<size_t>(n), 0);
   backend_.GenTextures(n, textures.data());
@@ -789,7 +855,8 @@ void GlHle::GlDeleteTextures(IArmCore& core) {
   // void glDeleteTextures(GLsizei n, const GLuint *textures)
   auto n = static_cast<int32_t>(core.GetRegister(kR0));
   uint32_t textures_ptr = core.GetRegister(kR1);
-  if (n <= 0) return;
+  if (n <= 0 || n > kMaxTextureObjectsPerCall || textures_ptr == 0 ||
+      static_cast<uint64_t>(textures_ptr) + static_cast<uint64_t>(n) * 4u > 0x100000000ull) return;
 
   std::vector<GLuint> textures(static_cast<size_t>(n));
   Memory& memory = core.GetMemory();
@@ -834,9 +901,13 @@ void GlHle::GlTexImage2D(IArmCore& core) {
 
   std::vector<uint8_t> pixel_bytes;
   if (pixels_ptr != 0 && image.width > 0 && image.height > 0) {
-    size_t total = static_cast<size_t>(image.width) * static_cast<size_t>(image.height) *
-                    static_cast<size_t>(GlPixelSize(image.format, image.type));
-    pixel_bytes.resize(total);
+    const int pixel_size = GlPixelSize(image.format, image.type);
+    const uint64_t total64 = static_cast<uint64_t>(image.width) * image.height *
+                             static_cast<uint32_t>(std::max(pixel_size, 0));
+    if (pixel_size <= 0 || total64 > kMaxTextureUploadBytes ||
+        static_cast<uint64_t>(pixels_ptr) + total64 > 0x100000000ull) return;
+    const size_t total = static_cast<size_t>(total64);
+    try { pixel_bytes.resize(total); } catch (const std::exception&) { return; }
     Memory& memory = core.GetMemory();
     for (size_t i = 0; i < total; ++i) {
       pixel_bytes[i] = memory.Read8(pixels_ptr + static_cast<uint32_t>(i));
@@ -864,9 +935,13 @@ void GlHle::GlTexSubImage2D(IArmCore& core) {
 
   std::vector<uint8_t> pixel_bytes;
   if (pixels_ptr != 0 && image.width > 0 && image.height > 0) {
-    size_t total = static_cast<size_t>(image.width) * static_cast<size_t>(image.height) *
-                    static_cast<size_t>(GlPixelSize(image.format, image.type));
-    pixel_bytes.resize(total);
+    const int pixel_size = GlPixelSize(image.format, image.type);
+    const uint64_t total64 = static_cast<uint64_t>(image.width) * image.height *
+                             static_cast<uint32_t>(std::max(pixel_size, 0));
+    if (pixel_size <= 0 || total64 > kMaxTextureUploadBytes ||
+        static_cast<uint64_t>(pixels_ptr) + total64 > 0x100000000ull) return;
+    const size_t total = static_cast<size_t>(total64);
+    try { pixel_bytes.resize(total); } catch (const std::exception&) { return; }
     Memory& memory = core.GetMemory();
     for (size_t i = 0; i < total; ++i) {
       pixel_bytes[i] = memory.Read8(pixels_ptr + static_cast<uint32_t>(i));
@@ -891,6 +966,8 @@ void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   // border (stack arg 1) unused, same as GlTexImage2D.
   uint32_t image_size = HleRuntime::ReadStackArg(core, 2);
   uint32_t data_ptr = HleRuntime::ReadStackArg(core, 3);
+  if (width <= 0 || height <= 0 || image_size > kMaxTextureUploadBytes || data_ptr == 0 ||
+      static_cast<uint64_t>(data_ptr) + image_size > 0x100000000ull) return;
   Memory& memory = core.GetMemory();
   // Real disassembly (TASKS.md/PHASE8_LOG.md Phase 8) found Double
   // Dragon's own `data.ggz` contains *only* real OBM1 images (this
@@ -909,8 +986,10 @@ void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   // `imageSize` matching the real palette+pixel-data size exactly) in
   // every real call observed this round.
   if (data_ptr >= 8 && memory.Read8(data_ptr - 8) == 'O' && memory.Read8(data_ptr - 7) == 'I') {
+    if (image_size > 0xffffffffu - 8u) return;
     uint32_t total_size = 8 + image_size;
-    std::vector<uint8_t> obm1_bytes(total_size);
+    std::vector<uint8_t> obm1_bytes;
+    try { obm1_bytes.resize(total_size); } catch (const std::exception&) { return; }
     for (uint32_t i = 0; i < total_size; ++i) {
       obm1_bytes[i] = memory.Read8(data_ptr - 8 + i);
     }
@@ -1112,7 +1191,7 @@ uint32_t GlHle::BuildEgl(Memory& memory, HleRuntime& hle, uint32_t vtable_addres
       [this](IArmCore& c) { EglGetConfigAttrib(c); },        // 11 eglGetConfigAttrib
       [this](IArmCore& c) { EglCreateWindowSurface(c); },    // 12 eglCreateWindowSurface
       Stub,                                                // 13 eglCreatePixmapSurface
-      Stub,                                                // 14 eglCreatePbufferSurface
+      [this](IArmCore& c) { EglCreatePbufferSurface(c); },  // 14 eglCreatePbufferSurface
       [this](IArmCore& c) { EglDestroySurface(c); },         // 15 eglDestroySurface
       [this](IArmCore& c) { EglQuerySurface(c); },           // 16 eglQuerySurface
       [this](IArmCore& c) { EglCreateContext(c); },          // 17 eglCreateContext
@@ -1136,7 +1215,10 @@ uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtab
   // SurfaceScale:
   // int SetSurfaceScale(pMe, dpy, surf, AEEEGLSurfaceScaleRect *src, *dst, AEEEGLBoolean *ret)
   auto set_surface_scale = [](IArmCore& c) {
-    uint32_t ret_ptr = c.GetRegister(kR4); // slot 4 / 5th arg
+    // Assinatura tem seis argumentos incluindo pMe: dst=stack0, ret=stack1.
+    // R4 e callee-saved e nunca e um argumento AAPCS; escrever nele corrompia
+    // memoria guest arbitraria.
+    uint32_t ret_ptr = HleRuntime::ReadStackArg(c, 1);
     if (ret_ptr != 0) {
       c.GetMemory().Write32(ret_ptr, kEglTrue);
     }
@@ -1156,20 +1238,16 @@ uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtab
         c.GetMemory().Write32(caps + i * 4, fields[i]);
       }
     }
-    uint32_t ret_ptr = c.GetRegister(kR4);
-    if (ret_ptr != 0) {
-      c.GetMemory().Write32(ret_ptr, kEglTrue);
-    }
+    // GetSurfaceScaleCaps(pMe,dpy,surf,caps,ret): quinto argumento.
+    uint32_t ret_ptr = HleRuntime::ReadStackArg(c, 0);
+    if (ret_ptr != 0) c.GetMemory().Write32(ret_ptr, kEglTrue);
     c.SetRegister(kR0, 0);
   };
 
-  auto stub_ret_true = [](IArmCore& c) {
-    // Write true to ret ptr if provided (typically R4)
-    uint32_t ret_ptr = c.GetRegister(kR4);
-    if (ret_ptr != 0) {
-      c.GetMemory().Write32(ret_ptr, kEglTrue);
-    }
-    c.SetRegister(kR0, 0);
+  auto unsupported = [](IArmCore& c) {
+    // Assinaturas variam por slot. Sem contrato confirmado, nao toque em
+    // possiveis out-params e nao anuncie sucesso falso.
+    c.SetRegister(kR0, 20);  // EUNSUPPORTED, AEEError.h
   };
 
   // EGL_SURFACE_MANIP has ~26 slots
@@ -1177,27 +1255,27 @@ uint32_t GlHle::BuildSurfaceManip(Memory& memory, HleRuntime& hle, uint32_t vtab
       Stub,                   // 0 AddRef
       Stub,                   // 1 Release
       Stub,                   // 2 QueryInterface
-      stub_ret_true,          // 3 SurfaceScaleEnable
+      unsupported,          // 3 SurfaceScaleEnable
       set_surface_scale,      // 4 SetSurfaceScale
-      stub_ret_true,          // 5 GetSurfaceScale
+      unsupported,          // 5 GetSurfaceScale
       get_surface_scale_caps, // 6 GetSurfaceScaleCaps
-      stub_ret_true,          // 7 SurfaceRotateEnable
-      stub_ret_true,          // 8 SetSurfaceRotate
-      stub_ret_true,          // 9 GetSurfaceRotate
-      stub_ret_true,          // 10 GetSurfaceRotateCaps
-      stub_ret_true,          // 11 SurfaceTransparencyEnable
-      stub_ret_true,          // 12 SetSurfaceTransparency
-      stub_ret_true,          // 13 GetSurfaceTransparency
-      stub_ret_true,          // 14 SetSurfaceTransparencyMap
-      stub_ret_true,          // 15 GetSurfaceTransparencyMap
-      stub_ret_true,          // 16 GetSurfaceTransparencyCaps
-      stub_ret_true,          // 17 SurfaceColorKeyEnable
-      stub_ret_true,          // 18 SetSurfaceColorKey
-      stub_ret_true,          // 19 GetSurfaceColorKey
-      stub_ret_true,          // 20 CreateCompositeSurface
-      stub_ret_true,          // 21 SurfaceOverlayEnable
-      stub_ret_true,          // 22 SurfaceOverlayLayerEnable
-      stub_ret_true,          // 23 SurfaceOverlayBind
+      unsupported,          // 7 SurfaceRotateEnable
+      unsupported,          // 8 SetSurfaceRotate
+      unsupported,          // 9 GetSurfaceRotate
+      unsupported,          // 10 GetSurfaceRotateCaps
+      unsupported,          // 11 SurfaceTransparencyEnable
+      unsupported,          // 12 SetSurfaceTransparency
+      unsupported,          // 13 GetSurfaceTransparency
+      unsupported,          // 14 SetSurfaceTransparencyMap
+      unsupported,          // 15 GetSurfaceTransparencyMap
+      unsupported,          // 16 GetSurfaceTransparencyCaps
+      unsupported,          // 17 SurfaceColorKeyEnable
+      unsupported,          // 18 SetSurfaceColorKey
+      unsupported,          // 19 GetSurfaceColorKey
+      unsupported,          // 20 CreateCompositeSurface
+      unsupported,          // 21 SurfaceOverlayEnable
+      unsupported,          // 22 SurfaceOverlayLayerEnable
+      unsupported,          // 23 SurfaceOverlayBind
   };
   surface_manip_obj_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return surface_manip_obj_;

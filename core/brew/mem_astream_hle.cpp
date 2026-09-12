@@ -65,6 +65,10 @@ void MemAStreamHle::Release(IArmCore& core) {
     uint32_t rem = it->second.ref_count;
     if (rem == 0) {
       streams_.erase(it);
+      pending_readable_.erase(
+          std::remove_if(pending_readable_.begin(), pending_readable_.end(),
+                         [this_obj](const PendingReadable& p) { return p.stream == this_obj; }),
+          pending_readable_.end());
     }
     core.SetRegister(kR0, rem);
   } else {
@@ -79,7 +83,7 @@ void MemAStreamHle::Readable(IArmCore& core) {
   uint32_t pfn = core.GetRegister(kR1);
   uint32_t puser = core.GetRegister(kR2);
   if (pfn != 0) {
-    pending_readable_.push_back({pfn, puser});
+    pending_readable_.push_back({core.GetRegister(kR0), pfn, puser});
   }
   core.SetRegister(kR0, 0);
 }
@@ -89,7 +93,8 @@ void MemAStreamHle::Tick() {
   std::vector<PendingReadable> deferred;
   deferred.swap(pending_readable_);
   for (const PendingReadable& notify : deferred) {
-    hle_.CallArmFunction(notify.fn, notify.user);
+    if (streams_.find(notify.stream) != streams_.end())
+      hle_.CallArmFunction(notify.fn, notify.user);
   }
 }
 
@@ -118,7 +123,16 @@ void MemAStreamHle::Read(IArmCore& core) {
 }
 
 void MemAStreamHle::Cancel(IArmCore& core) {
-  core.SetRegister(kR0, 0);  // SUCCESS
+  const uint32_t stream = core.GetRegister(kR0);
+  const uint32_t fn = core.GetRegister(kR1);
+  const uint32_t user = core.GetRegister(kR2);
+  pending_readable_.erase(
+      std::remove_if(pending_readable_.begin(), pending_readable_.end(),
+                     [=](const PendingReadable& p) {
+                       return p.stream == stream && (fn == 0 || (p.fn == fn && p.user == user));
+                     }),
+      pending_readable_.end());
+  core.SetRegister(kR0, 0);
 }
 
 void MemAStreamHle::Set(IArmCore& core) {

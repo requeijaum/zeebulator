@@ -51,6 +51,7 @@ add_executable(zeebulator_tests
   mem_astream_hle_test.cpp
   sql_hle_test.cpp
   unzip_stream_hle_test.cpp
+  thread_hle_test.cpp
   title_quirks_test.cpp
   bitmap_hle_test.cpp
   call_stack_tracer_test.cpp

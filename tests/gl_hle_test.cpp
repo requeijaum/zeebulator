@@ -334,8 +334,9 @@ TEST(GlHle, EglMakeCurrentOnlyCreatesHostContextOnce) {
   Fixture f;
   uint32_t display = f.hle.CallArmFunction(f.EglSlot(4), 0);
   uint32_t context = f.hle.CallArmFunction(f.EglSlot(17), display, 0, 0, 0);
-  f.hle.CallArmFunction(f.EglSlot(19), display, 0, 0, context);
-  f.hle.CallArmFunction(f.EglSlot(19), display, 0, 0, context);
+  uint32_t surface = f.hle.CallArmFunction(f.EglSlot(12), display, 0, 0, 0);
+  f.hle.CallArmFunction(f.EglSlot(19), display, surface, surface, context);
+  f.hle.CallArmFunction(f.EglSlot(19), display, surface, surface, context);
   EXPECT_EQ(f.backend.create_context_count, 1)
       << "repeated eglMakeCurrent with the same context shouldn't recreate the host context";
 }
@@ -352,7 +353,7 @@ TEST(GlHle, EglQueryStringNeverReturnsNull) {
   }
 }
 
-TEST(GlHle, EglQueryStringExtensionsReportsQualcommSurfaceScale) {
+TEST(GlHle, EglQueryStringAdvertisesOnlyImplementedQualcommColorBuffer) {
   Fixture f;
   uint32_t addr = f.hle.CallArmFunction(f.EglSlot(7), 0, /*EGL_EXTENSIONS=*/0x3055);
   std::string s;
@@ -361,7 +362,8 @@ TEST(GlHle, EglQueryStringExtensionsReportsQualcommSurfaceScale) {
     if (c == '\0') break;
     s += c;
   }
-  EXPECT_NE(s.find("EGL_QUALCOMM_surface_scale"), std::string::npos);
+  EXPECT_NE(s.find("EGL_QUALCOMM_get_color_buffer"), std::string::npos);
+  EXPECT_EQ(s.find("EGL_QUALCOMM_surface_scale"), std::string::npos);
 }
 
 TEST(GlHle, DrawArraysGathersByteVerticesAndNormalizesUnsignedByteColors) {
@@ -708,4 +710,55 @@ TEST(GlHle, CompressedTexImage2DWithNoObm1MagicAndAnUnrecognizedFormatUploadsNot
   f.hle.CallArmFunction(f.GlSlot(15), 0x0DE1, 0, /*internalformat=*/0x1234, 4);
 
   EXPECT_EQ(f.backend.teximage_count, 0);
+}
+
+TEST(GlHle, InvalidColorComponentCountCannotReachBackendAsShortVector) {
+  Fixture f;
+  const uint32_t vertex = kScratch + 0x1200;
+  const uint32_t color = kScratch + 0x1300;
+  f.hle.CallArmFunction(f.GlSlot(78), 2, zeebulator::kGlByte, 0, vertex);
+  f.hle.CallArmFunction(f.GlSlot(14), 1, zeebulator::kGlUnsignedByte, 0, color);
+  f.hle.CallArmFunction(f.GlSlot(29), zeebulator::kGlVertexArray);
+  f.hle.CallArmFunction(f.GlSlot(29), zeebulator::kGlColorArray);
+  f.hle.CallArmFunction(f.GlSlot(26), 0x0004, 0, 1);
+  ASSERT_EQ(f.backend.draw_count, 1);
+  EXPECT_TRUE(f.backend.last_arrays.has_position);
+  EXPECT_FALSE(f.backend.last_arrays.has_color);
+  EXPECT_TRUE(f.backend.last_arrays.colors.empty());
+}
+
+TEST(GlHle, ExcessiveDrawCountIsRejectedBeforeAllocating) {
+  Fixture f;
+  f.hle.CallArmFunction(f.GlSlot(26), 0x0004, 0, 0x7fffffffu);
+  EXPECT_EQ(f.backend.draw_count, 0);
+}
+
+TEST(GlHle, PbufferUsesRequestedSizeAndExposesRgb565ColorBuffer) {
+  Fixture f;
+  constexpr uint32_t kEglWidth = 0x3057, kEglHeight = 0x3056, kEglNone = 0x3038;
+  const uint32_t attrs = kScratch + 0x1600;
+  f.cpu.GetMemory().Write32(attrs + 0, kEglWidth);
+  f.cpu.GetMemory().Write32(attrs + 4, 640);
+  f.cpu.GetMemory().Write32(attrs + 8, kEglHeight);
+  f.cpu.GetMemory().Write32(attrs + 12, 330);
+  f.cpu.GetMemory().Write32(attrs + 16, kEglNone);
+  const uint32_t display = f.hle.CallArmFunction(f.EglSlot(4), 0);
+  const uint32_t surface = f.hle.CallArmFunction(f.EglSlot(14), display, 1, attrs);
+  ASSERT_NE(surface, 0u);
+  const uint32_t out = kScratch + 0x1700;
+  EXPECT_EQ(f.hle.CallArmFunction(f.EglSlot(16), display, surface, kEglWidth, out), 1u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(out), 640u);
+  EXPECT_EQ(f.hle.CallArmFunction(f.EglSlot(16), display, surface, kEglHeight, out), 1u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(out), 330u);
+
+  const uint32_t context = f.hle.CallArmFunction(f.EglSlot(17), display, 1, 0, 0);
+  ASSERT_EQ(f.hle.CallArmFunction(f.EglSlot(19), display, surface, surface, context), 1u);
+  const char name[] = "eglGetColorBufferQUALCOMM";
+  const uint32_t name_addr = kScratch + 0x1800;
+  for (size_t i = 0; i < sizeof(name); ++i) f.cpu.GetMemory().Write8(name_addr + i, name[i]);
+  const uint32_t get_buffer = f.hle.CallArmFunction(f.EglSlot(8), name_addr);
+  ASSERT_NE(get_buffer, 0u);
+  const uint32_t pixels = f.hle.CallArmFunction(get_buffer);
+  EXPECT_EQ(pixels, 0x8a000000u);
+  EXPECT_EQ(f.cpu.GetMemory().Read16(pixels), 0u);
 }
