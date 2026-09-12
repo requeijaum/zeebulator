@@ -63,12 +63,11 @@ sempre uniforme dentro da mesma família:
 
 ## Tabela de Situação Diagnóstica Detalhada
 
-> **Validade das linhas.** Apenas a linha da **Z-Wheel (`274755`)** foi
-> remedida no ciclo atual. As demais linhas vêm de ciclos anteriores e **não
-> foram reverificadas** — algumas podem ter melhorado de carona com as
-> correções de GL, recursos de imagem e colisão de vtable deste ciclo, e
-> outras podem ter regredido. Enquanto não houver nova medição, elas são
-> registro histórico, não estado presente.
+> **Validade das linhas.** Esta tabela é qualitativa e vem de ciclos
+> anteriores. A medição numérica atual dos 62 títulos está na seção
+> "Censo de imagem do corpus — 62 títulos, medição de 2026-09-12", com captura dupla
+> (janela e FBO) e veredito explícito por título. Onde as duas divergirem, vale
+> o censo — ele é reprodutível por `testkit/smoke_now.py`.
 
 | ID / Pasta | Título | Família / Engine | Status Medido no Zeebulator | Próxima Ação Técnica |
 |---|---|---|---|---|
@@ -85,6 +84,147 @@ sempre uniforme dentro da mesma família:
 | `274802` | *Quake* | id Tech / Tectoy | Loop de eventos ativo, splash carregado | Investigar inicialização do contexto de software rasterizer |
 | `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Renderiza**: telas 2D de abertura (verde 5.130 / amarelo 1.146 / azul 5.203 px nos 8 s iniciais) e palco 3D (149.824 px pretos a partir dos 9 s). O bloqueio antigo do z-pad (`EUNABLETOLOAD` 6) **não ocorre mais**; restam 3 erros do guest: IDOWNLOAD (2 linhas encadeadas) e `AEECLSID_LCT_SIMCARDCTL`. Defeito conhecido: cores do palco com **R e B trocados** no decode ATITC. | Ver "Z-Wheel: estado atual medido" abaixo |
 | `277495` | *Opera Mini (reksio)*| Opera Software | Loop de eventos ativo (Requer stack de sockets/rede) | Fornecer bridge HLE para sockets TCP/IP |
+
+---
+
+## Censo de imagem do corpus — 62 títulos, medição de 2026-09-12
+
+**Método.** Xvfb `:90` isolado, janela X real, 22 s por título, sem entrada do
+jogador. Cada título é capturado por **dois** caminhos independentes: a janela
+raiz (`import -window root`) e o FBO do host (`ZEEB_SHOT_EXIT`, que passa por
+`Sdl2UnifiedBackend::CaptureScreenshot`). Harness: `testkit/smoke_now.py`;
+resultados em `testkit/census_now.jsonl`.
+
+**Por que dois caminhos.** Medindo só a janela, três títulos apareciam como tela
+vazia enquanto tinham conteúdo real no FBO — o `abd` mede **2 cores na janela e
+1.957 no FBO**. Um veredito de "não renderiza" tirado só da janela mandaria
+alguém caçar bug de renderização onde ela funciona. A divergência **não é
+universal**: em Tennis, Peteca, Zeeboids e Volley os dois métodos batem
+exatamente. Por isso o veredito só é afirmativo quando os dois concordam.
+
+**O que esta tabela NÃO mede.** Jogabilidade. Nenhum destes títulos recebeu
+entrada do jogador nesta bateria. Contagem de cores mede imagem; um título com
+77 mil cores pode não responder a comando nenhum.
+
+| veredito | títulos |
+|---|---|
+| renderiza e apresenta | 17 |
+| renderiza, não apresenta | 3 |
+| vazio (os dois concordam) | 29 |
+| morto | 11 |
+| indefinido / sem captura | 2 |
+
+Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
+27 iguais**. Mortos caíram de 30 para 11.
+
+### Duas regressões, com causas diferentes
+
+- **`abd`**: 7.910 → 1.957 no FBO e 2 na janela. Renderiza, mas o conteúdo não
+  chega à janela, e também perdeu conteúdo no próprio FBO. Bissectado com
+  `ZEEB_NO_RES_IMAGE=1`: o resultado não muda, então **não é** o pipeline de
+  imagem deste ciclo.
+- **`torkandkral`**: 452 → 2 nos dois métodos. Não renderiza. Regressão mais
+  profunda, ainda sem causa isolada.
+
+### A causa dominante dos mortos é nossa, não dos jogos
+
+**Os 11 mortos morrem pelo mesmo motivo: estouro do orçamento de 64 M passos.**
+Isso é um limite do emulador, não defeito do título. O `recklessracing` prova:
+estoura o orçamento e ainda assim tem **77.021 cores no FBO** — o maior conteúdo
+do corpus inteiro. Está renderizando e sendo abortado.
+
+### Defeitos de dados corrigidos no `corpus62.json`
+
+Quatro títulos eram medidos com ClsId errado, o que os registrava como mortos.
+Cada ClsId novo foi validado por sonda, exigindo `CreateInstance OK` e laço de
+eventos ativo:
+
+| título | antes | depois | efeito |
+|---|---|---|---|
+| `tectoy` (Z-Wheel) | `0x1030c00` | `0x1070798` | morto → 275 cores |
+| `nfs` | `0x1020000` | `0x108c0bc` | morto → vivo |
+| `zeebopeteca` | `0x1060000` | `0x108ff18` | morto → 729 cores |
+| `footparty` | `0x1060000` | `0x108ff19` | morto → vivo |
+
+`zenonia` continua com ClsId desconhecido: os candidatos testados falharam, e
+registrar "desconhecido" é mais honesto que inventar um valor.
+
+### Caso indefinido, deliberadamente não classificado
+
+`chessbots` mede 1.015 cores na janela e 1 no FBO — direção inversa da
+divergência esperada. A hipótese mais provável é que o `ZEEB_SHOT_EXIT` capture
+depois do contexto GL ser destruído, ou seja, defeito da instrumentação e não do
+emulador. Fica sem veredito até ser medido.
+
+### Tabela por título
+
+Ordenada por veredito e depois por conteúdo. "FBO" e "janela" são contagens de
+cores distintas; "antes" é o censo anterior.
+
+| título | veredito | FBO | janela | antes | delta | observação |
+|---|---|---|---|---|---|---|
+| `zeeboids` | renderiza e apresenta | 14763 | 14763 | 2 | +14761 |  |
+| `ridgeracer` | renderiza e apresenta | 9476 | 9477 | 1 | +9476 |  |
+| `AirRacez` | renderiza e apresenta | 5505 | 5505 | 2 | +5503 |  |
+| `Bajaz` | renderiza e apresenta | 5505 | 5505 | 2 | +5503 |  |
+| `JetBoardz` | renderiza e apresenta | 5505 | 5505 | 2 | +5503 |  |
+| `Rolimaz` | renderiza e apresenta | 5505 | 5505 | 2 | +5503 |  |
+| `alpineracerex` | renderiza e apresenta | 2894 | 2920 | 1 | +2919 |  |
+| `ironsight` | renderiza e apresenta | 766 | 767 | 728 | +39 |  |
+| `zeebopeteca` | renderiza e apresenta | 729 | 729 | 1 | +728 |  |
+| `allstarcards` | renderiza e apresenta | 634 | 634 | 2 | +632 |  |
+| `zeebotennis` | renderiza e apresenta | 611 | 611 | 1 | +610 |  |
+| `tectoy` | renderiza e apresenta | 275 | 275 | 1 | +274 |  |
+| `ddragonz` | renderiza e apresenta | 262 | 262 | 262 | +0 |  |
+| `game` | renderiza e apresenta | 79 | 79 | 1 | +78 |  |
+| `quake` | renderiza e apresenta | 4 | 4 | 1 | +3 |  |
+| `bio4_brew` | renderiza e apresenta | 3 | 3 | 1 | +2 |  |
+| `pacmania` | renderiza e apresenta | 3 | 3 | 3 | +0 |  |
+| `abd` | renderiza, não apresenta | 1957 | 2 | 7910 | -5953 |  |
+| `gof` | renderiza, não apresenta | 4 | 1 | 1 | +3 |  |
+| `nfs` | renderiza, não apresenta | 4 | 2 | 1 | +3 |  |
+| `chessbots` | indefinido (captura) | 1 | 1015 | 1 | +1014 |  |
+| `activitycenter` | sem captura de FBO | — | 2 | 2 | +0 |  |
+| `alice` | vazio | 2 | 2 | 2 | +0 |  |
+| `baddudes` | vazio | 2 | 2 | 2 | +0 |  |
+| `bjt` | vazio | 2 | 2 | 1 | +1 |  |
+| `Boiaz` | vazio | 2 | 2 | 2 | +0 |  |
+| `brainchallenge` | vazio | 2 | 2 | 1 | +1 |  |
+| `cninja` | vazio | 2 | 2 | 2 | +0 |  |
+| `darkseal` | vazio | 2 | 2 | 2 | +0 |  |
+| `footparty` | vazio | 2 | 2 | 1 | +1 |  |
+| `game` | vazio | 2 | 2 | 1 | +1 |  |
+| `hbarrel` | vazio | 2 | 2 | 2 | +0 |  |
+| `imicro3d` | vazio | 2 | 2 | 1 | +1 |  |
+| `karnovr` | vazio | 2 | 2 | 2 | +0 |  |
+| `magdrop3` | vazio | 2 | 2 | 2 | +0 |  |
+| `peggle` | vazio | 2 | 2 | 1 | +1 |  |
+| `prey3d` | vazio | 2 | 2 | 1 | +1 |  |
+| `quake2brew` | vazio | 2 | 2 | 1 | +1 |  |
+| `reksio` | vazio | 2 | 2 | 1 | +1 |  |
+| `rmp` | vazio | 2 | 1 | 1 | +1 |  |
+| `rocketweb` | vazio | 2 | 2 | 1 | +1 |  |
+| `rt2` | vazio | 2 | 2 | 1 | +1 |  |
+| `spinmast` | vazio | 2 | 2 | 2 | +0 |  |
+| `strhoop` | vazio | 2 | 2 | 2 | +0 |  |
+| `supbtime` | vazio | 2 | 2 | 2 | +0 |  |
+| `tekken2` | vazio | 2 | 2 | 1 | +1 |  |
+| `torkandkral` | vazio | 2 | 2 | 452 | -450 |  |
+| `wizdfire` | vazio | 2 | 2 | 2 | +0 |  |
+| `zeebo_app` | vazio | 2 | 2 | 1 | +1 |  |
+| `zeebovolley` | vazio | 2 | 2 | 2 | +0 |  |
+| `zumar` | vazio | 2 | 2 | 1 | +1 |  |
+| `recklessracing` | morto | 77021 | 1 | 1 | +77020 | estouro de 64M passos |
+| `a3d` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `asq` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `cnk2` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `dodgeball` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `fifa09` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `funsoccer` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `heavyweaponbrew` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `pbc` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `toyraidzeebo` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
+| `zenonia` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 
 ---
 
