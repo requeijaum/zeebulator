@@ -106,8 +106,8 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - Tratar a discrepância entre `AECHAR = uint16_t` do SDK oficial e strings narrow de 8-bit como quirk específica de títulos comprovados (ex: *Double Dragon*), em vez de regra global.
 - [ ] **Extensões Fixed-Function do OpenGL ES 1.1**:
   - Implementação das extensões restantes de combinadores de textura e estados de renderização exigidos por títulos 3D.
-- [ ] **Contrato `SetupNativeImage` no Runtime**:
-  - Preencher `AEEImageInfo` em R2 e out-param `*pbRealloc` em R3 conforme `AEEStdLib.h:90-91` (evitar que chamadores façam free indevido ou leiam lixo).
+- [x] **Contrato `SetupNativeImage` no Runtime**:
+  - Preencher `AEEImageInfo` em R2 e out-param `*pbRealloc` em R3 conforme `AEEStdLib.h:90-91` (evita free indevido de ponteiro interno a pBuffer).
 - [ ] **Refcounting do Device Bitmap**:
   - `IDisplay::GetDeviceBitmap` deve respeitar `AddRef`/`Release` legítimos de acordo com `AEEIBase.h`.
 
@@ -119,10 +119,10 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - `mirror_server` / `/api/mem`: Leitura atômica ou via snapshot sob sincronização com a thread principal de emulação (evitando concorrência com `unordered_map` e escritas de CPU/JIT).
 - [ ] **Shutdown Não-Bloqueante dos Servidores de Controle**:
   - Chamar `shutdown()` nos sockets clientes aceitos para destravar loops em `recv()` síncrono durante `Stop()`.
-- [ ] **Quotas Restantes de Desserialização e Parsers**:
-  - Aplicar checagens de integridade e tetos de alocação nos desserializadores do `Mixer` e `GlTextureLog`.
-  - Proteger o sintetizador MIDI contra arquivos hostis (cálculo de buffer com ticks/divisões extremas gerando alocações abusivas).
-  - Exigir correspondência exata do número de trilhas declaradas no parser MIDI.
+- [x] **Quotas Restantes de Desserialização e Parsers**:
+  - Tetos de alocação e verificação estrita em `Mixer::Deserialize` (1024 vozes, 64M amostras máx) e `DeserializeGlTextureLog` (64k entradas, 64M texels máx).
+  - Proteção contra overflow/duração extrema (limite de 1 hora / 64M amostras) em `RenderMidiToPcm` e `SoundFontSynth`.
+  - Validação da contagem exata de trilhas declaradas em `ParseMidi`.
 - [ ] **Validação Estrita de VFS e Sandbox**:
   - Bloquear travessia via symlinks dentro de pacotes `.mod` que apontem para arquivos fora da árvore do jogo.
 - [ ] **Polimento de `IFileMgr` e Sistema de Arquivos**:
@@ -131,8 +131,8 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - `IFILEMGR_GetFreeSpace`: Descontar espaço ocupado por arquivos gravados pelo jogador.
   - Implementar de forma real os slots 13 a 20 (`ResolvePath`, `GetFreeSpaceEx`, etc.).
 - [ ] **Integridade do SQL HLE**:
-  - Tratar esgotamento de scratch no `PushScratchString` para não entregar ponteiro nulo em colunas de texto não-nulas.
-  - Prevenir que callbacks de linha em `ISQL_Exec` façam o fechamento (`DbRelease`) imediato da conexão com statements ativos (`SQLITE_BUSY`).
+  - [x] Esgotamento de scratch tratado no `PushScratchString`: aborta com falha limpa em vez de passar ponteiro nulo para colunas TEXT não-nulas.
+  - [ ] Prevenir que callbacks de linha em `ISQL_Exec` façam o fechamento (`DbRelease`) imediato da conexão com statements ativos (`SQLITE_BUSY`).
 - [ ] **Scheduler & Preempção de Timers**:
   - Tratar adequadamente timers preemptados que realizam yield (`tr.yielded`), preservando sua continuação em vez de sobrescrever com a rotina anterior.
 - [ ] **ABI Formal de `IShell_SendEvent`**:

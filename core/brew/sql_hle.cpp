@@ -330,11 +330,26 @@ void SqlHle::Exec(IArmCore& core) {
           values.push_back(0);
         } else {
           const unsigned char* text = sqlite3_column_text(stmt, column);
-          values.push_back(
-              PushScratchString(text != nullptr ? reinterpret_cast<const char*>(text) : ""));
+          uint32_t val_addr = PushScratchString(text != nullptr ? reinterpret_cast<const char*>(text) : "");
+          if (val_addr == 0) {
+            ++stats_.exec_failures;
+            std::printf("[sqlite] Exec sem espaco de rascunho para coluna de texto -- SQL: %s\n", sql.c_str());
+            sqlite3_finalize(stmt);
+            core.SetRegister(kR0, kEFailed);
+            return;
+          }
+          values.push_back(val_addr);
         }
         const char* name = sqlite3_column_name(stmt, column);
-        names.push_back(PushScratchString(name != nullptr ? name : ""));
+        uint32_t name_addr = PushScratchString(name != nullptr ? name : "");
+        if (name_addr == 0) {
+          ++stats_.exec_failures;
+          std::printf("[sqlite] Exec sem espaco de rascunho para nome de coluna -- SQL: %s\n", sql.c_str());
+          sqlite3_finalize(stmt);
+          core.SetRegister(kR0, kEFailed);
+          return;
+        }
+        names.push_back(name_addr);
       }
       const uint32_t values_array = PushScratchWords(values);
       const uint32_t names_array = PushScratchWords(names);

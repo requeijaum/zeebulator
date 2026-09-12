@@ -64,12 +64,15 @@ std::optional<MidiFile> ParseMidi(const uint8_t* data, size_t size) {
   int channel_program[16] = {0};
 
   size_t pos = 8 + header_len;
-  for (uint16_t t = 0; t < num_tracks && pos + 8 <= size; ++t) {
+  uint16_t parsed_tracks = 0;
+  for (uint16_t t = 0; t < num_tracks; ++t) {
+    if (pos + 8 > size) return std::nullopt;
     if (std::memcmp(data + pos, "MTrk", 4) != 0) return std::nullopt;
     uint32_t track_len = ReadU32BE(data + pos + 4);
     size_t track_start = pos + 8;
     size_t track_end = track_start + track_len;
     if (track_end > size) return std::nullopt;
+    ++parsed_tracks;
 
     size_t p = track_start;
     uint32_t tick = 0;
@@ -146,6 +149,8 @@ std::optional<MidiFile> ParseMidi(const uint8_t* data, size_t size) {
 
     pos = track_end;
   }
+
+  if (parsed_tracks != num_tracks) return std::nullopt;
 
   if (midi.tempo_changes.empty() || midi.tempo_changes[0].first != 0) {
     midi.tempo_changes.insert(midi.tempo_changes.begin(), {0, kDefaultMicrosecondsPerQuarter});
@@ -371,8 +376,22 @@ WavAudio RenderMidiToPcm(const MidiFile& midi, int sample_rate) {
   uint32_t last_tick = 0;
   for (const MidiNote& n : midi.notes) last_tick = std::max(last_tick, n.end_tick);
   double total_seconds = TickToSeconds(last_tick, midi.division, midi.tempo_changes);
+  constexpr double kMaxMidiDurationSeconds = 3600.0;  // 1 hora de áudio máx
+  if (total_seconds < 0.0 || total_seconds > kMaxMidiDurationSeconds || std::isnan(total_seconds)) {
+    out.samples.assign(1, 0);
+    return out;
+  }
   size_t total_samples = static_cast<size_t>(total_seconds * sample_rate) + 1;
-  std::vector<float> mix(total_samples, 0.0f);
+  constexpr size_t kMaxMidiSamples = 64u * 1024u * 1024u;
+  if (total_samples > kMaxMidiSamples) {
+    out.samples.assign(1, 0);
+    return out;
+  }
+  std::vector<float> mix;
+  try { mix.resize(total_samples, 0.0f); } catch (const std::exception&) {
+    out.samples.assign(1, 0);
+    return out;
+  }
 
   constexpr int kPercussionChannel = 9;  // real GM channel 10 (0-indexed) -- see this class's own doc comment
   constexpr double kFadeSeconds = 0.01;  // linear fade in/out to avoid clicks between notes

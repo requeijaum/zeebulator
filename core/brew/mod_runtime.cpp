@@ -2275,17 +2275,21 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     //   r2 = out buffer: u16 width @ r2, u16 height @ r2+2
     //   r3 = out buffer (info; unwritten for now)
     //   return r0 = pointer to decoded pixel data (caller memcpy's it)
+    // SDK AEEStdLib.h:90-91:
+    // void *SetupNativeImage(AEECLSID cls, void *pBuffer, AEEImageInfo *pii, boolean *pbRealloc);
+    // r0 = cls, r1 = pBuffer, r2 = pii (AEEImageInfo*), r3 = pbRealloc (boolean*)
     uint32_t data = core.GetRegister(kR1);
-    uint32_t dims = core.GetRegister(kR2);
+    uint32_t pii = core.GetRegister(kR2);
+    uint32_t pb_realloc = core.GetRegister(kR3);
     auto& mem = core.GetMemory();
     auto fail = [&]() { core.SetRegister(kR0, 0); };
     if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
       std::fprintf(stderr, "[bmp] ENTER r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x "
                    "byte0=%02x byte1=%02x\n",
-                   core.GetRegister(kR0), data, dims, core.GetRegister(kR3),
+                   core.GetRegister(kR0), data, pii, pb_realloc,
                    data ? mem.Read8(data) : 0, data ? mem.Read8(data + 1) : 0);
     }
-    if (data == 0 || dims == 0) { fail(); return; }
+    if (data == 0 || pii == 0) { fail(); return; }
     if (mem.Read8(data) != 'B' || mem.Read8(data + 1) != 'M') { fail(); return; }
     uint32_t data_off = mem.Read32(data + 10);
     int32_t width = static_cast<int32_t>(mem.Read32(data + 18));
@@ -2295,15 +2299,22 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
     uint32_t h = height >= 0 ? static_cast<uint32_t>(height)
                              : static_cast<uint32_t>(-height);
     if (width <= 0 || h == 0 || h > 4096 || width > 4096) { fail(); return; }
-    mem.Write16(dims, static_cast<uint16_t>(width));
-    mem.Write16(dims + 2, static_cast<uint16_t>(h));
+    // AEEImageInfo layout (AEEImageInfo.h):
+    // uint16 cx; uint16 cy; uint16 nColors; boolean bAnimated; uint16 cxFrame;
+    mem.Write16(pii + 0, static_cast<uint16_t>(width));
+    mem.Write16(pii + 2, static_cast<uint16_t>(h));
+    mem.Write16(pii + 4, bpp <= 8 ? static_cast<uint16_t>(1u << bpp) : 0u);
+    mem.Write8(pii + 6, 0);  // bAnimated = FALSE
+    mem.Write16(pii + 8, static_cast<uint16_t>(width)); // cxFrame = width (single frame)
+    // pbRealloc: se retornamos um ponteiro interno a pBuffer (sem alocacao nova),
+    // *pbRealloc deve ser FALSE (0). Deixar intocado causava free() indevido pelo guest.
+    if (pb_realloc != 0) {
+      mem.Write8(pb_realloc, 0);
+    }
     if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
       std::fprintf(stderr, "[bmp] clsid=0x%08x %dx%d bpp=%u comp=%u off=0x%x\n",
                    core.GetRegister(kR0), width, h, bpp, compression, data_off);
     }
-    // First cut: hand back the raw pixel-data pointer in guest memory.
-    // Pixel-format conversion (BGR -> RGB565 etc.) follows after
-    // observing what the caller does with the returned chunk.
     core.SetRegister(kR0, data + data_off);
   });
   // slot 0xcc is strncmp (strncmp_fn registered above)

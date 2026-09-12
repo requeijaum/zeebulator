@@ -213,10 +213,11 @@ bool Mixer::Deserialize(std::istream& in) {
   VoiceId next_id = 0;
   if (!ReadPod(in, next_id)) return false;
   uint32_t voice_count = 0;
-  if (!ReadPod(in, voice_count)) return false;
+  if (!ReadPod(in, voice_count) || voice_count > 1024u) return false;
 
+  constexpr uint32_t kMaxSamplesPerVoice = 64u * 1024u * 1024u;
   std::vector<Voice> voices;
-  voices.reserve(voice_count);
+  try { voices.reserve(voice_count); } catch (const std::exception&) { return false; }
   for (uint32_t i = 0; i < voice_count; ++i) {
     Voice v;
     if (!ReadPod(in, v.id)) return false;
@@ -228,8 +229,13 @@ bool Mixer::Deserialize(std::istream& in) {
     if (!ReadPod(in, v.position_frames)) return false;
     if (!ReadPod(in, v.finished)) return false;
     uint32_t sample_count = 0;
-    if (!ReadPod(in, sample_count)) return false;
-    auto samples = std::make_shared<std::vector<int16_t>>(sample_count);
+    if (!ReadPod(in, sample_count) || sample_count > kMaxSamplesPerVoice) return false;
+    std::shared_ptr<std::vector<int16_t>> samples;
+    try {
+      samples = std::make_shared<std::vector<int16_t>>(sample_count);
+    } catch (const std::exception&) {
+      return false;
+    }
     if (sample_count != 0) {
       in.read(reinterpret_cast<char*>(samples->data()),
               static_cast<std::streamsize>(sample_count * sizeof(int16_t)));

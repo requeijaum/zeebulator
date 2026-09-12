@@ -259,3 +259,14 @@ TEST(Mixer, DeserializeOnATruncatedStreamFailsWithoutCrashing) {
   stream.write("\x01\x00\x00\x00", 4);  // claims next_id_=1, then nothing else
   EXPECT_FALSE(mixer.Deserialize(stream));
 }
+
+TEST(Mixer, DeserializeRejectsHugeVoiceCountBeforeAllocating) {
+  zeebulator::Mixer mixer(44100);
+  std::stringstream in(std::ios::in | std::ios::out | std::ios::binary);
+  uint32_t next_id = 1;
+  uint32_t hostile_count = 0xffffffffu;
+  in.write(reinterpret_cast<const char*>(&next_id), sizeof(next_id));
+  in.write(reinterpret_cast<const char*>(&hostile_count), sizeof(hostile_count));
+  in.seekg(0);
+  EXPECT_FALSE(mixer.Deserialize(in));
+}

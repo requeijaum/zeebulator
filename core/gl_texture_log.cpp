@@ -227,8 +227,8 @@ bool WriteGLuintVector(std::ostream& out, const std::vector<GLuint>& values) {
 
 bool ReadGLuintVector(std::istream& in, std::vector<GLuint>& values) {
   uint32_t count = 0;
-  if (!ReadPod(in, count)) return false;
-  values.resize(count);
+  if (!ReadPod(in, count) || count > 65536u) return false;
+  try { values.resize(count); } catch (const std::exception&) { return false; }
   if (count == 0) return true;
   in.read(reinterpret_cast<char*>(values.data()),
           static_cast<std::streamsize>(values.size() * sizeof(GLuint)));
@@ -280,10 +280,11 @@ bool SerializeGlTextureLog(const std::vector<GlTextureLogEntry>& log, std::ostre
 
 bool DeserializeGlTextureLog(std::istream& in, std::vector<GlTextureLogEntry>& out) {
   uint32_t entry_count = 0;
-  if (!ReadPod(in, entry_count)) return false;
+  if (!ReadPod(in, entry_count) || entry_count > 65536u) return false;
 
+  constexpr uint32_t kMaxTexels = 64u * 1024u * 1024u;
   std::vector<GlTextureLogEntry> log;
-  log.reserve(entry_count);
+  try { log.reserve(entry_count); } catch (const std::exception&) { return false; }
   for (uint32_t i = 0; i < entry_count; ++i) {
     LogEntryKind kind{};
     if (!ReadPod(in, kind)) return false;
@@ -326,8 +327,8 @@ bool DeserializeGlTextureLog(std::istream& in, std::vector<GlTextureLogEntry>& o
         if (!ReadPod(in, call.type)) return false;
         if (!ReadPod(in, call.has_pixels)) return false;
         uint32_t pixel_count = 0;
-        if (!ReadPod(in, pixel_count)) return false;
-        call.pixels.resize(pixel_count);
+        if (!ReadPod(in, pixel_count) || pixel_count > kMaxTexels) return false;
+        try { call.pixels.resize(pixel_count); } catch (const std::exception&) { return false; }
         if (pixel_count != 0) {
           in.read(reinterpret_cast<char*>(call.pixels.data()), pixel_count);
           if (!in.good()) return false;

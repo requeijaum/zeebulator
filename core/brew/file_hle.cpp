@@ -129,10 +129,20 @@ void FileHle::OpenFileImpl(IArmCore& core) {
     handle = AllocateFileObject(writable_name, &inserted->second, &inserted->second);
   } else if (!name.empty() && (name.back() == '/' || name.back() == '\\')) {
     // Abertura de diretorio em modo somente leitura (ex. nfs.mod abrindo "../nfsresources/").
-    // No POSIX e no BREW real open(dir, O_RDONLY) tem exito; devolver um arquivo vazio
-    // satisfaz a verificacao de existencia do diretorio sem falhar a chamada.
-    static const std::vector<uint8_t> empty_dir_data;
-    handle = AllocateFileObject(name, &empty_dir_data);
+    // Somente conceda handle se o diretorio de fato existir no VFS ou writable_dirs_.
+    // Antes, qualquer nome arbitrario terminado em '/' recebia handle valido de arquivo vazio.
+    bool dir_exists = vfs_.Exists(name) || writable_dirs_.count(writable_name) != 0;
+    if (!dir_exists) {
+      // Checar se ha arquivos no VFS que comecam com este prefixo de diretorio
+      std::string dir_prefix = name;
+      if (dir_prefix.back() == '\\') dir_prefix.back() = '/';
+      // Se houver qualquer entrada sob esse caminho, o diretorio existe
+      dir_exists = vfs_.Exists(dir_prefix) || (vfs_.Find(dir_prefix) != nullptr);
+    }
+    if (dir_exists) {
+      static const std::vector<uint8_t> empty_dir_data;
+      handle = AllocateFileObject(name, &empty_dir_data);
+    }
   }
   if (handle != 0) last_opened_handle_ = handle;
   if (std::getenv("ZEEB_LOG_FILE")) {
@@ -191,18 +201,20 @@ void FileHle::MkDirImpl(IArmCore& core) {
 void FileHle::GetFreeSpaceImpl(IArmCore& core) {
   // uint32 GetFreeSpace(IFileMgr* piname, uint32* pdwTotal) -- returns
   // free bytes directly, optionally also writing total capacity.
-  // Reports a plausible simulated user-data quota (1 MiB); not a
-  // measured real device value -- confirmed real disassembly
-  // (PHASE8_LOG.md) shows Double Dragon's save routine treating 0
-  // (the previous blind-Stub behavior) as "storage unusable" and
-  // aborting, so this must be a believable nonzero amount, not just
-  // "not zero".
-  constexpr uint32_t kSimulatedFreeSpaceBytes = 1024 * 1024;
+  // Desconta os bytes dos arquivos gravados pelo jogador (writable_files_).
+  constexpr uint32_t kSimulatedCapacityBytes = 1024 * 1024; // 1 MiB cota
+  uint64_t used_bytes = 0;
+  for (const auto& [fname, fdata] : writable_files_) {
+    used_bytes += fdata.size();
+  }
+  uint32_t free_bytes = (used_bytes < kSimulatedCapacityBytes)
+                            ? static_cast<uint32_t>(kSimulatedCapacityBytes - used_bytes)
+                            : 0u;
   uint32_t total_addr = core.GetRegister(kR1);
   if (total_addr != 0) {
-    memory_.Write32(total_addr, kSimulatedFreeSpaceBytes);
+    memory_.Write32(total_addr, kSimulatedCapacityBytes);
   }
-  core.SetRegister(kR0, kSimulatedFreeSpaceBytes);
+  core.SetRegister(kR0, free_bytes);
 }
 
 void FileHle::EnumInitImpl(IArmCore& core) {

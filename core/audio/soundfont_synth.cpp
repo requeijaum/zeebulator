@@ -57,8 +57,13 @@ std::vector<int16_t> SoundFontSynth::RenderMidi(const MidiFile& midi, int sample
   });
 
   double total_seconds = events.back().time_seconds;
+  constexpr double kMaxMidiDuration = 3600.0;
+  if (total_seconds < 0.0 || total_seconds > kMaxMidiDuration || std::isnan(total_seconds)) return {0};
   size_t total_samples = static_cast<size_t>(total_seconds * sample_rate) + 1;
-  std::vector<int16_t> out(total_samples, 0);
+  constexpr size_t kMaxSamples = 64u * 1024u * 1024u;
+  if (total_samples > kMaxSamples) return {0};
+  std::vector<int16_t> out;
+  try { out.resize(total_samples, 0); } catch (const std::exception&) { return {0}; }
 
   // Real headroom: a real, dense multi-channel performance (Double
   // Dragon's own real background music uses up to 9 simultaneous real

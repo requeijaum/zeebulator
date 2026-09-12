@@ -361,3 +361,19 @@ TEST(Midi, EmptyFileRendersWithoutCrashing) {
   auto pcm = RenderMidiToPcm(*midi, 22050);
   EXPECT_FALSE(pcm.samples.empty());  // never a zero-length buffer
 }
+
+TEST(Midi, RejectsTruncatedFileMissingDeclaredTracks) {
+  // MThd header declaring 2 tracks, but providing data for only 1 track
+  std::vector<uint8_t> data = {
+    'M', 'T', 'h', 'd',
+    0x00, 0x00, 0x00, 0x06,
+    0x00, 0x01,  // format 1
+    0x00, 0x02,  // 2 tracks declared
+    0x00, 0x60,  // division 96
+    // Track 1 only:
+    'M', 'T', 'r', 'k',
+    0x00, 0x00, 0x00, 0x04,
+    0x00, 0xFF, 0x2F, 0x00  // End of track
+  };
+  EXPECT_FALSE(zeebulator::ParseMidi(data.data(), data.size()).has_value());
+}

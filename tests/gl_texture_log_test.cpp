@@ -421,3 +421,12 @@ TEST(GlTextureLogCompact, ReplayingTheCompactedLogReproducesTheSameFinalStateAsT
             compacted_replay_target.live_textures_.at(1u));
   EXPECT_EQ(compacted_replay_target.live_textures_.at(1u)[0], 42u);
 }
+
+TEST(GlTextureLog, DeserializeRejectsHugeEntryCount) {
+  std::stringstream in(std::ios::in | std::ios::out | std::ios::binary);
+  uint32_t hostile_count = 0xffffffffu;
+  in.write(reinterpret_cast<const char*>(&hostile_count), sizeof(hostile_count));
+  in.seekg(0);
+  std::vector<zeebulator::GlTextureLogEntry> out;
+  EXPECT_FALSE(zeebulator::DeserializeGlTextureLog(in, out));
+}

@@ -547,3 +547,26 @@ TEST(FileHle, DeserializeRejectsHugeNameBeforeAllocating) {
   in.seekg(0);
   EXPECT_FALSE(f.file_hle.Deserialize(in));
 }
+
+TEST(FileHle, OpenDirectoryRequiresDirectoryToActuallyExist) {
+  Fixture f;
+  WriteCString(f.cpu.GetMemory(), kScratch, "nonexistent_dir/");
+  uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 0);
+  EXPECT_EQ(handle, 0u);
+}
+
+TEST(FileHle, GetFreeSpaceDiscountsUserWrites) {
+  Fixture f;
+  uint32_t free_before = f.hle.CallArmFunction(f.MgrSlot(kMgrGetFreeSpace), f.mgr, 0);
+  EXPECT_EQ(free_before, 1024u * 1024u);
+
+  WriteCString(f.cpu.GetMemory(), kScratch, "save.dat");
+  uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, 4); // _OFM_CREATE
+  ASSERT_NE(handle, 0u);
+  std::vector<uint8_t> data(4096, 0xAA);
+  for (size_t i = 0; i < data.size(); ++i) f.cpu.GetMemory().Write8(kScratch + 0x100 + i, data[i]);
+  f.hle.CallArmFunction(f.FileSlotAddr(kFileWrite), handle, kScratch + 0x100, 4096);
+
+  uint32_t free_after = f.hle.CallArmFunction(f.MgrSlot(kMgrGetFreeSpace), f.mgr, 0);
+  EXPECT_EQ(free_after, (1024u * 1024u) - 4096u);
+}

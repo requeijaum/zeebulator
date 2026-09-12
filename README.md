@@ -1,6 +1,6 @@
 # Zeebulator
 
-[![Build & Tests](https://img.shields.io/badge/tests-621%2F623%20passing-brightgreen.svg)]()
+[![Build & Tests](https://img.shields.io/badge/tests-626%2F628%20passing-brightgreen.svg)]()
 [![Compatibility](https://img.shields.io/badge/boot-63%2F63%20titles-blue.svg)](docs/COMPATIBILIDADE.md)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg)]()
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
