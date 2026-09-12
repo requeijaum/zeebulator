@@ -164,6 +164,13 @@ int main(int argc, char** argv) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
+  // Navegacao por teclado LIGADA: emulador de verdade se opera sem mouse
+  // (Dolphin, mGBA, RetroArch). Sem esta flag as setas nao movem a selecao, e
+  // foi o que fez o primeiro teste de lancamento por teclado nao iniciar nada.
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  }
   ImGui_ImplSDL2_InitForOpenGL(window, gl);
   ImGui_ImplOpenGL2_Init();
 
