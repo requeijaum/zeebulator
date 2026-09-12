@@ -278,6 +278,16 @@ void Sdl2UnifiedBackend::PushVideoFrame(const void* framebuffer, int width, int 
   (void)format;  // IDisplayHle's framebuffer is always RGB565 for now.
   if (gl_context_ == nullptr) return;
   SDL_GL_MakeCurrent(window_, gl_context_);
+  // O quad 2D SEMPRE vai para o FBO de apresentacao. Se o alvo offscreen do
+  // pbuffer estiver ligado (o jogo esta desenhando o palco 3D), desviar o 2D
+  // para la contaminaria o readback do palco com a propria tela -- foi
+  // exatamente essa realimentacao que fez o "3D" virar uma copia da tela.
+  auto BindFramebufferForPresent =
+      reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  const bool restore_pbuffer = pbuffer_bound_ && pbuffer_fbo_ != 0;
+  if (BindFramebufferForPresent != nullptr && fbo_ != 0) {
+    BindFramebufferForPresent(GL_FRAMEBUFFER, fbo_);
+  }
 
   glBindTexture(GL_TEXTURE_2D, video_texture_);
   // RGB565 maps directly onto GL's own packed GL_UNSIGNED_SHORT_5_6_5
@@ -334,6 +344,12 @@ void Sdl2UnifiedBackend::PushVideoFrame(const void* framebuffer, int width, int 
   glPopAttrib();
 
   PresentFrame();
+  // Devolve o alvo do jogo, para que os proximos comandos GL dele continuem
+  // caindo no pbuffer e nao no FBO de apresentacao.
+  if (restore_pbuffer && BindFramebufferForPresent != nullptr) {
+    BindFramebufferForPresent(GL_FRAMEBUFFER, pbuffer_fbo_);
+    glViewport(0, 0, pbuffer_w_, pbuffer_h_);
+  }
 }
 
 namespace {
@@ -520,6 +536,113 @@ void Sdl2UnifiedBackend::PresentFrame() {
   BindFramebuffer(GL_FRAMEBUFFER, fbo_);
 }
 
+bool Sdl2UnifiedBackend::BindOffscreenTarget(int width, int height) {
+  // Cria (uma vez por tamanho) um FBO proprio com cor RGBA8 + profundidade e o
+  // deixa ligado. Enquanto estiver ligado, TODO desenho do jogo cai aqui, nao
+  // no FBO de apresentacao -- e o quad 2D nunca encosta neste alvo.
+  if (gl_context_ == nullptr || width <= 0 || height <= 0) return false;
+  // Chave de bissecao (ZEEB_NO_PBUFFER_FBO=1): desliga o alvo offscreen para
+  // comparar A/B contra o comportamento anterior sem recompilar.
+  if (std::getenv("ZEEB_NO_PBUFFER_FBO") != nullptr) return false;
+  auto GenFramebuffers = reinterpret_cast<PFNGLGENFRAMEBUFFERSPROC>(glGenFramebuffers_);
+  auto BindFramebuffer = reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  auto FramebufferTexture2D =
+      reinterpret_cast<PFNGLFRAMEBUFFERTEXTURE2DPROC>(glFramebufferTexture2D_);
+  auto CheckFramebufferStatus =
+      reinterpret_cast<PFNGLCHECKFRAMEBUFFERSTATUSPROC>(glCheckFramebufferStatus_);
+  auto GenRenderbuffers = reinterpret_cast<PFNGLGENRENDERBUFFERSPROC>(glGenRenderbuffers_);
+  auto BindRenderbuffer = reinterpret_cast<PFNGLBINDRENDERBUFFERPROC>(glBindRenderbuffer_);
+  auto RenderbufferStorage =
+      reinterpret_cast<PFNGLRENDERBUFFERSTORAGEPROC>(glRenderbufferStorage_);
+  auto FramebufferRenderbuffer =
+      reinterpret_cast<PFNGLFRAMEBUFFERRENDERBUFFERPROC>(glFramebufferRenderbuffer_);
+  if (GenFramebuffers == nullptr || BindFramebuffer == nullptr ||
+      FramebufferTexture2D == nullptr || CheckFramebufferStatus == nullptr ||
+      GenRenderbuffers == nullptr || BindRenderbuffer == nullptr ||
+      RenderbufferStorage == nullptr || FramebufferRenderbuffer == nullptr) {
+    return false;  // sem FBO real nao existe pbuffer honesto; nao fingir
+  }
+  if (pbuffer_fbo_ == 0 || pbuffer_w_ != width || pbuffer_h_ != height) {
+    if (pbuffer_fbo_ != 0) {
+      auto DeleteFramebuffers =
+          reinterpret_cast<PFNGLDELETEFRAMEBUFFERSPROC>(glDeleteFramebuffers_);
+      auto DeleteRenderbuffers =
+          reinterpret_cast<PFNGLDELETERENDERBUFFERSPROC>(glDeleteRenderbuffers_);
+      if (DeleteFramebuffers != nullptr) DeleteFramebuffers(1, &pbuffer_fbo_);
+      if (DeleteRenderbuffers != nullptr && pbuffer_depth_ != 0) {
+        DeleteRenderbuffers(1, &pbuffer_depth_);
+      }
+      if (pbuffer_texture_ != 0) glDeleteTextures(1, &pbuffer_texture_);
+      pbuffer_fbo_ = pbuffer_texture_ = pbuffer_depth_ = 0;
+    }
+    GenFramebuffers(1, &pbuffer_fbo_);
+    glGenTextures(1, &pbuffer_texture_);
+    glBindTexture(GL_TEXTURE_2D, pbuffer_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    GenRenderbuffers(1, &pbuffer_depth_);
+    BindRenderbuffer(GL_RENDERBUFFER, pbuffer_depth_);
+    RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, width, height);
+    BindFramebuffer(GL_FRAMEBUFFER, pbuffer_fbo_);
+    FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pbuffer_texture_, 0);
+    FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, pbuffer_depth_);
+    if (CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      std::fprintf(stderr,
+                   "Sdl2UnifiedBackend: FBO de pbuffer %dx%d incompleto -- readback do palco 3D "
+                   "fica indisponivel\n",
+                   width, height);
+      BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+      pbuffer_fbo_ = 0;
+      return false;
+    }
+    pbuffer_w_ = width;
+    pbuffer_h_ = height;
+  }
+  BindFramebuffer(GL_FRAMEBUFFER, pbuffer_fbo_);
+  glViewport(0, 0, width, height);
+  pbuffer_bound_ = true;
+  return true;
+}
+
+void Sdl2UnifiedBackend::UnbindOffscreenTarget() {
+  if (!pbuffer_bound_) return;
+  pbuffer_bound_ = false;
+  auto BindFramebuffer = reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  if (BindFramebuffer != nullptr) BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+  glViewport(0, 0, width_, height_);
+}
+
+bool Sdl2UnifiedBackend::ReadPixelsRgba(int x, int y, int width, int height,
+                                        std::vector<uint8_t>& out) {
+  // Le um retangulo do FBO onde o guest desenha. glReadPixels devolve as
+  // linhas de baixo para cima; invertemos para origem no topo, que e como
+  // tanto o IDisplay quanto o BitBlt do guest enxergam a memoria.
+  if (width <= 0 || height <= 0) return false;
+  const bool from_pbuffer = pbuffer_bound_ && pbuffer_fbo_ != 0;
+  const GLuint source_fbo = from_pbuffer ? pbuffer_fbo_ : fbo_;
+  const int source_w = from_pbuffer ? pbuffer_w_ : width_;
+  const int source_h = from_pbuffer ? pbuffer_h_ : height_;
+  if (source_fbo == 0) return false;
+  if (x < 0 || y < 0 || x + width > source_w || y + height > source_h) return false;
+  auto BindFramebuffer = reinterpret_cast<PFNGLBINDFRAMEBUFFERPROC>(glBindFramebuffer_);
+  if (BindFramebuffer == nullptr) return false;
+  BindFramebuffer(GL_FRAMEBUFFER, source_fbo);
+  const size_t row_bytes = static_cast<size_t>(width) * 4;
+  out.resize(row_bytes * static_cast<size_t>(height));
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+  std::vector<uint8_t> tmp(row_bytes);
+  for (int row = 0; row < height / 2; ++row) {
+    uint8_t* top = out.data() + static_cast<size_t>(row) * row_bytes;
+    uint8_t* bot = out.data() + static_cast<size_t>(height - 1 - row) * row_bytes;
+    std::memcpy(tmp.data(), top, row_bytes);
+    std::memcpy(top, bot, row_bytes);
+    std::memcpy(bot, tmp.data(), row_bytes);
+  }
+  return true;
+}
+
 bool Sdl2UnifiedBackend::CaptureFrameRgba(std::vector<uint8_t>& out, int* out_w, int* out_h) {
   if (out_w) *out_w = width_;
   if (out_h) *out_h = height_;
@@ -675,7 +798,14 @@ void Sdl2UnifiedBackend::DestroyContext() {}
 
 void Sdl2UnifiedBackend::SwapBuffers() {
   if (gl_context_ == nullptr) return;
+  // So o eglSwapBuffers do proprio jogo chega aqui (GlHle::EglSwapBuffers).
   gl_swap_seen_ = true;
+  SDL_GL_MakeCurrent(window_, gl_context_);
+  PresentFrame();
+}
+
+void Sdl2UnifiedBackend::PresentGlFrameWithoutSwapMark() {
+  if (gl_context_ == nullptr) return;
   SDL_GL_MakeCurrent(window_, gl_context_);
   PresentFrame();
 }

@@ -322,6 +322,21 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
   // valid (slot 10 = safe no-op) while real resource loading stays out of
   // scope for this fix. Any future decode belongs in game_probe.cpp-style
   // OpenFile plumbing, not here.
+  if (std::getenv("ZEEB_LOG_RES") != nullptr) {
+    // Instrumentacao honesta: mostra exatamente o que o guest pediu, para
+    // podermos implementar o decode real (hoje devolvemos um objeto unico).
+    const uint32_t res_file = core.GetRegister(kR1);
+    std::string name;
+    for (uint32_t off = 0; off < 128 && res_file != 0; ++off) {
+      const uint8_t c = core.GetMemory().Read8(res_file + off);
+      if (c == 0) break;
+      name.push_back(static_cast<char>(c));
+    }
+    std::fprintf(stderr,
+                 "[res] LoadResObject file=\"%s\" (0x%08x) id=%u cls=0x%08x -> obj=0x%08x\n",
+                 name.c_str(), res_file, core.GetRegister(kR2), core.GetRegister(kR3),
+                 load_res_object_obj_);
+  }
   core.SetRegister(kR0, load_res_object_obj_);
 }
 

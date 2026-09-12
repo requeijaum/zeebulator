@@ -86,6 +86,20 @@ class IDisplayHle {
   // never actually intended to be visible.
   void RepresentLastFrame() {
     if (!has_presented_) return;
+    if (std::getenv("ZEEB_LOG_DRAW") != nullptr) {
+      // Diagnostico de ORDEM: este caminho re-apresenta o quadro COMMITADO no
+      // Update. Se ele rodar depois de um present ao vivo no mesmo tick, e ele
+      // quem manda na janela -- e um quadro commitado vazio apaga a tela.
+      size_t nao_branco = 0;
+      for (uint16_t px : last_presented_) {
+        if (px != 0xffff) ++nao_branco;
+      }
+      static uint64_t n = 0;
+      if ((n++ % 30) == 0) {
+        std::fprintf(stderr, "[draw] RepresentLastFrame: commitado nao branco=%zu/%zu\n",
+                     nao_branco, last_presented_.size());
+      }
+    }
     backend_.PushVideoFrame(last_presented_.data(), width_, height_, PixelFormat::kRGB565);
   }
 

@@ -1649,9 +1649,24 @@ int main(int argc, char** argv) {
   cpu.GetMemory().Write8(kImageInfoAddr + 6, 1);    // bAnimated = TRUE
   cpu.GetMemory().Write16(kImageInfoAddr + 8, 640); // cxFrame = 640
 
-  std::vector<zeebulator::HleRuntime::HleFunction> res_image_methods(16, [](zeebulator::IArmCore& core) {
-    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
-  });
+  // Slots ainda nao implementados: devolvem SUCCESS, mas agora REGISTRAM quem
+  // chamou. Stub silencioso e exatamente o defeito que escondeu a abertura da
+  // Z-Wheel (IIMAGE_Draw devolvendo 0 sem desenhar nada). ZEEB_LOG_IMAGE=1
+  // expoe cada slot realmente exercitado pelo jogo.
+  std::vector<zeebulator::HleRuntime::HleFunction> res_image_methods;
+  res_image_methods.reserve(16);
+  for (uint32_t slot = 0; slot < 16; ++slot) {
+    res_image_methods.push_back([slot](zeebulator::IArmCore& core) {
+      if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
+        std::fprintf(stderr,
+                     "[image] slot %u NAO IMPLEMENTADO (stub SUCCESS) "
+                     "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x\n",
+                     slot, core.GetRegister(zeebulator::kR0), core.GetRegister(zeebulator::kR1),
+                     core.GetRegister(zeebulator::kR2), core.GetRegister(zeebulator::kR3));
+      }
+      core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+    });
+  }
   res_image_methods[0] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); }; // AddRef
   res_image_methods[1] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); }; // Release
   // Slot 4: GetInfo(po, AEEImageInfo *pi)
@@ -6347,7 +6362,26 @@ bool trace_this_tick = tick_count < 10 || persistent_log;
         }
       }
       // Apresenta o framebuffer apos o passe de desenho dos widgets (palco 3D e roller).
-      display.PresentLiveFramebuffer();
+      // EXCECAO: quando o backend GL tem atividade real, quem manda no quadro e o GL.
+      // Apresentar o framebuffer de software por cima apaga o palco 3D (regressao observada).
+      if (std::getenv("ZEEB_LOG_DRAW") != nullptr) {
+        // Diagnostico: o que existe no framebuffer NO MOMENTO de apresentar.
+        // Sem isso nao da para separar "o jogo nao desenhou" de "desenhou e
+        // alguem apagou depois".
+        const auto& fb = display.MutableFramebuffer();
+        size_t nao_branco = 0;
+        for (uint16_t px : fb) {
+          if (px != 0xffff) ++nao_branco;
+        }
+        static uint64_t presents = 0;
+        if ((presents++ % 30) == 0) {
+          std::fprintf(stderr, "[draw] present: pixels nao brancos=%zu/%zu\n", nao_branco,
+                       fb.size());
+        }
+      }
+      if (!backend.HasRealGlActivity()) {
+        display.PresentLiveFramebuffer();
+      }
     }
     const uint32_t audio_now_ms = SDL_GetTicks();
     const uint32_t audio_elapsed_ms = audio_now_ms - audio_last_mix_ms;
@@ -6387,10 +6421,16 @@ bool trace_this_tick = tick_count < 10 || persistent_log;
     bool had_gl_draws_this_tick = (cur_gl_draws > last_gl_draws_seen);
     last_gl_draws_seen = cur_gl_draws;
 
-    if (had_gl_draws_this_tick && !backend.HasRealGlActivity()) {
+    if (had_gl_draws_this_tick && !backend.HasRealGlActivity() &&
+        !backend.IsOffscreenTargetBound()) {
       // Some IGLES11 titles render but never issue an explicit swap. Present their FBO;
       // once an app proves it owns EGL swapping, never compete with its real frames.
-      backend.SwapBuffers();
+      // NAO vale quando o alvo e um pbuffer offscreen: ali o jogo esta desenhando
+      // para LER de volta e compor sozinho (Z-Wheel). Apresentar aquilo na janela
+      // era substituir a interface inteira pelo palco 3D.
+      // Usa o caminho que nao marca "o jogo trocou buffer" -- marcar ali
+      // desligava, para sempre, o present do framebuffer 2D.
+      backend.PresentGlFrameWithoutSwapMark();
     } else if (!backend.HasRealGlActivity()) {
       display.RepresentLastFrame();
     }

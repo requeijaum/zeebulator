@@ -215,6 +215,12 @@ void IDisplayHle::BitBlt(IArmCore& core) {
     transparent_color = 0xFFFFFFFFu;
   }
 
+  if (std::getenv("ZEEB_LOG_DRAW")) {
+    // Mostra a origem REAL dos pixels (pBmp do DIB). Serve para provar se o
+    // palco 3D lido do pbuffer (0x8a000000) chega mesmo ao BitBlt.
+    std::fprintf(stderr, "[draw] BitBlt src DIB=0x%x pBmp=0x%x %dx%d pitch=%d depth=%d\n",
+                 src_ptr, p_bmp, src_w, src_h, src_pitch, src_depth);
+  }
   if (src_w <= 0) src_w = cx_dest;
   if (src_h <= 0) src_h = cy_dest;
   if (src_pitch <= 0) src_pitch = src_w * 2;

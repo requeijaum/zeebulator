@@ -74,7 +74,20 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   // (confirmed on the real desktop: real GL content never became
   // visible until the frontend stopped re-pushing the stale 2D
   // snapshot once this goes true).
+  // Verdadeiro SO quando o proprio jogo chamou eglSwapBuffers. O caminho
+  // sintetico do probe (apresentar o FBO de titulos que desenham e nunca
+  // trocam) usa PresentGlFrameWithoutSwapMark e NAO liga este sinal.
+  // MOTIVO: este era um latch mentiroso -- bastava o probe apresentar uma vez
+  // para ele ficar verdadeiro para sempre, e qualquer decisao baseada nele
+  // ("o GL e o dono do quadro") passava a valer para um jogo que nunca trocou
+  // buffer nenhum. Na Z-Wheel isso desligava o present do framebuffer 2D e a
+  // tela ficava branca com so o contador de FPS por cima.
   bool HasRealGlActivity() const { return gl_swap_seen_; }
+  // O alvo corrente e o pbuffer offscreen? Enquanto for, o conteudo do GL NAO
+  // e destinado a janela: o jogo vai le-lo e compor ele mesmo via BitBlt.
+  bool IsOffscreenTargetBound() const { return pbuffer_bound_; }
+  // Apresenta o FBO de apresentacao sem marcar "o jogo trocou buffer".
+  void PresentGlFrameWithoutSwapMark();
 
   // Everything (the 2D IDisplay quad, the real app's own GLES draws, the
   // overlay) renders into a fixed `width_`x`height_` offscreen surface --
@@ -130,6 +143,13 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   bool CreateContext() override;
   void DestroyContext() override;
   void SwapBuffers() override;
+  // Readback real. Le do alvo offscreen dedicado quando ele esta ligado;
+  // caso contrario, do FBO de apresentacao. Ver GlBackend::ReadPixelsRgba.
+  bool ReadPixelsRgba(int x, int y, int width, int height,
+                      std::vector<uint8_t>& out) override;
+  // Alvo offscreen proprio do pbuffer EGL. Ver GlBackend::BindOffscreenTarget.
+  bool BindOffscreenTarget(int width, int height) override;
+  void UnbindOffscreenTarget() override;
 
   void Clear(GLbitfield mask) override;
   void ClearColor(float r, float g, float b, float a) override;
@@ -216,6 +236,15 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   // this is what produced a real, visible blue-tinted overlay across the
   // whole image once real rendering moved into this FBO).
   GLuint fbo_depth_renderbuffer_ = 0;
+  // FBO separado para superficies pbuffer EGL (o palco 3D da Z-Wheel usa
+  // 640x330). Nunca recebe o quad de apresentacao 2D, entao o readback dele
+  // devolve SO a cena que o jogo desenhou -- sem realimentacao da tela.
+  GLuint pbuffer_fbo_ = 0;
+  GLuint pbuffer_texture_ = 0;
+  GLuint pbuffer_depth_ = 0;
+  int pbuffer_w_ = 0;
+  int pbuffer_h_ = 0;
+  bool pbuffer_bound_ = false;
   // Real function pointers, loaded via SDL_GL_GetProcAddress -- stored
   // as opaque `void*` here rather than the real `PFNGL...PROC` typedefs
   // (`SDL_opengl_glext.h`) since those need real system GL types
