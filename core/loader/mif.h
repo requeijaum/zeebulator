@@ -55,5 +55,22 @@ std::vector<MifString> ExtractMifStrings(const uint8_t* data, size_t size);
 // verificavel, em vez de um palpite embutido no parser.
 std::vector<uint32_t> ExtractMifClassIds(const uint8_t* data, size_t size);
 
+// Igual a ExtractMifStrings, mas TOLERANTE ao terminador.
+//
+// Diferenca medida, e motivo de existir: ha .mif em que a string do titulo NAO
+// termina em nulo. No 277455.mif a string "zenonia" e seguida pelo codigo 0x1000
+// e so depois por zeros; a versao estrita le esse 0x1000, marca a string inteira
+// como suja e a DESCARTA -- ou seja, perde exatamente o nome do jogo. O mesmo
+// acontece com "GOF" (277380), "3.0.0 B" (12875) e "VMGAME" (278200).
+//
+// Esta versao TERMINA a string no primeiro codigo nao imprimivel em vez de
+// invalidar tudo, e devolve o prefixo legivel. O risco que a versao estrita
+// evita (BOM que aparece por coincidencia dentro de dados binarios virar
+// "string") continua controlado por `min_len`: sequencias curtas demais sao
+// descartadas. A versao estrita NAO mudou: o contrato dela esta documentado e
+// testado, e altera-lo mexeria em quem ja depende dele.
+std::vector<MifString> ExtractMifStringPrefixes(const uint8_t* data, size_t size,
+                                               size_t min_len = 3);
+
 
 }  // namespace zeebulator

@@ -130,15 +130,38 @@ TEST(GameLibrary, PickupsGgzAndBarAssetsWhenPresent) {
   EXPECT_FALSE(r.entries[0].bar.empty());
 }
 
-TEST(GameLibrary, NameFallsBackToFolderAndSaysSo) {
+TEST(GameLibrary, NameFallsBackToTheModFileNameWhenTheMifHasNoTitle) {
   FakeNand nand("no_name");
   nand.AddMod("274214", "cnk2");
   const ScanResult r = ScanNand(OptionsFor(nand));
   ASSERT_EQ(r.entries.size(), 1u);
-  // Sem .mif o nome exibido e a pasta, e a PROCEDENCIA tem de dizer isso.
-  // Um nome inventado parece confiavel e nao e.
-  EXPECT_EQ(r.entries[0].name, "274214");
-  EXPECT_EQ(r.entries[0].name_source, NameSource::kFolder);
+  // Sem .mif, o nome vem do basename do .mod -- medido: as 22 pastas sem nome no
+  // .mif deste NAND tem todas um basename legivel, entao este degrau resolve o
+  // caso inteiro e "278738" nunca aparece como titulo.
+  EXPECT_EQ(r.entries[0].name, "cnk2");
+  EXPECT_EQ(r.entries[0].name_source, NameSource::kModStem);
+}
+
+TEST(GameLibrary, MifNameWinsOverTheModFileName) {
+  FakeNand nand("mif_wins");
+  nand.AddMod("274214", "cnk2");
+  nand.AddMif("274214", {"Tectoy Digital", "1.08", "Crash Bandicoot Nitro Kart 3D"});
+  const ScanResult r = ScanNand(OptionsFor(nand));
+  ASSERT_EQ(r.entries.size(), 1u);
+  EXPECT_EQ(r.entries[0].name, "Crash Bandicoot Nitro Kart 3D");
+  EXPECT_EQ(r.entries[0].name_source, NameSource::kMif);
+}
+
+TEST(GameLibrary, SkipsCopyrightAndConfigStringsFromTheMif) {
+  FakeNand nand("mif_noise");
+  nand.AddMod("277380", "gof");
+  // Strings medidas no 277380.mif real. O titulo e "GOF"; o resto e ruido que
+  // antes virava nome exibido ("2009 Fishlabs").
+  nand.AddMif("277380", {"Fishlabs Entertainment", "2009 Fishlabs", "1.2", "GOF",
+                         "display1=c%3A8"});
+  const ScanResult r = ScanNand(OptionsFor(nand));
+  ASSERT_EQ(r.entries.size(), 1u);
+  EXPECT_EQ(r.entries[0].name, "GOF");
 }
 
 TEST(GameLibrary, NameComesFromMifAndSkipsVersionAndPlatformStrings) {
@@ -189,10 +212,11 @@ TEST(GameLibrary, OrderIsStableAcrossScans) {
   for (size_t i = 0; i < first.entries.size(); ++i) {
     EXPECT_EQ(first.entries[i].folder, second.entries[i].folder);
   }
-  // Ordem alfabetica por nome exibido (aqui, a pasta): a_mod, b_mod, c_mod.
-  EXPECT_EQ(first.entries[0].name, "100");
-  EXPECT_EQ(first.entries[1].name, "200");
-  EXPECT_EQ(first.entries[2].name, "300");
+  // Ordem alfabetica pelo nome exibido, que agora vem do basename do .mod:
+  // a_mod, b_mod, c_mod. O desempate por pasta continua para nomes iguais.
+  EXPECT_EQ(first.entries[0].name, "a_mod");
+  EXPECT_EQ(first.entries[1].name, "b_mod");
+  EXPECT_EQ(first.entries[2].name, "c_mod");
 }
 
 TEST(GameLibrary, FilterMatchesNameAndFolderCaseInsensitively) {

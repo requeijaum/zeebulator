@@ -69,7 +69,9 @@ add_executable(zeebulator_tests
   zpad_edges_test.cpp
   ${PROJECT_SOURCE_DIR}/frontends/standalone/zpad_edges.cpp
   game_library_test.cpp
+  emulator_session_test.cpp
   ${PROJECT_SOURCE_DIR}/frontends/gui/game_library.cpp
+  ${PROJECT_SOURCE_DIR}/frontends/gui/emulator_session.cpp
 )
 target_include_directories(zeebulator_tests PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
 target_link_libraries(zeebulator_tests PRIVATE zeebulator_core GTest::gtest_main zlibstatic

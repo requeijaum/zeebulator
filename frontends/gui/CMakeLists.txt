@@ -37,6 +37,8 @@ if(ZEEBULATOR_BUILD_GUI)
     main.cpp
     game_library.cpp
     game_library.h
+    emulator_session.cpp
+    emulator_session.h
   )
   target_include_directories(zeebulator_gui PRIVATE ${PROJECT_SOURCE_DIR})
   target_link_libraries(zeebulator_gui PRIVATE zeebulator_core imgui_backends SDL2::SDL2

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+using zeebulator::ExtractMifStringPrefixes;
 using zeebulator::ExtractMifStrings;
 using zeebulator::MifString;
 
@@ -72,4 +73,60 @@ TEST(Mif, NoStringsInPureBinaryData) {
 TEST(Mif, EmptyBufferProducesNoStrings) {
   std::vector<uint8_t> buf;
   EXPECT_TRUE(ExtractMifStrings(buf.data(), buf.size()).empty());
+}
+
+// Diferenca entre a versao estrita e a tolerante, com o caso REAL que a motivou.
+//
+// Medido no 277455.mif desta NAND: a string do titulo ("zenonia") e seguida pelo
+// codigo 0x1000 e so depois por zeros. A versao estrita le o 0x1000, marca a
+// string inteira como suja e a DESCARTA -- perdendo exatamente o nome do jogo.
+// O mesmo acontece com "GOF" (277380), "3.0.0 B" (12875) e "VMGAME" (278200).
+TEST(Mif, StrictVersionDropsAStringFollowedByANonPrintableCode) {
+  std::vector<uint8_t> buf;
+  AppendUtf16String(buf, "zenonia", /*null_terminate=*/false);
+  // 0x1000 em UTF-16LE, depois zeros: e o que o arquivo real traz.
+  buf.push_back(0x00);
+  buf.push_back(0x10);
+  for (int i = 0; i < 8; ++i) buf.push_back(0x00);
+  EXPECT_TRUE(ExtractMifStrings(buf.data(), buf.size()).empty());
+}
+
+TEST(Mif, LenientVersionKeepsTheReadablePrefix) {
+  std::vector<uint8_t> buf;
+  AppendUtf16String(buf, "zenonia", /*null_terminate=*/false);
+  buf.push_back(0x00);
+  buf.push_back(0x10);
+  for (int i = 0; i < 8; ++i) buf.push_back(0x00);
+  const std::vector<MifString> got = ExtractMifStringPrefixes(buf.data(), buf.size());
+  ASSERT_EQ(got.size(), 1u);
+  EXPECT_EQ(got[0].text, "zenonia");
+}
+
+TEST(Mif, LenientVersionStillRejectsShortCoincidences) {
+  // O risco que a versao estrita existe para evitar: um BOM que aparece por
+  // coincidencia dentro de dados binarios. Sequencia curta demais nao vira nome.
+  std::vector<uint8_t> buf;
+  AppendUtf16String(buf, "ab", /*null_terminate=*/false);
+  buf.push_back(0x00);
+  buf.push_back(0x10);
+  EXPECT_TRUE(ExtractMifStringPrefixes(buf.data(), buf.size()).empty());
+  // Com comprimento suficiente, a mesma sequencia e aceita.
+  std::vector<uint8_t> buf2;
+  AppendUtf16String(buf2, "abc", /*null_terminate=*/false);
+  buf2.push_back(0x00);
+  buf2.push_back(0x10);
+  EXPECT_EQ(ExtractMifStringPrefixes(buf2.data(), buf2.size()).size(), 1u);
+}
+
+TEST(Mif, LenientVersionHandlesSeveralStringsInSequence) {
+  std::vector<uint8_t> buf;
+  AppendUtf16String(buf, "(C)Gamevil");
+  AppendUtf16String(buf, "zenonia", /*null_terminate=*/false);
+  buf.push_back(0x00);
+  buf.push_back(0x10);
+  for (int i = 0; i < 8; ++i) buf.push_back(0x00);
+  const std::vector<MifString> got = ExtractMifStringPrefixes(buf.data(), buf.size());
+  ASSERT_EQ(got.size(), 2u);
+  EXPECT_EQ(got[0].text, "(C)Gamevil");
+  EXPECT_EQ(got[1].text, "zenonia");
 }

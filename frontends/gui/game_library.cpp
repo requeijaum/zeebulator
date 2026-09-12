@@ -28,33 +28,82 @@ std::vector<uint8_t> ReadFile(const std::string& path) {
                               std::istreambuf_iterator<char>());
 }
 
-// Nome do titulo a partir do .mif. O .mif guarda strings UTF-16LE com BOM, e o
-// extrator ja existente devolve todas em ordem de arquivo. Convencao medida nos
-// MIFs desta NAND: a primeira string costuma ser a versao ("1.0.696") e a
-// segunda o nome do publisher ("Zeebo"). Entao a escolha do nome NAO pode ser
-// "a primeira": filtra-se por candidato que nao pareca versao e nao seja um
-// nome de plataforma conhecido.
-std::string NameFromMifStrings(const std::vector<MifString>& strings) {
-  static const char* const kNeverTitle[] = {"zeebo", "qualcomm", "brew"};
-  auto looks_like_version = [](const std::string& s) {
-    if (s.empty()) return false;
-    for (char c : s) {
-      if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') continue;
-      return false;
+// Nome do titulo a partir do .mif.
+//
+// Os .mif reais misturam, na mesma lista de strings UTF-16: fornecedor, aviso de
+// copyright, versao, o nome do jogo e as vezes configuracao. Exemplos MEDIDOS
+// neste NAND:
+//
+//   274214 -> ["Tectoy Digital", "(c) Polarbit 2008", "1.08",
+//              "Crash Bandicoot Nitro Kart 3D", "display1=a%3A0"]
+//   277455 -> ["(C)Gamevil", "(C)Copyright 2009", "zenonia"]
+//   278962 -> ["PopCap Games", "1.0", "Peggle", "Bookworm"]
+//   274755 -> ["1.0.696", "Zeebo", "display1=w%3A640%2Ch%3A480"]   (sem titulo)
+//
+// Regra, escolhida por medicao e nao por gosto: descarta versao, copyright,
+// plataforma e configuracao; entre o que sobra, prefere o que casa com o nome do
+// .mod (normalizado) e, na falta dele, o ULTIMO da lista. "Primeiro da lista"
+// seria a regra errada: pegaria "Tectoy Digital" e "PopCap Games".
+std::string NormalizeForCompare(const std::string& s) {
+  std::string out;
+  for (char c : s) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
-    return true;
-  };
+  }
+  return out;
+}
+
+std::string NameFromMifStrings(const std::vector<MifString>& strings, const std::string& mod_stem) {
+  static const char* const kNeverTitle[] = {"zeebo", "qualcomm", "brew"};
+  std::vector<std::string> candidates;
   for (const MifString& s : strings) {
     if (s.text.empty()) continue;
-    if (looks_like_version(s.text)) continue;
+    // Configuracao do proprio MIF (ex.: "display1=w%3A640%2Ch%3A480").
+    if (s.text.find('=') != std::string::npos) continue;
+    const std::string lower = ToLower(s.text);
+    // Aviso de copyright: "(c) Polarbit 2008", "(C)Copyright 2009".
+    if (lower.rfind("(c)", 0) == 0) continue;
     bool blocked = false;
     for (const char* bad : kNeverTitle) {
-      if (ToLower(s.text) == bad) { blocked = true; break; }
+      if (lower == bad) { blocked = true; break; }
     }
     if (blocked) continue;
-    return s.text;
+    // Linha de copyright sem o "(c)": medido, aparece como "2009 Fishlabs" e
+    // "2004, HI Corporation" -- comeca com ano de 4 digitos seguido de espaco ou
+    // virgula. Um titulo real nao costuma comecar assim.
+    if (lower.size() > 5 && std::isdigit(static_cast<unsigned char>(lower[0])) &&
+        std::isdigit(static_cast<unsigned char>(lower[1])) &&
+        std::isdigit(static_cast<unsigned char>(lower[2])) &&
+        std::isdigit(static_cast<unsigned char>(lower[3])) &&
+        (lower[4] == ' ' || lower[4] == ',')) {
+      continue;
+    }
+    // Versao: so digitos e pontos, ou isso seguido de UMA letra solta. O caso da
+    // letra e medido, nao suposto: o 12875.mif declara "3.0.0 B" como string, e
+    // sem esta regra o titulo exibido era "3.0.0 B" em vez do nome do arquivo.
+    bool version_like = true;
+    size_t letters = 0;
+    for (char c : s.text) {
+      if (std::isdigit(static_cast<unsigned char>(c)) || c == '.') continue;
+      if (c == ' ' || std::isalpha(static_cast<unsigned char>(c))) {
+        if (std::isalpha(static_cast<unsigned char>(c))) ++letters;
+        continue;
+      }
+      version_like = false;
+      break;
+    }
+    if (version_like && letters <= 1) continue;
+    candidates.push_back(s.text);
   }
-  return {};
+  if (candidates.empty()) return {};
+  const std::string want = NormalizeForCompare(mod_stem);
+  if (!want.empty()) {
+    for (const std::string& c : candidates) {
+      if (NormalizeForCompare(c) == want) return c;
+    }
+  }
+  return candidates.back();
 }
 
 // Literal carregado por `ldr rX, [pc, #imm]` (ARM). Apartir da versao ARMv4 o
@@ -268,8 +317,13 @@ ScanResult ScanNand(const ScanOptions& options) {
     if (fs::is_regular_file(mif_path, ec)) {
       const std::vector<uint8_t> mif = ReadFile(mif_path.string());
       if (!mif.empty()) {
-        const std::vector<MifString> strings = ExtractMifStrings(mif.data(), mif.size());
-        const std::string name = NameFromMifStrings(strings);
+        // TOLERANTE de proposito: a versao estrita descarta as strings de titulo
+        // que nao terminam em nulo (medido: "zenonia", "GOF", "VMGAME"), que sao
+        // exatamente as que interessam aqui. Ver ExtractMifStringPrefixes.
+        const std::vector<MifString> strings =
+            ExtractMifStringPrefixes(mif.data(), mif.size());
+        std::string stem = fs::path(mod_path).stem().string();
+        const std::string name = NameFromMifStrings(strings, stem);
         if (!name.empty()) {
           e.name = name;
           e.name_source = NameSource::kMif;
@@ -277,9 +331,20 @@ ScanResult ScanNand(const ScanOptions& options) {
         e.clsid_candidates = ExtractMifClassIds(mif.data(), mif.size());
       }
     }
-    if (e.name.empty()) {
-      e.name = folder;
-      e.name_source = NameSource::kFolder;
+    if (!e.name.empty()) {
+      e.name_source = NameSource::kMif;
+    } else {
+      // Sem nome no .mif: o basename do .mod e a proxima melhor fonte. Medido:
+      // as 22 pastas sem nome no .mif deste NAND tem todas um basename legivel,
+      // entao este degrau resolve o caso inteiro e "pasta" fica para o resto.
+      const std::string stem = fs::path(mod_path).stem().string();
+      if (!stem.empty()) {
+        e.name = stem;
+        e.name_source = NameSource::kModStem;
+      } else {
+        e.name = folder;
+        e.name_source = NameSource::kFolder;
+      }
     }
 
     // ClsId: manifesto > .mif > .mod > desconhecido (ordem do requisito RF-3).
@@ -420,6 +485,7 @@ const char* ClsidSourceName(ClsidSource source) {
 const char* NameSourceName(NameSource source) {
   switch (source) {
     case NameSource::kMif: return "mif";
+    case NameSource::kModStem: return "nome do .mod";
     case NameSource::kFolder: return "pasta";
   }
   return "pasta";

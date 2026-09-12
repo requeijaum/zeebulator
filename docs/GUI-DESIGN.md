@@ -215,6 +215,12 @@ Descoberta, modelo, resolução de ClsId, persistência, janela com a lista,
 busca e troca de raiz. Iniciar um jogo pode ainda delegar ao frontend existente,
 desde que a UI não trave e não deixe processo órfão.
 
+*Entregue:* descoberta (63 títulos, nenhum sem nome legível), resolução de ClsId
+com procedência visível, busca, troca de raiz persistida, e o ciclo de vida da
+sessão — **RF-5** (estado, tempo decorrido) e **RF-6** (parar, pausar/retomar,
+sem deixar processo órfão) — em `EmulatorSession`, que é testável sem abrir
+janela. Iniciar ainda abre uma segunda janela: isso é a Fase 2.
+
 **Fase 2 — Emulação embutida.**
 Extrair o carregador de `tools/game_probe.cpp` para uma biblioteca e rodar a
 emulação no processo da GUI, com quadro na janela e controles de pausa.

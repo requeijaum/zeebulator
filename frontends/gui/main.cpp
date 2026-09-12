@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "frontends/gui/emulator_session.h"
 #include "frontends/gui/game_library.h"
 #include "imgui.h"
 #include "imgui_impl_opengl2.h"
@@ -49,7 +50,7 @@ struct AppState {
   int selected = -1;
   std::string nand_input;      // campo editavel da aba Configuracoes
   std::string status_message;  // ultima acao; a UI nunca fica muda
-  pid_t running_child = -1;
+  zeebulator::gui::EmulatorSession session;
   bool rescan_requested = false;
 };
 
@@ -71,51 +72,19 @@ void Rescan(AppState& st) {
   }
 }
 
-// Inicia o titulo selecionado. Fase 1: processo filho. O fork+exec e a unica
-// forma que nao duplica o carregador, e o filho e registrado para poder ser
-// esperado -- processo orfao e bug visivel (requisito RF-6).
+// Inicia o titulo selecionado. Fase 1: a sessao delega a um processo filho do
+// frontend de emulacao. O ciclo de vida (iniciar, pausar, parar, colher) fica em
+// EmulatorSession, que e testavel sem abrir janela -- aqui so se chama.
 void LaunchSelected(AppState& st) {
-  if (st.selected < 0 || static_cast<size_t>(st.selected) >= st.library.entries.size()) return;
+  if (st.selected < 0 || static_cast<size_t>(st.selected) >= st.library.entries.size()) {
+    st.status_message = "escolha um titulo na lista";
+    return;
+  }
   const zeebulator::gui::GameEntry& entry = st.library.entries[static_cast<size_t>(st.selected)];
-  if (!entry.launchable) {
-    st.status_message = "nao iniciavel: " + entry.status_reason;
-    return;
-  }
-  const std::vector<std::string> args = zeebulator::gui::BuildLaunchArgs(entry, kDefaultEmulator);
-  if (args.empty()) {
-    st.status_message = "nao consegui montar a linha de comando deste titulo";
-    return;
-  }
-  if (st.running_child > 0) {
-    st.status_message = "ja existe uma sessao rodando; pare antes de iniciar outra";
-    return;
-  }
-  const pid_t pid = fork();
-  if (pid == 0) {
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    execv(argv[0], argv.data());
-    std::fprintf(stderr, "falha ao iniciar '%s': %s\n", argv[0], std::strerror(errno));
-    _exit(127);
-  }
-  if (pid < 0) {
-    st.status_message = std::string("fork falhou: ") + std::strerror(errno);
-    return;
-  }
-  st.running_child = pid;
-  st.status_message = "iniciado: " + entry.name;
-}
-
-// Colhe o filho quando ele termina, para nao deixar zumbi nem orfao.
-void ReapChild(AppState& st) {
-  if (st.running_child <= 0) return;
-  int status = 0;
-  const pid_t done = waitpid(st.running_child, &status, WNOHANG);
-  if (done == st.running_child) {
-    st.running_child = -1;
-    st.status_message = (status == 0) ? "sessao encerrada" : "sessao terminou com erro";
+  if (st.session.Start(entry, kDefaultEmulator)) {
+    st.status_message = "iniciado: " + entry.name;
+  } else {
+    st.status_message = st.session.last_error();
   }
 }
 
@@ -192,7 +161,7 @@ int main(int argc, char** argv) {
         if (ev.key.keysym.sym == SDLK_RETURN) LaunchSelected(st);
       }
     }
-    ReapChild(st);
+    st.session.Poll();
     if (st.rescan_requested) {
       st.rescan_requested = false;
       Rescan(st);
@@ -211,14 +180,29 @@ int main(int argc, char** argv) {
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
                      ImGuiWindowFlags_NoScrollbar);
 
-    if (st.running_child > 0) {
-      ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Sessao em execucao (pid %d)",
-                         static_cast<int>(st.running_child));
-    } else {
-      ImGui::TextDisabled("Nenhuma sessao em execucao");
+    // Estado da sessao sempre visivel, com os controles ao lado. Requisito RF-5:
+    // o usuario precisa saber se esta rodando, pausado ou parado, e ha quanto
+    // tempo -- sem isso nao da para distinguir "travou" de "esta lento".
+    {
+      const zeebulator::gui::SessionState sess = st.session.state();
+      const ImVec4 color = (sess == zeebulator::gui::SessionState::kRunning)
+                               ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+                               : (sess == zeebulator::gui::SessionState::kPaused
+                                      ? ImVec4(0.95f, 0.8f, 0.3f, 1.0f)
+                                      : ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+      ImGui::TextColored(color, "%s", st.session.StatusLine().c_str());
+      if (sess != zeebulator::gui::SessionState::kIdle) {
+        ImGui::SameLine();
+        if (ImGui::Button(sess == zeebulator::gui::SessionState::kPaused ? "Retomar"
+                                                                        : "Pausar")) {
+          st.session.TogglePause();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Parar")) st.session.Stop();
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("| emulador: %s", kDefaultEmulator);
     }
-    ImGui::SameLine();
-    ImGui::Text("| emulador: %s", kDefaultEmulator);
     ImGui::Separator();
 
     if (ImGui::BeginTabBar("abas")) {

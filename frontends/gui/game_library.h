@@ -25,8 +25,9 @@ namespace zeebulator::gui {
 // De onde veio o nome exibido. A UI mostra isso: um nome inventado e pior que
 // um numero de pasta, porque parece confiavel e nao e.
 enum class NameSource {
-  kMif,     // string legivel extraida do .mif
-  kFolder,  // nao ha nome: usa-se o numero da pasta, marcado como tal
+  kMif,     // string legivel extraida do .mif: a melhor fonte
+  kModStem, // nome do proprio arquivo .mod (ex.: "chessbots.mod" -> "chessbots")
+  kFolder,  // ultimo recurso: o numero da pasta, marcado como tal
 };
 
 // De onde veio o ClsId. Esta procedencia e o que separa "resolvi" de "chutei" --
@@ -42,6 +43,10 @@ struct GameEntry {
   std::string folder;           // "274214"
   std::string mod_path;         // caminho absoluto do .mod
   std::string name;             // nome exibido
+  // Cadeia de fallback do nome, medida: .mif -> basename do .mod -> pasta. Das
+  // 63 pastas deste NAND, 41 tem nome no .mif; das 22 restantes, TODAS tem um
+  // basename legivel (chessbots.mod, Rolimaz.mod, alice.mod...), que e melhor
+  // que "278738". O numero da pasta so entra quando nem isso existe.
   NameSource name_source = NameSource::kFolder;
   std::string data_ggz;         // "" quando nao ha
   std::string sound_ggz;
