@@ -309,6 +309,12 @@ void IShellHle::ResumeImpl(IArmCore& core) {
   core.SetRegister(kR0, 0);  // SUCCESS
 }
 
+// Declaracao antecipada: a definicao esta no namespace anonimo mais abaixo
+// (perto de LoadResString), e ReadBrewResource precisa dela aqui.
+namespace {
+std::vector<std::string> GetBrewResourceCandidates(const std::string& base);
+}  // namespace
+
 void IShellHle::SetLoadResObjectReturn(uint32_t object_ptr) {
   load_res_object_obj_ = object_ptr;
 }
@@ -337,7 +343,46 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
                  name.c_str(), res_file, core.GetRegister(kR2), core.GetRegister(kR3),
                  load_res_object_obj_);
   }
+  if (load_res_object_factory_ != nullptr) {
+    const std::string base = ReadCString(memory_, core.GetRegister(kR1));
+    const uint16_t id = static_cast<uint16_t>(core.GetRegister(kR2) & 0xFFFFu);
+    const uint32_t obj =
+        load_res_object_factory_(base, id, core.GetRegister(kR3));
+    if (obj != 0) {
+      core.SetRegister(kR0, obj);
+      return;
+    }
+    if (std::getenv("ZEEB_LOG_RES") != nullptr) {
+      std::fprintf(stderr,
+                   "[res] LoadResObject('%s' id=%u) nao decodificavel -> objeto injetado\n",
+                   base.c_str(), id);
+    }
+  }
   core.SetRegister(kR0, load_res_object_obj_);
+}
+
+std::optional<std::vector<uint8_t>> IShellHle::ReadBrewResource(const std::string& file,
+                                                               uint16_t id) const {
+  if (vfs_ == nullptr) return std::nullopt;
+  for (const auto& cand : GetBrewResourceCandidates(file)) {
+    const std::vector<uint8_t>* brf = vfs_->Find(cand);
+    if (brf == nullptr) continue;
+    BrewResourceDirectory dir;
+    uint32_t start = 0, size = 0;
+    // type_match_any: LoadResObject pede um id sem dizer o tipo -- no
+    // formato real o id e unico no arquivo inteiro (medido nos .brf do
+    // tectoy: 5007 e type 6, 5008 e type 6, e nenhum id aparece em dois
+    // tipos), entao varrer todos os tipos e o comportamento correto.
+    if (ParseBrewResourceDirectory(*brf, &dir) &&
+        ReadBrewResourceRecord(*brf, dir, /*type=*/0, id, /*type_match_any=*/true, &start, &size)) {
+      if (std::getenv("ZEEB_LOG_RES") != nullptr) {
+        std::fprintf(stderr, "[res] ReadBrewResource('%s' -> '%s', id=%u) %u bytes\n",
+                     file.c_str(), cand.c_str(), id, size);
+      }
+      return std::vector<uint8_t>(brf->begin() + start, brf->begin() + start + size);
+    }
+  }
+  return std::nullopt;
 }
 
 // Sufixos de idioma do AEE_RES_LANGSUF, citado pela propria documentacao do

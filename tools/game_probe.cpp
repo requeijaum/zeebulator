@@ -54,6 +54,8 @@
 #include "core/cpu/dynarmic_arm_core.h"
 #include "core/gl_texture_log.h"
 #include "core/loader/atitc.h"
+#include "core/loader/bmp.h"
+#include "core/loader/gif.h"
 #include "core/loader/png.h"
 #include "core/loader/fufs.h"
 #include "core/loader/sar.h"
@@ -607,6 +609,32 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
           "PHASE8_LOG.md). Last in-module pc=0x%08x lr=0x%08x -- disassemble there first.\n",
           pc, mod_base, mod_base + mod_size, static_cast<unsigned long long>(steps),
           last_in_module_pc, last_lr);
+      if (std::getenv("ZEEB_LOG_OOR") != nullptr) {
+        // Diagnostico temporario: qual registrador carregava o destino ruim e o
+        // que havia no objeto apontado por ele. Sem isto o aviso so diz ONDE
+        // saltou, nao COM QUE PONTEIRO -- e a diferenca entre "o guest tem um
+        // ponteiro errado" e "nosso objeto foi sobrescrito".
+        std::fprintf(stderr, "[oor] pc=0x%08x r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x\n", pc,
+                     cpu.GetRegister(zeebulator::kR0), cpu.GetRegister(zeebulator::kR1),
+                     cpu.GetRegister(zeebulator::kR2), cpu.GetRegister(zeebulator::kR3));
+        for (int rn = 4; rn <= 12; ++rn) {
+          std::fprintf(stderr, "  r%d=0x%08x", rn,
+                       cpu.GetRegister(static_cast<zeebulator::ArmRegister>(
+                           static_cast<int>(zeebulator::kR0) + rn)));
+        }
+        std::fprintf(stderr, "  sp=0x%08x lr=0x%08x\n", cpu.GetRegister(zeebulator::kSP),
+                     cpu.GetRegister(zeebulator::kLR));
+        const uint32_t r7 = cpu.GetRegister(static_cast<zeebulator::ArmRegister>(
+            static_cast<int>(zeebulator::kR0) + 7));
+        if (r7 >= 0x1000) {
+          std::fprintf(stderr, "[oor] [r7]=0x%08x [r7+0]=0x%08x\n",
+                       cpu.GetMemory().Read32(r7), cpu.GetMemory().Read32(r7));
+          const uint32_t v0 = cpu.GetMemory().Read32(r7);
+          if (v0 >= 0x1000) {
+            std::fprintf(stderr, "[oor] [[r7]]=0x%08x (vt[0])\n", cpu.GetMemory().Read32(v0));
+          }
+        }
+      }
       result.wandered_outside_module = true;
       warned_wander = true;
     }
@@ -1642,7 +1670,7 @@ int main(int argc, char** argv) {
   // e define o sinalizador [context+0x2c]=1. Sem disparar a notificacao, a animacao de abertura
   // ficava em espera infinita ("Failure waiting for image load to complete: %d") e nunca alcancava
   // a montagem da roda 3D nem o menu principal.
-  constexpr uint32_t kImageInfoAddr = 0x8006B100;
+  constexpr uint32_t kImageInfoAddr = 0x80030800;
   cpu.GetMemory().Write16(kImageInfoAddr + 0, 640); // cx
   cpu.GetMemory().Write16(kImageInfoAddr + 2, 480); // cy
   cpu.GetMemory().Write16(kImageInfoAddr + 4, 0);   // nColors
@@ -1650,14 +1678,44 @@ int main(int argc, char** argv) {
   cpu.GetMemory().Write16(kImageInfoAddr + 8, 640); // cxFrame = 640
 
   // Slots ainda nao implementados: devolvem SUCCESS, mas agora REGISTRAM quem
-  // chamou. Stub silencioso e exatamente o defeito que escondeu a abertura da
-  // Z-Wheel (IIMAGE_Draw devolvendo 0 sem desenhar nada). ZEEB_LOG_IMAGE=1
-  // expoe cada slot realmente exercitado pelo jogo.
+  // ----------------------------------------------------------------
+  // IImage REAL, um objeto POR RECURSO (ISHELL_LoadResObject, slot 19).
+  //
+  // Antes: UM objeto falso unico (0x8006B000) devolvido para todo recurso,
+  // com GetInfo mentindo 640x480 e Draw que nao desenhava nada. Isso e pior
+  // que um stub honesto -- o jogo recebe "sucesso", acredita ter a imagem e
+  // segue. E o caso da Z-Wheel: o fundo azul do palco (recurso 5007, um BMP
+  // 214x34) e a arte do roller nunca aparecem, sem nenhum erro visivel.
+  //
+  // Formato do payload no .brf, medido nos arquivos reais do tectoy:
+  //   [u16 header_len][mime NUL-terminado][bytes da imagem]
+  // com header_len contando o proprio u16 (12 = 2 + "image/bmp\0"). O strip
+  // usa o header_len, nao a busca pelo primeiro byte nao-texto, porque um BMP
+  // comeca com "BM" (texto) e a heuristica erraria.
+  // ----------------------------------------------------------------
+  struct ResImage {
+    int width = 0;
+    int height = 0;
+    std::vector<std::vector<uint8_t>> frames;  // RGBA8888, topo primeiro
+    size_t current = 0;
+  };
+  auto images =
+      std::make_shared<std::unordered_map<uint32_t, std::shared_ptr<ResImage>>>();
+  const bool log_image = std::getenv("ZEEB_LOG_IMAGE") != nullptr;
+  // Faixa 0x80030000..0x8003F000 dedicada a IImage.
+  // CRUCIAL: 0x8006C000 era kWidgetVtable! Quando opening_low.gif era
+  // instanciado la, ele destruia a vtable de TODOS os widgets, fazendo o
+  // applet saltar para 0x8006A000 no primeiro evento de UI.
+  constexpr uint32_t kResImageVtable = 0x80030000;
+  constexpr uint32_t kResImageObjectBase = 0x80031000;
+
   std::vector<zeebulator::HleRuntime::HleFunction> res_image_methods;
   res_image_methods.reserve(16);
+  // 16 slots, nao 12: o jogo chama o slot 12 deste objeto (medido). Com uma
+  // vtable menor esse slot cai em memoria nao escrita e o guest salta para lixo.
   for (uint32_t slot = 0; slot < 16; ++slot) {
-    res_image_methods.push_back([slot](zeebulator::IArmCore& core) {
-      if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
+    res_image_methods.push_back([slot, log_image](zeebulator::IArmCore& core) {
+      if (log_image) {
         std::fprintf(stderr,
                      "[image] slot %u NAO IMPLEMENTADO (stub SUCCESS) "
                      "r0=0x%08x r1=0x%08x r2=0x%08x r3=0x%08x\n",
@@ -1667,26 +1725,122 @@ int main(int argc, char** argv) {
       core.SetRegister(zeebulator::kR0, 0); // SUCCESS
     });
   }
+  // Busca o estado do objeto pelo `po` que o guest passou em r0. Sem isto os
+  // lambdas nao teriam como saber QUAL imagem esta sendo desenhada.
+  auto image_of = [images](zeebulator::IArmCore& core) -> std::shared_ptr<ResImage> {
+    auto it = images->find(core.GetRegister(zeebulator::kR0));
+    return it == images->end() ? nullptr : it->second;
+  };
   res_image_methods[0] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); }; // AddRef
   res_image_methods[1] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); }; // Release
-  // Slot 4: GetInfo(po, AEEImageInfo *pi)
-  res_image_methods[4] = [&cpu](zeebulator::IArmCore& core) {
-    uint32_t pi = core.GetRegister(zeebulator::kR1);
-    if (pi != 0) {
-      cpu.GetMemory().Write16(pi + 0, 640);
-      cpu.GetMemory().Write16(pi + 2, 480);
-      cpu.GetMemory().Write16(pi + 4, 0);
-      cpu.GetMemory().Write8(pi + 6, 1);
-      cpu.GetMemory().Write16(pi + 8, 640);
+
+  // Desenha RGBA8888 no framebuffer RGB565 do IDisplayHle. Alpha 0 e
+  // transparente; nao ha blending (o IImage real faz ROP COPY por padrao,
+  // IPARM_ROP=3 default AEE_RO_COPY).
+  auto draw_res_image = [&display, log_image](const std::shared_ptr<ResImage>& img, int x, int y,
+                                              size_t frame_index, uint32_t lr) -> uint32_t {
+    if (img == nullptr || img->frames.empty()) return 0;
+    const auto& px = img->frames[std::min(frame_index, img->frames.size() - 1)];
+    auto& fb = display.MutableFramebuffer();
+    uint32_t drawn = 0;
+    for (int row = 0; row < img->height; ++row) {
+      const int dy = y + row;
+      if (dy < 0 || dy >= display.height()) continue;
+      for (int col = 0; col < img->width; ++col) {
+        const int dx = x + col;
+        if (dx < 0 || dx >= display.width()) continue;
+        const size_t o = (static_cast<size_t>(row) * img->width + col) * 4;
+        if (px[o + 3] == 0) continue;
+        fb[static_cast<size_t>(dy) * display.width() + dx] = static_cast<uint16_t>(
+            ((px[o + 0] >> 3) << 11) | ((px[o + 1] >> 2) << 5) | (px[o + 2] >> 3));
+        ++drawn;
+      }
+    }
+    if (log_image) {
+      // O LR diz QUEM pediu o desenho: sem ele nao da para separar "o jogo
+      // desenha a abertura" de "nos chamamos um handler de desenho velho".
+      std::fprintf(stderr, "[image] Draw %dx%d em (%d,%d) frame=%zu -> %u pixels lr=0x%08x\n",
+                   img->width, img->height, x, y, frame_index, drawn, lr);
+    }
+    return drawn;
+  };
+
+  // Slot 2: Draw(po, x, y)
+  res_image_methods[2] = [image_of, draw_res_image](zeebulator::IArmCore& core) {
+    const auto img = image_of(core);
+    const int x = static_cast<int32_t>(core.GetRegister(zeebulator::kR1));
+    const int y = static_cast<int32_t>(core.GetRegister(zeebulator::kR2));
+    if (img != nullptr && img->frames.size() > 1) {
+      img->current = (img->current + 1) % img->frames.size();
+    }
+    draw_res_image(img, x, y, img != nullptr ? img->current : 0, core.GetRegister(zeebulator::kLR));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 3: DrawFrame(po, nFrame, x, y)
+  res_image_methods[3] = [image_of, draw_res_image](zeebulator::IArmCore& core) {
+    const auto img = image_of(core);
+    const size_t frame = core.GetRegister(zeebulator::kR1);
+    const int x = static_cast<int32_t>(core.GetRegister(zeebulator::kR2));
+    const int y = static_cast<int32_t>(core.GetRegister(zeebulator::kR3));
+    draw_res_image(img, x, y, frame, core.GetRegister(zeebulator::kLR));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 4: GetInfo(po, AEEImageInfo *pi).
+  // Layout do SDK: {uint16 cx; uint16 cy; uint16 nColors; boolean bAnimated;
+  // uint16 cxFrame} e `boolean` = unsigned char (AEEStdDef.h:39), logo 9
+  // bytes uteis + 1 de alinhamento. Antes esta slot mentia 640x480 para
+  // qualquer recurso -- inclusive para os BMPs 214x34 do roller.
+  res_image_methods[4] = [image_of, log_image](zeebulator::IArmCore& core) {
+    const auto img = image_of(core);
+    const uint32_t pi = core.GetRegister(zeebulator::kR1);
+    if (img == nullptr && pi != 0) {
+      // Objeto de fallback (recurso que nao decodificou): mantem exatamente a
+      // resposta legada 640x480. Nao e a verdade sobre nenhuma imagem -- e o
+      // contrato que os titulos que so querem um ponteiro valido ja assumiam.
+      core.GetMemory().Write16(pi + 0, 640);
+      core.GetMemory().Write16(pi + 2, 480);
+      core.GetMemory().Write16(pi + 4, 0);
+      core.GetMemory().Write8(pi + 6, 1);
+      core.GetMemory().Write16(pi + 8, 640);
+    }
+    if (img != nullptr && pi != 0) {
+      core.GetMemory().Write16(pi + 0, static_cast<uint16_t>(img->width));
+      core.GetMemory().Write16(pi + 2, static_cast<uint16_t>(img->height));
+      core.GetMemory().Write16(pi + 4, 0);
+      core.GetMemory().Write8(pi + 6, img->frames.size() > 1 ? 1 : 0);
+      core.GetMemory().Write16(pi + 8, static_cast<uint16_t>(img->width));
+      if (log_image) {
+        std::fprintf(stderr, "[image] GetInfo -> %dx%d frames=%zu\n", img->width, img->height,
+                     img->frames.size());
+      }
     }
     core.SetRegister(zeebulator::kR0, 0);
   };
-  // Slot 10: Notify(po, PFNIMAGEINFO pfn, void *pUser)
-  res_image_methods[10] = [&cpu, &hle](zeebulator::IArmCore& core) {
-    uint32_t po = core.GetRegister(zeebulator::kR0);
-    uint32_t pfn = core.GetRegister(zeebulator::kR1);
-    uint32_t puser = core.GetRegister(zeebulator::kR2);
+  // Slot 6: Start(po, x, y) -- o IImage real anima por timer proprio; aqui
+  // desenha o primeiro frame e marca o objeto como iniciado.
+  res_image_methods[6] = [image_of, draw_res_image](zeebulator::IArmCore& core) {
+    const auto img = image_of(core);
+    const int x = static_cast<int32_t>(core.GetRegister(zeebulator::kR1));
+    const int y = static_cast<int32_t>(core.GetRegister(zeebulator::kR2));
+    if (img != nullptr) img->current = 0;
+    draw_res_image(img, x, y, 0, core.GetRegister(zeebulator::kLR));
+    core.SetRegister(zeebulator::kR0, 0);
+  };
+  // Slot 10: Notify(po, PFNIMAGEINFO pfn, void *pUser). Sem alteracao de
+  // contrato -- so agora a AEEImageInfo entregue e' a real.
+  res_image_methods[10] = [&cpu, &hle, image_of](zeebulator::IArmCore& core) {
+    const uint32_t po = core.GetRegister(zeebulator::kR0);
+    const uint32_t pfn = core.GetRegister(zeebulator::kR1);
+    const uint32_t puser = core.GetRegister(zeebulator::kR2);
     if (pfn != 0) {
+      const auto img = image_of(core);
+      if (img != nullptr) {
+        cpu.GetMemory().Write16(kImageInfoAddr + 0, static_cast<uint16_t>(img->width));
+        cpu.GetMemory().Write16(kImageInfoAddr + 2, static_cast<uint16_t>(img->height));
+        cpu.GetMemory().Write16(kImageInfoAddr + 4, 0);
+        cpu.GetMemory().Write8(kImageInfoAddr + 6, img->frames.size() > 1 ? 1 : 0);
+        cpu.GetMemory().Write16(kImageInfoAddr + 8, static_cast<uint16_t>(img->width));
+      }
       if (std::getenv("ZEEB_LOG_IMAGE") != nullptr) {
         std::fprintf(stderr, "[image] IImage::Notify po=0x%08x pfn=0x%08x pUser=0x%08x\n",
                      po, pfn, puser);
@@ -1697,10 +1851,176 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0);
   };
 
+  // Desenha a imagem de um objeto pelo ENDERECO dele. E assim que o passe de
+  // widgets pinta o conteudo de um ImageWidget: o guest entrega o IImage ao
+  // widget por SetIPtr e nunca mais chama Draw -- num BREW real quem desenha e
+  // a biblioteca de widgets do aparelho, que aqui somos nos.
+  auto draw_image_object = [images, draw_res_image](uint32_t obj, int x, int y) -> uint32_t {
+    auto it = images->find(obj);
+    if (it == images->end() || it->second == nullptr) return 0;
+    return draw_res_image(it->second, x, y, it->second->current, 0);
+  };
+
+  // A vtable e uma so para todas as imagens; cada recurso ganha o seu
+  // objeto (e o seu buffer), na mesma faixa dos objetos HLE ja usados.
+  //
+  // A PRIMEIRA faixa (kResImageObjectBase) pertence ao objeto de FALLBACK
+  // construido logo abaixo, e os recursos reais comecam DEPOIS dele.
+  // Defeito real corrigido aqui: os dois comecavam no mesmo endereco, entao o
+  // objeto de fallback E o primeiro recurso decodificado eram o MESMO objeto.
+  // Medido na Z-Wheel: o recurso 5029 nao existe em nenhum .brf, LoadResObject
+  // caia no fallback e devolvia o objeto do opening_low.gif -- e o roller
+  // desenhava o GIF de abertura 640x480 por cima da tela inteira, 69 vezes,
+  // sempre a partir de DrawRollerExt (lr=0x0011ff28), escondendo o palco 3D.
+  uint32_t next_image_object = kResImageObjectBase + 0x100;
   uint32_t load_res_obj = zeebulator::BuildInterfaceObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x8006A000, /*object=*/0x8006B000, res_image_methods);
+      cpu.GetMemory(), hle, kResImageVtable, kResImageObjectBase, res_image_methods);
+
+  // Mantido: quando a fabrica nao consegue decodificar, LoadResObject volta a
+  // devolver ESTE objeto em vez de 0. Sem isto, titulos que so dereferenciam o
+  // retorno (Quake em EVT_APP_START) voltam a saltar para o endereco zero.
   shell_hle.SetLoadResObjectReturn(load_res_obj);
-  // Same real init routine also calls IDisplay::GetDeviceBitmap and
+
+  // Ligada por padrao; ZEEB_NO_RES_IMAGE=1 desliga (interruptor de bisseccao).
+  //
+  // Historico honesto desta chave, tudo medido na Z-Wheel em execucoes de 27 s:
+  //  1. Ligar a fabrica sem mais nada: 256 cores, 263287 px brancos, palco 3D
+  //     sumido. A culpa NAO era da decodificacao: o objeto de fallback e o
+  //     primeiro recurso decodificado nasciam no MESMO endereco, entao todo
+  //     recurso que nao decodificava devolvia o opening_low.gif, e o roller
+  //     pintava esse GIF 640x480 por cima de tudo 69 vezes (lr=0x0011ff28,
+  //     dentro de DrawRollerExt).
+  //  2. Com as faixas separadas: 742 cores, palco 3D de volta (laranja da roda
+  //     9543 px, preto 81409 px), tick 114, nenhum desenho destrutivo.
+  // Um objeto unico e mentiroso para TODO recurso e um defeito por si so; o
+  // fallback continua existindo so para quem precisa de um ponteiro valido.
+  const bool res_image_disabled = std::getenv("ZEEB_NO_RES_IMAGE") != nullptr;
+
+  // Fabrica real do slot 19: resolve o payload (do .brf por id, ou arquivo
+  // solto quando o id e 0), decodifica BMP/PNG/GIF e devolve um objeto
+  // proprio. Devolve 0 quando nao da para decodificar, para o chamador cair
+  // no objeto injetado (que segue existindo: alguns titulos so querem um
+  // ponteiro valido, sem usar pixel nenhum).
+  shell_hle.SetLoadResObjectFactory(
+      [&cpu, &hle, &display, &vfs, &shell_hle, images, &next_image_object, log_image,
+       res_image_disabled](
+          const std::string& file, uint16_t id, uint32_t cls_id) -> uint32_t {
+    if (res_image_disabled) return 0;
+    std::vector<uint8_t> payload;
+    if (id != 0) {
+      auto raw = shell_hle.ReadBrewResource(file, id);
+      if (!raw.has_value()) return 0;
+      payload = std::move(*raw);
+    } else if (const std::vector<uint8_t>* f = vfs.Find(file); f != nullptr) {
+      payload = *f;
+    } else {
+      return 0;
+    }
+    if (payload.size() < 8) return 0;
+
+    // Strip do cabecalho MIME do .brf.
+    size_t off = 0;
+    std::string mime;
+    const uint16_t hlen = static_cast<uint16_t>(payload[0] | (payload[1] << 8));
+    if (hlen >= 2 && hlen <= 64 && payload.size() > hlen) {
+      std::string cand(reinterpret_cast<const char*>(payload.data() + 2), hlen - 2);
+      while (!cand.empty() && cand.back() == '\0') cand.pop_back();
+      bool printable = !cand.empty();
+      for (char c : cand) {
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) {
+          printable = false;
+        }
+      }
+      if (printable && cand.rfind("image/", 0) == 0) {
+        mime = cand;
+        off = hlen;
+      }
+    }
+
+    auto img = std::make_shared<ResImage>();
+    const uint8_t* data = payload.data() + off;
+    const size_t size = payload.size() - off;
+    if (size >= 6 && std::memcmp(data, "GIF8", 4) == 0) {
+      // GIF: os frames do decoder vem no retangulo do PROPRIO frame (com
+      // disposal por GCE), entao compor a tela logica e necessario antes de
+      // desenhar -- um GIF animado exige isso, e o opening_low.gif do
+      // tectoy e 1 frame de tela cheia.
+      auto gif = zeebulator::DecodeGif(data, size);
+      if (!gif.has_value()) return 0;
+      img->width = gif->width;
+      img->height = gif->height;
+      std::vector<uint8_t> canvas(static_cast<size_t>(gif->width) * gif->height * 4, 0);
+      std::vector<uint8_t> previous;
+      for (const auto& fr : gif->frames) {
+        // O frame sai do decoder no retangulo DELE (com x/y proprios), nao na
+        // tela logica -- compor e obrigacao do chamador. Alpha 0 significa
+        // transparencia (o decoder zera o alpha do indice transparente em vez
+        // de usar cor magica), entao pixel transparente nao e copiado.
+        if (fr.disposal_method == 3) previous = canvas;  // 3 = restaurar o anterior
+        for (int row = 0; row < fr.height; ++row) {
+          const int dy = fr.y + row;
+          if (dy < 0 || dy >= gif->height) continue;
+          for (int col = 0; col < fr.width; ++col) {
+            const int dx = fr.x + col;
+            if (dx < 0 || dx >= gif->width) continue;
+            const size_t s = (static_cast<size_t>(row) * fr.width + col) * 4;
+            if (fr.rgba[s + 3] == 0) continue;
+            const size_t d = (static_cast<size_t>(dy) * gif->width + dx) * 4;
+            canvas[d + 0] = fr.rgba[s + 0];
+            canvas[d + 1] = fr.rgba[s + 1];
+            canvas[d + 2] = fr.rgba[s + 2];
+            canvas[d + 3] = 255;
+          }
+        }
+        // O que a tela logica mostra NESTE instante e o canvas ja composto.
+        img->frames.push_back(canvas);
+        if (fr.disposal_method == 2) {
+          // 2 = restaurar a cor de fundo: limpa o retangulo deste frame.
+          for (int row = 0; row < fr.height; ++row) {
+            const int dy = fr.y + row;
+            if (dy < 0 || dy >= gif->height) continue;
+            for (int col = 0; col < fr.width; ++col) {
+              const int dx = fr.x + col;
+              if (dx < 0 || dx >= gif->width) continue;
+              const size_t d = (static_cast<size_t>(dy) * gif->width + dx) * 4;
+              canvas[d + 0] = canvas[d + 1] = canvas[d + 2] = canvas[d + 3] = 0;
+            }
+          }
+        } else if (fr.disposal_method == 3 && !previous.empty()) {
+          canvas = previous;
+        }
+      }
+    } else if (size >= 8 && std::memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) {
+      int w = 0, h = 0;
+      auto px = zeebulator::DecodePng(data, size, w, h);
+      if (!px.has_value()) return 0;
+      img->width = w;
+      img->height = h;
+      img->frames.push_back(std::move(*px));
+    } else if (size >= 2 && data[0] == 'B' && data[1] == 'M') {
+      int w = 0, h = 0;
+      auto px = zeebulator::DecodeBmp(data, size, w, h);
+      if (!px.has_value()) return 0;
+      img->width = w;
+      img->height = h;
+      img->frames.push_back(std::move(*px));
+    } else {
+      return 0;
+    }
+
+    const uint32_t obj = next_image_object;
+    next_image_object += 0x100;
+    if (next_image_object > kResImageObjectBase + 0x8000) return 0;  // guarda de faixa
+    cpu.GetMemory().Write32(obj, kResImageVtable);
+    (*images)[obj] = img;
+    if (log_image || std::getenv("ZEEB_LOG_RES") != nullptr) {
+      std::fprintf(stderr,
+                   "[res] IImage real '%s' id=%u cls=0x%08x mime='%s' %dx%d frames=%zu -> obj=0x%08x\n",
+                   file.c_str(), id, cls_id, mime.c_str(), img->width, img->height,
+                   img->frames.size(), obj);
+    }
+    return obj;
+  });
   // immediately dereferences the result's vtable -- another generic
   // scaffold, since the real IBitmap-shaped interface isn't identified
   // either. Real disassembly of a second, deeper call site (0x1d5b8)
@@ -2350,9 +2670,26 @@ int main(int argc, char** argv) {
   // Ver o comentario dentro do handler sobre por que a leitura e VALIDADA em
   // vez de assumida.
   auto widget_geometry = std::make_shared<std::map<uint64_t, std::array<uint32_t, 6>>>();
-  widget_methods[5] = [&cpu, widget_geometry, widget_parents](zeebulator::IArmCore& core) {
+  // Imagem associada a cada widget por IInterfaceModel::SetIPtr. Medido na
+  // Z-Wheel: o guest pede o modelo ao widget (slot 12, AEEIID_IInterfaceModel =
+  // 0x0101593c) e, no que recebe, chama o slot 5 com
+  // (piBase = o IImage, clsidType = AEEIID_IImage = 0x01013110). Como o nosso
+  // slot 12 devolve o proprio widget, essa chamada cai aqui.
+  auto widget_images = std::make_shared<std::map<uint32_t, uint32_t>>();
+  widget_methods[5] = [&cpu, widget_geometry, widget_parents, widget_images,
+                       log_image](zeebulator::IArmCore& core) {
     const uint32_t parent = core.GetRegister(zeebulator::kR0);
     const uint32_t child = core.GetRegister(zeebulator::kR1);
+    // SetIPtr(pif, piBase, AEEIID_IImage): isto NAO e adicionar um filho. Sem
+    // este desvio a imagem do widget virava "geometria" e nada era desenhado.
+    if (core.GetRegister(zeebulator::kR2) == 0x01013110u) {
+      (*widget_images)[parent] = child;
+      if (log_image) {
+        std::fprintf(stderr, "[image] SetIPtr widget=0x%08x imagem=0x%08x\n", parent, child);
+      }
+      core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
+      return;
+    }
     if (child != 0) (*widget_parents)[child] = parent;
     uint32_t r2 = core.GetRegister(zeebulator::kR2);
     // Bloco de posicao (documento da roda, secao 6.2): quando o terceiro
@@ -5714,7 +6051,11 @@ int main(int argc, char** argv) {
       std::string path = req->str_path.empty() ? "/tmp/zeeb_shot.ppm" : req->str_path;
       bool shot_ok = false;
       int w = display.width(), h = display.height();
-      if (backend.HasRealGlActivity()) {
+      // ZEEB_2D_ONLY=1: captura a framebuffer 2D de software em vez do FBO do
+      // GL. Sem isto nao da para saber se uma tela 2D "sumiu" porque o guest
+      // nao desenhou ou porque o quadro GL e que chega na tela.
+      const bool so_2d = std::getenv("ZEEB_2D_ONLY") != nullptr;
+      if (!so_2d && backend.HasRealGlActivity()) {
         shot_ok = backend.CaptureScreenshot(path);
       }
       if (!shot_ok) {
@@ -6361,6 +6702,24 @@ bool trace_this_tick = tick_count < 10 || persistent_log;
                        obj, handler.function);
         }
       }
+      // Conteudo dos ImageWidget. O jogo entrega o IImage ao widget por SetIPtr
+      // e nunca chama IImage::Draw -- num BREW real o desenho e da biblioteca
+      // de widgets do aparelho. Sem este passe, as telas 2D de abertura (logo e
+      // bandeira) eram decodificadas e nunca apareciam: medido em 18 s, a
+      // framebuffer ficava 307200/307200 px brancos ate o palco 3D entrar.
+      for (const auto& [wobj, iobj] : *widget_images) {
+        auto vis = widget_visibility->find(wobj);
+        if (vis != widget_visibility->end() && !vis->second) continue;
+        uint32_t ix = 0, iy = 0;
+        for (const auto& [geom_key, geom_block] : *widget_geometry) {
+          if (static_cast<uint32_t>(geom_key & 0xffffffffu) == wobj) {
+            ix = geom_block[0];
+            iy = geom_block[1];
+            break;
+          }
+        }
+        draw_image_object(iobj, static_cast<int>(ix), static_cast<int>(iy));
+      }
       // Apresenta o framebuffer apos o passe de desenho dos widgets (palco 3D e roller).
       // EXCECAO: quando o backend GL tem atividade real, quem manda no quadro e o GL.
       // Apresentar o framebuffer de software por cima apaga o palco 3D (regressao observada).
@@ -6379,7 +6738,9 @@ bool trace_this_tick = tick_count < 10 || persistent_log;
                        fb.size());
         }
       }
-      if (!backend.HasRealGlActivity()) {
+      // ZEEB_2D_ONLY=1 derruba a regra "quem manda no quadro e o GL": a camada
+      // 2D passa a ser apresentada sempre, mesmo com atividade GL real.
+      if (std::getenv("ZEEB_2D_ONLY") != nullptr || !backend.HasRealGlActivity()) {
         display.PresentLiveFramebuffer();
       }
     }

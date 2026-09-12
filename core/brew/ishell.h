@@ -121,6 +121,31 @@ class IShellHle {
   // immediately; the default zero dereferenced a null vtable.
   void SetLoadResObjectReturn(uint32_t object_ptr);
 
+  // ISHELL_LoadResObject (slot 19) DE VERDADE: resolve o recurso como
+  // LoadResData ja faz (`.bar` registrado ou `.brf` achado no VFS pelas
+  // variantes de idioma) e entrega o PAYLOAD CRU a uma fabrica do
+  // frontend, que monta o objeto IImage com pixels reais.
+  //
+  // Por que a fabrica e do frontend: montar o objeto exige (a) o
+  // HleRuntime, para criar um objeto com vtable HLE, e (b) a framebuffer
+  // do IDisplay, para o Draw ter onde escrever. O IShellHle nao tem
+  // nenhum dos dois -- ver o comentario em LoadResObjectImpl, no .cpp,
+  // para o historico do objeto unico falso que existia antes disto.
+  //
+  // Devolve 0 quando o recurso nao existe (o chamador cai no objeto
+  // injetado por SetLoadResObjectReturn, que segue existindo para os
+  // titulos que so precisam de um ponteiro valido).
+  using LoadResObjectFactory =
+      std::function<uint32_t(const std::string& file, uint16_t id, uint32_t cls_id)>;
+  void SetLoadResObjectFactory(LoadResObjectFactory fn) {
+    load_res_object_factory_ = std::move(fn);
+  }
+
+  // Le o registro `id` de qualquer type do .brf `file` e devolve o payload
+  // cru (sem strip de cabecalho MIME -- quem chama sabe o que pediu).
+  std::optional<std::vector<uint8_t>> ReadBrewResource(const std::string& file,
+                                                       uint16_t id) const;
+
   // Sets guest memory allocator for resource loading (LoadResData)
   void SetAllocator(std::function<uint32_t(uint32_t)> malloc_fn) { malloc_fn_ = std::move(malloc_fn); }
 
@@ -235,6 +260,7 @@ class IShellHle {
   Memory& memory_;
   HleRuntime& hle_;
   uint32_t load_res_object_obj_ = 0;
+  LoadResObjectFactory load_res_object_factory_;
   int screen_width_;
   int screen_height_;
   std::unordered_map<uint32_t, uint32_t> instances_;

@@ -1776,6 +1776,17 @@ void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
   uint32_t dest = core.GetRegister(kR0);
   uint32_t fmt = core.GetRegister(kR1);
 
+  if (std::getenv("ZEEB_LOG_SNPRINTF") != nullptr) {
+    std::string f;
+    for (uint32_t i = 0; i < 256; ++i) {
+      uint8_t c = memory_.Read8(fmt + i);
+      if (c == 0) break;
+      f.push_back(static_cast<char>(c));
+    }
+    std::fprintf(stderr, "[sprintf ] fmt=\"%s\" r2=0x%08x r3=0x%08x lr=0x%08x\n", f.c_str(),
+                 core.GetRegister(kR2), core.GetRegister(kR3), core.GetRegister(kLR));
+  }
+
   uint32_t arg_idx = 0;
   auto read_next_arg = [&]() -> uint32_t {
     if (arg_idx == 0) { ++arg_idx; return core.GetRegister(kR2); }
@@ -1890,6 +1901,26 @@ void ModRuntime::SnprintfImpl(IArmCore& core) {
   uint32_t dest = core.GetRegister(kR0);
   uint32_t size = core.GetRegister(kR1);
   uint32_t fmt = core.GetRegister(kR2);
+
+  // Diagnostico (ZEEB_LOG_SNPRINTF=1): imprime o formato e TODOS os varargs, um
+  // por vez, com o valor bruto. MOTIVO: a Z-Wheel monta a consulta da lista de
+  // jogos com dois passos de formatacao ("...lang_id=%d %s" com o filtro
+  // " AND GAMEINFO.class_id = %d"). Sem ver o valor cru nao da para separar
+  // "o jogo passou -1" de "nos lemos o vararg errado".
+  const bool snprintf_trace = std::getenv("ZEEB_LOG_SNPRINTF") != nullptr;
+  if (snprintf_trace) {
+    std::string f;
+    for (uint32_t i = 0; i < 256; ++i) {
+      uint8_t c = memory_.Read8(fmt + i);
+      if (c == 0) break;
+      f.push_back(static_cast<char>(c));
+    }
+    std::fprintf(stderr, "[snprintf] fmt=\"%s\" r3=0x%08x sp=0x%08x stack=[%08x %08x %08x]\n",
+                 f.c_str(), core.GetRegister(kR3), core.GetRegister(kSP),
+                 memory_.Read32(core.GetRegister(kSP)),
+                 memory_.Read32(core.GetRegister(kSP) + 4),
+                 memory_.Read32(core.GetRegister(kSP) + 8));
+  }
 
   uint32_t arg_idx = 0;
   auto read_next_arg = [&]() -> uint32_t {
