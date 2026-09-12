@@ -1,6 +1,6 @@
 # Zeebulator — Roadmap Técnico de Engenharia & Compatibilidade
 
-Documento vivo de planejamento estratégico, fases de entrega e pendências técnicas para levar o **Zeebulator** da inicialização básica até a jogabilidade genuína em todo o catálogo comercial do Zeebo.
+Documento vivo e exaustivo de planejamento estratégico, fases de entrega, auditoria formal de conformidade com o BREW SDK e pendências técnicas mapeadas para levar o **Zeebulator** da inicialização básica até a jogabilidade genuína em todo o catálogo comercial do Zeebo.
 
 ---
 
@@ -29,8 +29,8 @@ Documento vivo de planejamento estratégico, fases de entrega e pendências téc
 
 ## 2. Fase 1: Fundação, ABI BREW & Loader (Concluída)
 
-- [x] Decodificação e execução ARM1136 / Thumb com suporte diferencial (ArmInterpreter vs Dynarmic).
-- [x] Containers base: GGZ, MIF, BAR, PKG, FUFS (detecção).
+- [x] Decodificação e execução ARM1136 / Thumb com suporte diferencial (`ArmInterpreter` vs `Dynarmic`).
+- [x] Containers base: GGZ, MIF, BAR, PKG, detecção inicial de FUFS (.vfs).
 - [x] Contrato canônico de chamada Qualcomm AEE (IShell, IDisplay, IFile, IBitmap).
 - [x] Registros NID e tabelas canônicas de identificadores SDK.
 - [x] Entrega de eventos síncronos via `IShell_SendEvent` preservando contexto (`CallArmFunctionPreservingContext`).
@@ -79,13 +79,22 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
 - [ ] **Investigação do `SetDrawHandler` (Slot 16)**:
   - *Gap*: O erro 6 sumiu, mas o applet ainda não chama o slot 16 para registrar o callback de desenho da roda/carrossel.
   - *Ação*: Mapear o fluxo pós-inicialização do applet e investigar o que impede o agendamento da renderização da interface.
+- [ ] **Distinção de Formas no Slot 16**:
+  - Tratar a variante sem struct `slot16(this)` medida em `0x22d58` versus a variante com struct `&{fn, ctx, dtor}` sem interpretar `r1 != 0` arbitrário como ponteiro de função.
 - [ ] **Readback GL para Pbuffer**:
-  - Implementar o readback do framebuffer OpenGL do host para a memória guest no ponteiro do pbuffer, permitindo que composição 2D/3D híbrida funcione.
+  - Implementar o readback do framebuffer OpenGL do host para a memória guest no ponteiro do pbuffer, permitindo que a composição 2D/3D híbrida funcione.
 - [ ] **Árvore Hierárquica de Widgets & Ciclo de Vida**:
   - Manter relacionamentos pai-filho e geometria relativa de acordo com o slot 5.
-  - Gerenciamento de ciclo de vida completo no slot 17 (fontes `AEECLSID_FONTSYS` e modelos `0x8000`).
+  - Validação estrita de ponteiros de geometria no slot 5 (descartar leituras em páginas não mapeadas).
+  - Gerenciamento de ciclo de vida completo no slot 17 (fontes `AEECLSID_FONTSYS` e modelos `0x8000`) com AddRef/Release reais.
+  - Suporte ao slot 14 (Attach) com retenção de imagem/modelo associado.
+- [ ] **Semântica Específica por Classe de Widget**:
+  - Classe `0x01028e2a`: definir texto no slot 6.
+  - Extent/visibilidade reais e implementação de `GetExtent` para cálculo de layout.
+  - Implementação da classe `0x01028e3c`: slots 3 (dois blocos de saída) e 5 (halfword de passo).
+  - Slot 8 (`GetParent` vs tocador de animações da Z-Wheel).
 - [ ] **Despacho Ordenado de Entrada na Interface**:
-  - Roteamento prioritário de eventos `EVT_KEY` aos handlers de tela ativos antes do applet.
+  - Roteamento completo de eventos `EVT_KEY` priorizando a tela/widget raiz atual, do mais novo para o mais antigo, antes de entregar ao applet.
 
 ---
 
@@ -94,24 +103,40 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
 - [ ] **`IDisplay::SetDestination` Funcional**:
   - Fazer com que `DrawText`, `DrawRect` e `BitBlt` desenhem na superfície ativa selecionada (`destination_ptr_`), em vez de sempre escreverem direto no framebuffer primário.
 - [ ] **Conformidade de Tipos em `IDisplay_DrawText`**:
-  - Tratar a discrepância entre `AECHAR = uint16_t` do SDK oficial e strings narrow de 8-bit como quirk específica de títulos comprovados, em vez de regra global.
+  - Tratar a discrepância entre `AECHAR = uint16_t` do SDK oficial e strings narrow de 8-bit como quirk específica de títulos comprovados (ex: *Double Dragon*), em vez de regra global.
 - [ ] **Extensões Fixed-Function do OpenGL ES 1.1**:
   - Implementação das extensões restantes de combinadores de textura e estados de renderização exigidos por títulos 3D.
+- [ ] **Contrato `SetupNativeImage` no Runtime**:
+  - Preencher `AEEImageInfo` em R2 e out-param `*pbRealloc` em R3 conforme `AEEStdLib.h:90-91` (evitar que chamadores façam free indevido ou leiam lixo).
+- [ ] **Refcounting do Device Bitmap**:
+  - `IDisplay::GetDeviceBitmap` deve respeitar `AddRef`/`Release` legítimos de acordo com `AEEIBase.h`.
 
 ---
 
 ## 6. Fase 5: Concorrência, Servidores & Higiene de Arquitetura (Planejada)
 
 - [ ] **Eliminação de Data Races nos Servidores de Inspeção**:
-  - `mirror_server` / `/api/mem`: Leitura atômica ou via snapshot sob sincronização com a thread principal de emulação.
-- [ ] **Shutdown Não-Bloqueante**:
-  - Encerramento seguro de sockets de controle mesmo com clientes conectados ociosos.
-- [ ] **Quotas Restantes de Desserialização**:
+  - `mirror_server` / `/api/mem`: Leitura atômica ou via snapshot sob sincronização com a thread principal de emulação (evitando concorrência com `unordered_map` e escritas de CPU/JIT).
+- [ ] **Shutdown Não-Bloqueante dos Servidores de Controle**:
+  - Chamar `shutdown()` nos sockets clientes aceitos para destravar loops em `recv()` síncrono durante `Stop()`.
+- [ ] **Quotas Restantes de Desserialização e Parsers**:
   - Aplicar checagens de integridade e tetos de alocação nos desserializadores do `Mixer` e `GlTextureLog`.
-- [ ] **Validação Estrita de VFS**:
-  - Impedir resolução de symlinks que apontem para fora da raiz do pacote do jogo.
-- [ ] **Preenchimento de Slots de `IFileMgr`**:
-  - Implementar ou manter rejeição canônica detalhada nos slots 13 a 20 (`ResolvePath`, `GetFreeSpaceEx`, etc.).
+  - Proteger o sintetizador MIDI contra arquivos hostis (cálculo de buffer com ticks/divisões extremas gerando alocações abusivas).
+  - Exigir correspondência exata do número de trilhas declaradas no parser MIDI.
+- [ ] **Validação Estrita de VFS e Sandbox**:
+  - Bloquear travessia via symlinks dentro de pacotes `.mod` que apontem para arquivos fora da árvore do jogo.
+- [ ] **Polimento de `IFileMgr` e Sistema de Arquivos**:
+  - Corrigir criação indevida de handles de diretório sintéticos quando caminhos terminam com barra (`/` ou `\`).
+  - `IFILEMGR_EnumInit`: Respeitar filtro de diretório (`bDirs`) e subpastas.
+  - `IFILEMGR_GetFreeSpace`: Descontar espaço ocupado por arquivos gravados pelo jogador.
+  - Implementar de forma real os slots 13 a 20 (`ResolvePath`, `GetFreeSpaceEx`, etc.).
+- [ ] **Integridade do SQL HLE**:
+  - Tratar esgotamento de scratch no `PushScratchString` para não entregar ponteiro nulo em colunas de texto não-nulas.
+  - Prevenir que callbacks de linha em `ISQL_Exec` façam o fechamento (`DbRelease`) imediato da conexão com statements ativos (`SQLITE_BUSY`).
+- [ ] **Scheduler & Preempção de Timers**:
+  - Tratar adequadamente timers preemptados que realizam yield (`tr.yielded`), preservando sua continuação em vez de sobrescrever com a rotina anterior.
+- [ ] **ABI Formal de `IShell_SendEvent`**:
+  - Selecionar a ABI de 6 parâmetros (`wFlags`, `clsApp`, `evt`, `wParam`, `dwParam`) conforme a versão negociada do BREW em vez de heurística sobre o valor numérico do CLSID.
 
 ---
 
