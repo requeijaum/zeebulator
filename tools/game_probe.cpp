@@ -5407,9 +5407,10 @@ int main(int argc, char** argv) {
     shell_hle.SetAppletOutAddress(kPpObjAddr);
     // LoadResString le os .brf do VFS (era um stub ate agora).
     shell_hle.SetVirtualFilesystem(&vfs);
+    bool trace_ci = std::getenv("ZEEB_TRACE_CI") != nullptr;
     auto create_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, create_instance_fn,
                                                  module_ptr, shell, cls_id, kPpObjAddr,
-                                                 /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+                                                 /*trace=*/trace_ci, /*hle_trace=*/trace_ci, &display, &backend);
     // *ppObj is the IApplet* itself, not a function pointer -- HandleEvent
     // is slot 2 of *its* vtable (AddRef=0, Release=1, HandleEvent=2, per
     // the real AEEAppGen.c reference source's IAppletVtbl init order).

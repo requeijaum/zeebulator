@@ -210,13 +210,13 @@ Harness `testkit/smoke_now.py`, resultados em `testkit/census_now.jsonl`.
 
 | veredito | títulos |
 |---|---|
-| renderiza e apresenta | 18 |
+| renderiza e apresenta | 20 |
 | renderiza, não apresenta | 3 |
-| vazio (os dois métodos concordam) | 32 |
-| morto | 7 |
+| vazio (os dois concordam) | 33 |
+| morto | 4 |
 | indefinido / sem captura | 2 |
 
-Mortos: **30 → 7**. Títulos com imagem: **4 → 18**.
+Mortos: **30 → 4**. Títulos com imagem: **4 → 20**.
 
 Duas lições de método ficaram registradas:
 - **Captura única mente por título.** Medindo só a janela, `abd` marca 2 cores

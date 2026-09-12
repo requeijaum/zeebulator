@@ -108,14 +108,14 @@ entrada do jogador nesta bateria. Contagem de cores mede imagem; um título com
 
 | veredito | títulos |
 |---|---|
-| renderiza e apresenta | 18 |
+| renderiza e apresenta | 20 |
 | renderiza, não apresenta | 3 |
-| vazio (os dois concordam) | 32 |
-| morto | 7 |
+| vazio (os dois concordam) | 33 |
+| morto | 4 |
 | indefinido / sem captura | 2 |
 
 Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
-27 iguais**. Mortos caíram de 30 para 7.
+27 iguais**. Mortos caíram de 30 para 4.
 
 ### Duas regressões, com causas diferentes
 
@@ -128,19 +128,19 @@ Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
 
 ### A causa dominante dos mortos é nossa, não dos jogos
 
-**Dos 11 mortos da primeira passagem, 7 eram ClsId errado** — o próprio despacho
-do jogo recusava a classe (`*ppObj=0`, sem estouro nem desvio). Oito ClsIds foram
-corrigidos ao todo. Dos **7 que restam**, as causas são distintas e estão
-listadas na tabela.
+**Dos 15 mortos acumulados nas passagens, 11 eram ClsId errado** — o próprio despacho
+do jogo recusava a classe (`*ppObj=0`, sem estouro nem desvio). Onze ClsIds foram
+corrigidos ao todo (4 + 4 + 3). Dos **4 que restam** (`recklessracing`, `cnk2`,
+`fifa09`, `pbc`), as causas são distintas e estão listadas na tabela.
 Isso é um limite do emulador, não defeito do título. O `recklessracing` prova:
 estoura o orçamento e ainda assim tem **77.021 cores no FBO** — o maior conteúdo
 do corpus inteiro. Está renderizando e sendo abortado.
 
 ### Defeitos de dados corrigidos no `corpus62.json`
 
-Quatro títulos eram medidos com ClsId errado, o que os registrava como mortos.
+Onze títulos eram medidos com ClsId errado, o que os registrava como mortos.
 Cada ClsId novo foi validado por sonda, exigindo `CreateInstance OK` e laço de
-eventos ativo:
+eventos ativo. Última rodada:
 
 | título | antes | depois | efeito |
 |---|---|---|---|
@@ -149,8 +149,14 @@ eventos ativo:
 | `zeebopeteca` | `0x1060000` | `0x108ff18` | morto → 729 cores |
 | `footparty` | `0x1060000` | `0x108ff19` | morto → vivo |
 
-`zenonia` continua com ClsId desconhecido: os candidatos testados falharam, e
-registrar "desconhecido" é mais honesto que inventar um valor.
+| `a3d` | `0x10900b9` | `0x1081970` | morto → vivo |
+| `heavyweaponbrew` | `0x103081d` | `0x10978a2` | morto → vivo |
+| `zenonia` | `0x43bcf` | `0xbf2e2021` | morto → vivo, 56 cores |
+
+O ClsId da `zenonia` (`0xbf2e2021`) não está na faixa BREW comum — foi lido no
+próprio despacho do jogo (`ldr r0, [pc]` em `0x1793b4`, retornado em r0 e
+comparado em `0x10217c`), depois de três tentativas erradas com decimais
+mal convertidos. Fica o registro do método, não só do valor.
 
 ### Caso indefinido, deliberadamente não classificado
 
@@ -181,14 +187,17 @@ cores distintas; "antes" é o censo anterior.
 | `tectoy` | renderiza e apresenta | 275 | 275 | 1 | +274 |  |
 | `ddragonz` | renderiza e apresenta | 262 | 262 | 262 | +0 |  |
 | `game` | renderiza e apresenta | 79 | 79 | 1 | +78 |  |
+| `zenonia` | renderiza e apresenta | 56 | 56 | 1 | +55 |  |
 | `quake` | renderiza e apresenta | 4 | 4 | 1 | +3 |  |
 | `bio4_brew` | renderiza e apresenta | 3 | 3 | 1 | +2 |  |
+| `heavyweaponbrew` | renderiza e apresenta | 3 | 3 | 1 | +2 |  |
 | `pacmania` | renderiza e apresenta | 3 | 3 | 3 | +0 |  |
 | `abd` | renderiza, não apresenta | 1957 | 2 | 7910 | -5953 |  |
 | `gof` | renderiza, não apresenta | 4 | 1 | 1 | +3 |  |
 | `nfs` | renderiza, não apresenta | 4 | 2 | 1 | +3 |  |
 | `chessbots` | indefinido (captura) | 1 | 1015 | 1 | +1014 |  |
 | `activitycenter` | sem captura de FBO | — | 2 | 2 | +0 |  |
+| `a3d` | vazio | 2 | 2 | 1 | +1 |  |
 | `alice` | vazio | 2 | 2 | 2 | +0 |  |
 | `asq` | vazio | 2 | 2 | 1 | +1 |  |
 | `baddudes` | vazio | 2 | 2 | 2 | +0 |  |
@@ -222,12 +231,9 @@ cores distintas; "antes" é o censo anterior.
 | `zeebovolley` | vazio | 2 | 2 | 2 | +0 |  |
 | `zumar` | vazio | 2 | 2 | 1 | +1 |  |
 | `recklessracing` | morto | 77021 | 1 | 1 | +77020 | estouro de 64M passos |
-| `a3d` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `cnk2` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `fifa09` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `heavyweaponbrew` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 | `pbc` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
-| `zenonia` | morto | — | 1 | 1 | +0 | estouro de 64M passos |
 ---
 
 ## Z-Wheel: estado atual medido
