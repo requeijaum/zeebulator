@@ -170,6 +170,23 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   void Rotate(float angle_degrees, float x, float y, float z) override;
   void Scale(float x, float y, float z) override;
   void Color4(float r, float g, float b, float a) override;
+  // Ver core/brew/gl_backend.h: estado fixed-function que a Z-Wheel chama aos
+  // milhares por segundo e que ate agora morria em Stub silencioso.
+  void TexEnvMode(GLenum mode) override;
+  void CullFace(GLenum mode) override;
+  void FrontFace(GLenum mode) override;
+  void ShadeModel(GLenum mode) override;
+  void ActiveTexture(GLenum texture) override;
+  void ClientActiveTexture(GLenum texture) override;
+  void PixelStorei(GLenum pname, GLint param) override;
+  void Materialfv(GLenum face, GLenum pname, const float* values, int count) override;
+  void Lightfv(GLenum light, GLenum pname, const float* values, int count) override;
+  void LightModelfv(GLenum pname, const float* values, int count) override;
+  void StencilFunc(GLenum func, GLint ref, GLuint mask) override;
+  void StencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) override;
+  void Hint(GLenum target, GLenum mode) override;
+  void Finish() override;
+  GLenum GetError() override;
   void AlphaFunc(GLenum func, float ref) override;
   void BlendFunc(GLenum sfactor, GLenum dfactor) override;
   void DepthFunc(GLenum func) override;
@@ -263,6 +280,26 @@ class Sdl2UnifiedBackend : public Backend, public GlBackend {
   void* glRenderbufferStorage_ = nullptr;
   void* glFramebufferRenderbuffer_ = nullptr;
   void* glDeleteRenderbuffers_ = nullptr;
+  // glActiveTexture/glClientActiveTexture sao GL 1.3; o <GL/gl.h> minimo que
+  // este arquivo inclui nao garante prototipo, entao vem por
+  // SDL_GL_GetProcAddress como os pontos de entrada de FBO acima.
+  void* glActiveTexture_ = nullptr;
+  void* glClientActiveTexture_ = nullptr;
+  // Unidade de textura que o GUEST pediu (glActiveTexture/
+  // glClientActiveTexture). Guardada porque toda apresentacao nossa (quad do
+  // framebuffer 2D, overlay de FPS, blit final) desenha na unidade 0: sem
+  // devolver a unidade do jogo depois, o proximo comando dele iria para a
+  // unidade errada.
+  GLenum guest_active_texture_ = 0x84C0;         // GL_TEXTURE0
+  GLenum guest_client_active_texture_ = 0x84C0;  // GL_TEXTURE0
+  // Alinhamento de desempacotamento pedido pelo guest (glPixelStorei).
+  // GlHle ja entrega os pixels COMPACTADOS, entao o upload usa 1 e este
+  // valor so e restaurado depois -- ver TexImage2D.
+  GLint guest_unpack_alignment_ = 4;
+  // Seleciona a unidade 0 para o desenho interno do frontend e devolve a
+  // unidade do guest depois. No-op quando o driver nao expoe multitextura.
+  void SelectHostUnitZero();
+  void RestoreGuestTextureUnits();
 
   int window_scale_ = 1;
   // Created eagerly and unconditionally in the constructor, not lazily

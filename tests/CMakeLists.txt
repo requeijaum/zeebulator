@@ -35,6 +35,7 @@ add_executable(zeebulator_tests
   virtual_filesystem_test.cpp
   file_hle_test.cpp
   gl_hle_test.cpp
+  gl_fixed_function_test.cpp
   hid_hle_test.cpp
   gl_lifecycle_test.cpp
   wav_test.cpp
@@ -59,6 +60,7 @@ add_executable(zeebulator_tests
   png_test.cpp
   tga_test.cpp
   gif_test.cpp
+  bmp_test.cpp
   letterbox_test.cpp
   ${PROJECT_SOURCE_DIR}/frontends/standalone/letterbox.cpp
   save_state_test.cpp

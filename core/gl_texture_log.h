@@ -145,7 +145,42 @@ class GlTextureRecordingBackend : public GlBackend {
   }
   void Scale(float x, float y, float z) override { real_.Scale(x, y, z); }
   void Color4(float r, float g, float b, float a) override { real_.Color4(r, g, b, a); }
+  // DEFEITO REAL ENCONTRADO AQUI: TexEnvMode existia em GlBackend com corpo
+  // default vazio e este decorator NAO a encaminhava. Como o game_probe
+  // sempre envolve o backend real neste decorator, os 4135 glTexEnvx/frame
+  // medidos na Z-Wheel morriam aqui -- o host ficava no GL_MODULATE default
+  // mesmo quando o jogo pedia GL_REPLACE. Exatamente a mesma armadilha do
+  // ReadPixelsRgba descrita abaixo.
+  void TexEnvMode(GLenum mode) override { real_.TexEnvMode(mode); }
   void AlphaFunc(GLenum func, float ref) override { real_.AlphaFunc(func, ref); }
+  // Estado fixed-function medido como usado pela Z-Wheel (ver gl_backend.h):
+  // cada um destes tem corpo default na base, entao esquecer o encaminhamento
+  // aqui NAO daria erro de compilacao -- daria mais uma falha silenciosa.
+  // tests/gl_backend_forwarding_test.cpp cobre metodo por metodo.
+  void CullFace(GLenum mode) override { real_.CullFace(mode); }
+  void FrontFace(GLenum mode) override { real_.FrontFace(mode); }
+  void ShadeModel(GLenum mode) override { real_.ShadeModel(mode); }
+  void ActiveTexture(GLenum texture) override { real_.ActiveTexture(texture); }
+  void ClientActiveTexture(GLenum texture) override { real_.ClientActiveTexture(texture); }
+  void PixelStorei(GLenum pname, GLint param) override { real_.PixelStorei(pname, param); }
+  void Materialfv(GLenum face, GLenum pname, const float* values, int count) override {
+    real_.Materialfv(face, pname, values, count);
+  }
+  void Lightfv(GLenum light, GLenum pname, const float* values, int count) override {
+    real_.Lightfv(light, pname, values, count);
+  }
+  void LightModelfv(GLenum pname, const float* values, int count) override {
+    real_.LightModelfv(pname, values, count);
+  }
+  void StencilFunc(GLenum func, GLint ref, GLuint mask) override {
+    real_.StencilFunc(func, ref, mask);
+  }
+  void StencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) override {
+    real_.StencilOp(sfail, dpfail, dppass);
+  }
+  void Hint(GLenum target, GLenum mode) override { real_.Hint(target, mode); }
+  void Finish() override { real_.Finish(); }
+  GLenum GetError() override { return real_.GetError(); }
   void BlendFunc(GLenum sfactor, GLenum dfactor) override { real_.BlendFunc(sfactor, dfactor); }
   void DepthFunc(GLenum func) override { real_.DepthFunc(func); }
   void ClearDepth(float depth) override { real_.ClearDepth(depth); }

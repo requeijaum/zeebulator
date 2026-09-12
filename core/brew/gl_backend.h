@@ -26,6 +26,16 @@ struct GlVertexArrays {
   int texcoord_size = 0;  // components per vertex: 2, 3, or 4
   std::vector<float> texcoords;
 
+  // Segunda unidade de textura (GL_TEXTURE1). MEDIDO na Z-Wheel: o jogo
+  // chama glActiveTexture/glClientActiveTexture com GL_TEXTURE1 2044 vezes
+  // (contra 3796 com GL_TEXTURE0) numa execucao de ~35 s -- multitextura de
+  // verdade. Com um unico conjunto de coordenadas, o ponteiro da unidade 1
+  // sobrescrevia o da unidade 0 e as duas etapas desenhavam com a coordenada
+  // errada.
+  bool has_texcoord1 = false;
+  int texcoord1_size = 0;
+  std::vector<float> texcoords1;
+
   bool has_normal = false;  // always 3 components (x,y,z) per vertex
   std::vector<float> normals;
 
@@ -110,6 +120,68 @@ class GlBackend {
     (void)x; (void)y; (void)width; (void)height; (void)out;
     return false;
   }
+
+  // --- Estado fixed-function que o jogo REALMENTE pede -------------------
+  //
+  // EVIDENCIA MEDIDA (Z-Wheel / tectoy.mod, clsid 17237912, ~28 s de
+  // execucao com histograma por slot da vtable IGL): estes slots eram Stub
+  // silencioso e mesmo assim o jogo os chamava o tempo todo --
+  // glActiveTexture 4240, glClientActiveTexture 4240, glMaterialxv 848,
+  // glHint 424, glShadeModel 319, glCullFace 213, glFinish 212,
+  // glStencilFunc 212, glStencilOp 212, glLightxv 106, glGetError 51,
+  // glPixelStorei 25. Ignorar instrucao de desenho do jogo nao e "neutro":
+  // glCullFace ignorado deixa o descarte de faces no default do host
+  // (GL_BACK, mas com GL_CULL_FACE so ligado se o jogo ligar), e um modelo
+  // desenhado com a escolha errada mostra faces de tras junto com as da
+  // frente (sintoma relatado: "a roda tem 2 raios, entre frente e fundo").
+  //
+  // Todos tem corpo default vazio aqui porque backends sem GL real (fake de
+  // teste, software) nao tem o que fazer com eles -- mas o decorator
+  // GlTextureRecordingBackend e OBRIGADO a encaminhar cada um (ver
+  // core/gl_texture_log.h e tests/gl_backend_forwarding_test.cpp: um metodo
+  // novo que fica so no default da base ja causou uma falha silenciosa real
+  // com ReadPixelsRgba).
+  virtual void CullFace(GLenum mode) { (void)mode; }
+  // glFrontFace NAO aparece no histograma da Z-Wheel (slot 34, zero
+  // chamadas) -- ou seja, o jogo usa o default CCW. Implementado mesmo
+  // assim porque o slot existe e outro titulo pode chama-lo.
+  virtual void FrontFace(GLenum mode) { (void)mode; }
+  virtual void ShadeModel(GLenum mode) { (void)mode; }
+  // Unidade de textura ativa (servidor) e unidade ativa para os arrays de
+  // cliente (glTexCoordPointer). Sem elas, tudo caia na unidade 0.
+  virtual void ActiveTexture(GLenum texture) { (void)texture; }
+  virtual void ClientActiveTexture(GLenum texture) { (void)texture; }
+  // glPixelStorei(GL_UNPACK_ALIGNMENT/GL_PACK_ALIGNMENT, n). GlHle usa o
+  // valor de UNPACK para andar linha a linha na memoria do guest e entrega
+  // SEMPRE pixels compactados (stride = width*bytes_por_pixel) em
+  // GlTextureImage; o backend, por isso, deve fazer o upload com
+  // alinhamento 1, nao com o valor do guest.
+  virtual void PixelStorei(GLenum pname, GLint param) { (void)pname; (void)param; }
+  // Iluminacao fixed-function. `values` sao floats ja convertidos de
+  // GLfixed 16.16 por GlHle; `count` e quantos componentes aquele pname
+  // realmente tem (1 para GL_SHININESS/GL_SPOT_EXPONENT, 3 para
+  // GL_SPOT_DIRECTION, 4 para as cores e para GL_POSITION).
+  virtual void Materialfv(GLenum face, GLenum pname, const float* values, int count) {
+    (void)face; (void)pname; (void)values; (void)count;
+  }
+  virtual void Lightfv(GLenum light, GLenum pname, const float* values, int count) {
+    (void)light; (void)pname; (void)values; (void)count;
+  }
+  virtual void LightModelfv(GLenum pname, const float* values, int count) {
+    (void)pname; (void)values; (void)count;
+  }
+  virtual void StencilFunc(GLenum func, GLint ref, GLuint mask) {
+    (void)func; (void)ref; (void)mask;
+  }
+  virtual void StencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
+    (void)sfail; (void)dpfail; (void)dppass;
+  }
+  virtual void Hint(GLenum target, GLenum mode) { (void)target; (void)mode; }
+  virtual void Finish() {}
+  // Erro REAL do host. O default 0 (GL_NO_ERROR) so vale para backend sem
+  // GL nenhum; devolver 0 fixo com GL real em baixo esconde exatamente os
+  // erros de upload de textura que estamos cacando.
+  virtual GLenum GetError() { return 0; }
 
   // Core GL state / transform calls, host-native (float, not GLfixed).
   // GLenum/GLbitfield are passed through as-is: their values are the same

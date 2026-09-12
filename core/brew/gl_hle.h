@@ -183,6 +183,28 @@ class GlHle {
   void GlDrawArrays(IArmCore& core);
   void GlDrawElements(IArmCore& core);
 
+  // Estado fixed-function medido como REALMENTE chamado pela Z-Wheel
+  // (histograma por slot da vtable IGL, ~28 s de execucao) e que ate agora
+  // caia em Stub silencioso -- ver o comentario de cada implementacao em
+  // gl_hle.cpp para a contagem exata e o defeito visual associado.
+  void GlActiveTexture(IArmCore& core);
+  void GlClientActiveTexture(IArmCore& core);
+  void GlCullFace(IArmCore& core);
+  void GlFrontFace(IArmCore& core);
+  void GlShadeModel(IArmCore& core);
+  void GlHint(IArmCore& core);
+  void GlFinish(IArmCore& core);
+  void GlGetError(IArmCore& core);
+  void GlPixelStorei(IArmCore& core);
+  void GlMaterialx(IArmCore& core);
+  void GlMaterialxv(IArmCore& core);
+  void GlLightx(IArmCore& core);
+  void GlLightxv(IArmCore& core);
+  void GlLightModelx(IArmCore& core);
+  void GlLightModelxv(IArmCore& core);
+  void GlStencilFunc(IArmCore& core);
+  void GlStencilOp(IArmCore& core);
+
   // Texture object management + upload.
   void GlGenTextures(IArmCore& core);
   void GlGetString(IArmCore& core);
@@ -219,9 +241,22 @@ class GlHle {
   uint32_t surface_manip_obj_ = 0;
   uint32_t gl_vtable_addr_ = 0;
   std::map<std::string, uint32_t> proc_addresses_;
+  // GL_UNPACK_ALIGNMENT pedido pelo guest (glPixelStorei). Default 4, como
+  // manda a especificacao -- e por isso que ignora-lo nao era neutro: uma
+  // textura RGB/565 de largura impar tem padding de linha na memoria do
+  // guest, e ler width*bpp por linha desalinha a imagem inteira.
+  int unpack_alignment_ = 4;
+
   ArrayState vertex_array_;
   ArrayState color_array_;
-  ArrayState texcoord_array_;
+  // Um array de coordenadas de textura POR UNIDADE (medido: a Z-Wheel usa
+  // GL_TEXTURE0 e GL_TEXTURE1). glTexCoordPointer/glEnableClientState atuam
+  // sobre a unidade escolhida por glClientActiveTexture, nao sobre uma unica
+  // global -- era isso que fazia a segunda etapa de textura sobrescrever a
+  // primeira.
+  static constexpr int kMaxTextureUnits = 2;
+  ArrayState texcoord_arrays_[kMaxTextureUnits];
+  int client_active_unit_ = 0;
   ArrayState normal_array_;
 
   struct EglSurfaceState {

@@ -26,6 +26,20 @@ namespace zeebulator {
 
 namespace {
 
+// GL 1.3 (multitextura) e nomes de glPixelStorei. Declarados como literais
+// para nao depender do que cada <GL/gl.h> resolve declarar.
+constexpr unsigned int kHostTexture0 = 0x84C0;
+constexpr unsigned int kHostTextureEnv = 0x2300;
+constexpr unsigned int kHostTextureEnvMode = 0x2200;
+constexpr unsigned int kHostUnpackAlignment = 0x0CF5;
+constexpr unsigned int kHostPackAlignment = 0x0D05;
+
+// Assinaturas de glActiveTexture/glClientActiveTexture declaradas aqui: o
+// <SDL_opengl_glext.h> so garante PFNGLACTIVETEXTUREPROC, e a variante de
+// cliente aparece apenas como ...ARBPROC em algumas instalacoes. Sao funcoes
+// GL padrao de um unico argumento GLenum, entao o typedef proprio e exato.
+using HostTextureUnitFn = void(APIENTRY*)(unsigned int);
+
 // Minimal 3x5 dot-matrix font, just the glyphs the FPS overlay needs.
 // Each row's 3 bits are columns left..right (bit2=leftmost).
 struct FontGlyph {
@@ -126,6 +140,10 @@ Sdl2UnifiedBackend::Sdl2UnifiedBackend(SDL_Window* window, int width, int height
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width_, height_, /*border=*/0, GL_RGB,
                  GL_UNSIGNED_SHORT_5_6_5, nullptr);
     glBindTexture(GL_TEXTURE_2D, 0);
+    // Todo upload que passa por este backend chega com as linhas compactadas
+    // (GlHle ja aplicou o GL_UNPACK_ALIGNMENT do guest ao ler a memoria
+    // emulada), entao o default 4 do host so poderia corromper linhas.
+    glPixelStorei(kHostUnpackAlignment, 1);
   }
 
   SDL_AudioSpec desired{};
@@ -206,6 +224,10 @@ bool Sdl2UnifiedBackend::InitFramebuffer() {
   glRenderbufferStorage_ = SDL_GL_GetProcAddress("glRenderbufferStorage");
   glFramebufferRenderbuffer_ = SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
   glDeleteRenderbuffers_ = SDL_GL_GetProcAddress("glDeleteRenderbuffers");
+  // Multitextura (GL 1.3). Opcional: se o driver nao expuser, guardamos o
+  // pedido do jogo e seguimos na unidade 0 -- nunca fingimos que trocamos.
+  glActiveTexture_ = SDL_GL_GetProcAddress("glActiveTexture");
+  glClientActiveTexture_ = SDL_GL_GetProcAddress("glClientActiveTexture");
   if (glGenFramebuffers_ == nullptr || glBindFramebuffer_ == nullptr ||
       glFramebufferTexture2D_ == nullptr || glCheckFramebufferStatus_ == nullptr ||
       glDeleteFramebuffers_ == nullptr || glGenRenderbuffers_ == nullptr ||
@@ -289,6 +311,10 @@ void Sdl2UnifiedBackend::PushVideoFrame(const void* framebuffer, int width, int 
     BindFramebufferForPresent(GL_FRAMEBUFFER, fbo_);
   }
 
+  // O quad 2D usa a unidade de textura 0. Se o jogo deixou outra unidade ativa
+  // (glActiveTexture, 4240 chamadas medidas na Z-Wheel), o glBindTexture
+  // abaixo iria para a unidade errada e a tela 2D sairia preta.
+  SelectHostUnitZero();
   glBindTexture(GL_TEXTURE_2D, video_texture_);
   // RGB565 maps directly onto GL's own packed GL_UNSIGNED_SHORT_5_6_5
   // format -- no pixel conversion needed. Texel row 0 (the first bytes
@@ -344,6 +370,7 @@ void Sdl2UnifiedBackend::PushVideoFrame(const void* framebuffer, int width, int 
   glPopAttrib();
 
   PresentFrame();
+  RestoreGuestTextureUnits();
   // Devolve o alvo do jogo, para que os proximos comandos GL dele continuem
   // caindo no pbuffer e nao no FBO de apresentacao.
   if (restore_pbuffer && BindFramebufferForPresent != nullptr) {
@@ -409,6 +436,9 @@ void Sdl2UnifiedBackend::DrawOverlay() {
   bool show_status =
       !status_message_.empty() && SDL_GetTicks() < status_message_expires_ms_;
 
+  // Texto do overlay: unidade 0, sem textura. glDisable(GL_TEXTURE_2D) so vale
+  // para a unidade ativa, entao trocar para a 0 antes e obrigatorio.
+  SelectHostUnitZero();
   glPushAttrib(GL_ALL_ATTRIB_BITS);
   glDisable(GL_TEXTURE_2D);
   glDisable(GL_DEPTH_TEST);
@@ -462,6 +492,9 @@ void Sdl2UnifiedBackend::PresentFrame() {
     fps_last_tick_ms_ = now;
   }
   DrawOverlay();
+
+  // Toda a apresentacao abaixo (blit do FBO) e desenho NOSSO na unidade 0.
+  SelectHostUnitZero();
 
   if (fbo_ == 0) {
     // See InitFramebuffer's own doc comment: no real FBO support, so
@@ -534,6 +567,8 @@ void Sdl2UnifiedBackend::PresentFrame() {
   // Rebind for the next frame's rendering (this class's own and the
   // real app's) -- see InitFramebuffer's own doc comment.
   BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+  // Devolve a unidade de textura que o jogo tinha escolhido.
+  RestoreGuestTextureUnits();
 }
 
 bool Sdl2UnifiedBackend::BindOffscreenTarget(int width, int height) {
@@ -845,7 +880,135 @@ void Sdl2UnifiedBackend::DepthFunc(GLenum func) { glDepthFunc(func); }
 void Sdl2UnifiedBackend::ClearDepth(float depth) { glClearDepth(static_cast<GLdouble>(depth)); }
 void Sdl2UnifiedBackend::DepthMask(bool flag) { glDepthMask(flag ? GL_TRUE : GL_FALSE); }
 
+// --- Estado fixed-function que a Z-Wheel usa de verdade --------------------
+// Cada metodo abaixo existia como Stub silencioso ate o histograma por slot
+// da vtable IGL mostrar o jogo chamando todos eles (ver gl_backend.h).
+
+// glTexEnvx(GL_TEXTURE_ENV_MODE, ...) -- 4135 chamadas medidas em ~28 s. Este
+// metodo ja existia em GlBackend, mas NINGUEM no caminho do SDL o
+// implementava: o host ficava sempre em GL_MODULATE. Um jogo que pede
+// GL_REPLACE e recebe MODULATE ve a textura multiplicada pela cor de vertice/
+// iluminacao corrente -- se essa cor for escura, a textura vira preta.
+void Sdl2UnifiedBackend::TexEnvMode(GLenum mode) {
+  glTexEnvi(kHostTextureEnv, kHostTextureEnvMode, static_cast<GLint>(mode));
+}
+
+// 213 chamadas medidas. O jogo escolhe QUAL face descartar; ignorar isso
+// deixava o host no default GL_BACK, e com a orientacao/matriz do jogo isso
+// mostra faces de tras junto com as da frente (sintoma: "a roda tem 2 raios").
+void Sdl2UnifiedBackend::CullFace(GLenum mode) { glCullFace(mode); }
+// Zero chamadas medidas na Z-Wheel (slot 34 nunca disparou): o jogo fica no
+// default GL_CCW. Implementado porque o slot existe.
+void Sdl2UnifiedBackend::FrontFace(GLenum mode) { glFrontFace(mode); }
+// 319 chamadas. GL_FLAT vs GL_SMOOTH muda a interpolacao de cor por face.
+void Sdl2UnifiedBackend::ShadeModel(GLenum mode) { glShadeModel(mode); }
+
+void Sdl2UnifiedBackend::ActiveTexture(GLenum texture) {
+  guest_active_texture_ = texture;
+  if (glActiveTexture_ == nullptr) return;
+  reinterpret_cast<HostTextureUnitFn>(glActiveTexture_)(texture);
+}
+
+void Sdl2UnifiedBackend::ClientActiveTexture(GLenum texture) {
+  guest_client_active_texture_ = texture;
+  if (glClientActiveTexture_ == nullptr) return;
+  reinterpret_cast<HostTextureUnitFn>(glClientActiveTexture_)(texture);
+}
+
+void Sdl2UnifiedBackend::SelectHostUnitZero() {
+  if (glActiveTexture_ != nullptr && guest_active_texture_ != kHostTexture0) {
+    reinterpret_cast<HostTextureUnitFn>(glActiveTexture_)(kHostTexture0);
+  }
+  if (glClientActiveTexture_ != nullptr && guest_client_active_texture_ != kHostTexture0) {
+    reinterpret_cast<HostTextureUnitFn>(glClientActiveTexture_)(kHostTexture0);
+  }
+}
+
+void Sdl2UnifiedBackend::RestoreGuestTextureUnits() {
+  if (glActiveTexture_ != nullptr && guest_active_texture_ != kHostTexture0) {
+    reinterpret_cast<HostTextureUnitFn>(glActiveTexture_)(guest_active_texture_);
+  }
+  if (glClientActiveTexture_ != nullptr && guest_client_active_texture_ != kHostTexture0) {
+    reinterpret_cast<HostTextureUnitFn>(glClientActiveTexture_)(
+        guest_client_active_texture_);
+  }
+}
+
+// 25 chamadas medidas. O efeito REAL do alinhamento de desempacotamento e
+// consumido em GlHle (que anda linha a linha na memoria do guest e entrega os
+// pixels ja compactados); aqui guardamos o pedido para poder restaura-lo e
+// encaminhamos o lado do EMPACOTAMENTO (glReadPixels), que e do host.
+void Sdl2UnifiedBackend::PixelStorei(GLenum pname, GLint param) {
+  if (pname == kHostUnpackAlignment) {
+    guest_unpack_alignment_ = param;
+    return;  // o upload usa 1: ver TexImage2D.
+  }
+  if (pname == kHostPackAlignment) {
+    glPixelStorei(pname, param);
+    return;
+  }
+  glPixelStorei(pname, param);
+}
+
+// 848 chamadas de glMaterialxv e 106 de glLightxv medidas, junto com 424
+// glNormalPointer: o jogo usa iluminacao de verdade. Sem material/luz o host
+// fica no default (material difuso cinza 0.8, luz 0 apagada), e qualquer
+// superficie iluminada sai com a cor errada -- no limite, quase preta.
+void Sdl2UnifiedBackend::Materialfv(GLenum face, GLenum pname, const float* values, int count) {
+  if (values == nullptr || count <= 0) return;
+  if (count == 1) {
+    glMaterialf(face, pname, values[0]);  // GL_SHININESS
+  } else {
+    glMaterialfv(face, pname, values);
+  }
+}
+
+void Sdl2UnifiedBackend::Lightfv(GLenum light, GLenum pname, const float* values, int count) {
+  if (values == nullptr || count <= 0) return;
+  if (count == 1) {
+    glLightf(light, pname, values[0]);  // GL_SPOT_EXPONENT/CUTOFF, atenuacoes
+  } else {
+    glLightfv(light, pname, values);
+  }
+}
+
+void Sdl2UnifiedBackend::LightModelfv(GLenum pname, const float* values, int count) {
+  if (values == nullptr || count <= 0) return;
+  if (count == 1) {
+    glLightModelf(pname, values[0]);
+  } else {
+    glLightModelfv(pname, values);
+  }
+}
+
+// 212 chamadas de cada. O FBO de apresentacao ainda nao tem anexo de stencil,
+// entao o teste em si nao recorta nada; mesmo assim o estado e programado de
+// verdade no host (nao e mais engolido) e passa a valer assim que houver
+// buffer de stencil.
+void Sdl2UnifiedBackend::StencilFunc(GLenum func, GLint ref, GLuint mask) {
+  glStencilFunc(func, ref, mask);
+}
+void Sdl2UnifiedBackend::StencilOp(GLenum sfail, GLenum dpfail, GLenum dppass) {
+  glStencilOp(sfail, dpfail, dppass);
+}
+
+// 424 chamadas. So dica de qualidade, mas e instrucao do jogo.
+void Sdl2UnifiedBackend::Hint(GLenum target, GLenum mode) { glHint(target, mode); }
+
+// 212 chamadas. O jogo espera bloquear ate o GPU terminar (ele le o color
+// buffer logo depois, via eglGetColorBufferQUALCOMM).
+void Sdl2UnifiedBackend::Finish() { glFinish(); }
+
+// 51 chamadas. Devolver 0 fixo escondia exatamente os erros de upload de
+// textura que procuramos -- agora e o erro REAL do driver.
+GLenum Sdl2UnifiedBackend::GetError() { return static_cast<GLenum>(glGetError()); }
+
 void Sdl2UnifiedBackend::DrawArrays(GLenum mode, const GlVertexArrays& arrays) {
+  // GlVertexArrays traz um conjunto de coordenadas POR UNIDADE de textura
+  // (medido: a Z-Wheel usa GL_TEXTURE0 e GL_TEXTURE1). Os arrays de posicao,
+  // cor e normal sao globais; os de coordenada sao por unidade, entao cada um
+  // e programado com a sua unidade de cliente selecionada.
+  SelectHostUnitZero();
   if (arrays.has_position) {
     glEnableClientState(GL_VERTEX_ARRAY);
     glVertexPointer(arrays.position_size, GL_FLOAT, 0, arrays.positions.data());
@@ -864,6 +1027,20 @@ void Sdl2UnifiedBackend::DrawArrays(GLenum mode, const GlVertexArrays& arrays) {
   } else {
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
   }
+  // Unidade 1: so mexe nela se o driver tiver multitextura. Sem isso o
+  // array da unidade 1 acabaria programado na unidade 0 (que e justamente o
+  // bug que estamos consertando).
+  auto ClientActiveTextureFn = reinterpret_cast<HostTextureUnitFn>(glClientActiveTexture_);
+  if (ClientActiveTextureFn != nullptr) {
+    ClientActiveTextureFn(kHostTexture0 + 1);
+    if (arrays.has_texcoord1) {
+      glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+      glTexCoordPointer(arrays.texcoord1_size, GL_FLOAT, 0, arrays.texcoords1.data());
+    } else {
+      glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    }
+    ClientActiveTextureFn(kHostTexture0);
+  }
   if (arrays.has_normal) {
     glEnableClientState(GL_NORMAL_ARRAY);
     glNormalPointer(GL_FLOAT, 0, arrays.normals.data());
@@ -871,6 +1048,7 @@ void Sdl2UnifiedBackend::DrawArrays(GLenum mode, const GlVertexArrays& arrays) {
     glDisableClientState(GL_NORMAL_ARRAY);
   }
   glDrawArrays(mode, 0, arrays.vertex_count);
+  RestoreGuestTextureUnits();
 }
 
 void Sdl2UnifiedBackend::GenTextures(GLsizei n, GLuint* textures) { glGenTextures(n, textures); }
@@ -889,11 +1067,26 @@ void Sdl2UnifiedBackend::TexParameter(GLenum target, GLenum pname, GLint param) 
   }
 }
 void Sdl2UnifiedBackend::TexImage2D(GLenum target, const GlTextureImage& image) {
+  // GlHle SEMPRE entrega linhas compactadas (ele mesmo aplica o
+  // GL_UNPACK_ALIGNMENT do guest ao ler a memoria emulada), entao o upload
+  // tem de usar alinhamento 1. Com o default 4 do host, qualquer textura
+  // RGB/565 de largura nao multipla de 4/2 era lida deslocada -- linhas
+  // escorregando e canais trocados, que e exatamente o tipo de sintoma
+  // relatado ("texturas azuis pretas").
+  glPixelStorei(kHostUnpackAlignment, 1);
   glTexImage2D(target, image.level, static_cast<GLint>(image.internal_format), image.width,
                image.height, /*border=*/0, image.format, image.type, image.pixels);
+  if (std::getenv("ZEEB_LOG_GPU") != nullptr) {
+    GLenum err = static_cast<GLenum>(glGetError());
+    std::fprintf(stderr,
+                 "[tex_upload] %dx%d internal=0x%x format=0x%x type=0x%x pixels=%s err=0x%x\n",
+                 image.width, image.height, image.internal_format, image.format, image.type,
+                 image.pixels != nullptr ? "sim" : "nulo", err);
+  }
 }
 
 void Sdl2UnifiedBackend::TexSubImage2D(GLenum target, const GlTextureSubImage& image) {
+  glPixelStorei(kHostUnpackAlignment, 1);  // mesmo motivo de TexImage2D
   glTexSubImage2D(target, image.level, image.xoffset, image.yoffset, image.width,
                   image.height, image.format, image.type, image.pixels);
 }

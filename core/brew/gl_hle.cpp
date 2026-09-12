@@ -106,6 +106,50 @@ void WriteCString(Memory& memory, uint32_t addr, const char* text) {
   memory.Write8(addr + static_cast<uint32_t>(i), 0);
 }
 
+// Copia os pixels de uma textura da memoria do guest para um buffer do host,
+// respeitando o GL_UNPACK_ALIGNMENT pedido via glPixelStorei (default 4, por
+// especificacao). Cada linha da imagem no guest ocupa
+// align_up(width*bytes_por_pixel, alignment) bytes; a copia sai SEMPRE
+// compactada (stride = width*bytes_por_pixel), que e o contrato de
+// GlTextureImage::pixels -- por isso o backend faz o upload com alinhamento 1.
+//
+// MOTIVO MEDIDO: glPixelStorei era Stub (25 chamadas medidas na Z-Wheel em
+// ~28 s). Com alinhamento 4 e uma textura RGB de largura nao multipla de 4, ou
+// 565 de largura impar, ler width*bpp contiguos por linha desloca a imagem
+// linha a linha -- cores "escorregam" de canal e o resultado nao tem relacao
+// com o que o jogo mandou desenhar.
+bool CopyGuestPixels(Memory& memory, uint32_t pixels_ptr, int width, int height, GLenum format,
+                     GLenum type, int unpack_alignment, std::vector<uint8_t>& out) {
+  const int pixel_size = GlPixelSize(format, type);
+  if (pixel_size <= 0 || width <= 0 || height <= 0) return false;
+  const uint64_t row_bytes = static_cast<uint64_t>(width) * static_cast<uint64_t>(pixel_size);
+  const uint64_t alignment =
+      (unpack_alignment == 1 || unpack_alignment == 2 || unpack_alignment == 4 ||
+       unpack_alignment == 8)
+          ? static_cast<uint64_t>(unpack_alignment)
+          : 4ull;
+  const uint64_t padded_row = ((row_bytes + alignment - 1) / alignment) * alignment;
+  const uint64_t tight_total = row_bytes * static_cast<uint64_t>(height);
+  const uint64_t guest_total = padded_row * static_cast<uint64_t>(height);
+  if (tight_total > kMaxTextureUploadBytes ||
+      static_cast<uint64_t>(pixels_ptr) + guest_total > 0x100000000ull) {
+    return false;
+  }
+  try {
+    out.resize(static_cast<size_t>(tight_total));
+  } catch (const std::exception&) {
+    return false;
+  }
+  for (int row = 0; row < height; ++row) {
+    const uint32_t src = pixels_ptr + static_cast<uint32_t>(padded_row * static_cast<uint64_t>(row));
+    uint8_t* dst = out.data() + static_cast<size_t>(row_bytes) * static_cast<size_t>(row);
+    for (uint64_t i = 0; i < row_bytes; ++i) {
+      dst[i] = memory.Read8(src + static_cast<uint32_t>(i));
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 GlHle::GlHle(GlBackend& backend) : backend_(backend) {}
@@ -446,14 +490,23 @@ void GlHle::EglGetColorBufferQualcomm(IArmCore& core) {
     return;
   }
   const bool synced = SyncSurfaceColorBuffer(core.GetMemory(), it->second);
-  EglLog("GetColorBufferQUALCOMM surface=%u %dx%d buf=0x%08x readback=%s",
+  EglLog("GetColorBufferQUALCOMM surface=%u %dx%d buf=0x%08x readback=%s lr=0x%08x",
          current_draw_surface_, it->second.width, it->second.height, it->second.color_buffer,
-         synced ? "ok" : "FALHOU");
+         synced ? "ok" : "FALHOU", core.GetRegister(kLR));
   core.SetRegister(kR0, it->second.color_buffer);
 }
 
 bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surface) {
   // Readback real: RGBA8888 (origem no topo) -> RGB565 no ponteiro do guest.
+  //
+  // Chave de bissecao ZEEB_NO_COLORBUF_READBACK=1: desliga o readback e deixa o
+  // color buffer com o que o PROPRIO jogo escreveu nele. MOTIVO MEDIDO: o palco
+  // 3D nunca teve pixel azul (0 de 211200) em nenhuma captura, nem antes nem
+  // depois das correcoes de GL, mas a tela tinha azul dominante nas capturas em
+  // que NAO havia readback. Isso indica que o fundo azul e desenhado pelo jogo
+  // nesse mesmo buffer, e que sobrescrever o buffer inteiro o apaga. Sem esta
+  // chave a hipotese nao pode ser testada A/B.
+  if (std::getenv("ZEEB_NO_COLORBUF_READBACK") != nullptr) return false;
   if (surface.color_buffer == 0 || surface.width <= 0 || surface.height <= 0) return false;
   // O guest desenha na regiao de viewport que ele mesmo pediu. Se ainda nao
   // houve glViewport, assumimos a origem do FBO com o tamanho da superficie.
@@ -592,8 +645,24 @@ void GlHle::GlViewport(IArmCore& core) {
                      static_cast<int>(core.GetRegister(kR3)));
 }
 
-void GlHle::GlEnable(IArmCore& core) { backend_.Enable(core.GetRegister(kR0)); }
-void GlHle::GlDisable(IArmCore& core) { backend_.Disable(core.GetRegister(kR0)); }
+// Logado (env-gated) porque o efeito de glCullFace so existe com
+// GL_CULL_FACE (0x0B44) ligado, e o de GL_TEXTURE_2D e POR UNIDADE ativa --
+// sem ver a sequencia real nao da para afirmar nada sobre descarte de face.
+void GlHle::GlEnable(IArmCore& core) {
+  GpuLog("Enable cap=0x%x", core.GetRegister(kR0));
+  // Chave de bissecao ZEEB_GL_UNLIT=1: neutraliza a iluminacao de fixed-function.
+  // MEDIDO: depois de ligar GL_LIGHTING/material de verdade, o fundo que era
+  // BRANCO (79410 pixels) virou PRETO (81409 pixels) no bitmap do palco da
+  // Z-Wheel. Isso isola a iluminacao como suspeita sem precisar recompilar.
+  static const bool unlit = std::getenv("ZEEB_GL_UNLIT") != nullptr;
+  constexpr uint32_t kGlLighting = 0x0B50u;
+  if (unlit && core.GetRegister(kR0) == kGlLighting) return;
+  backend_.Enable(core.GetRegister(kR0));
+}
+void GlHle::GlDisable(IArmCore& core) {
+  GpuLog("Disable cap=0x%x", core.GetRegister(kR0));
+  backend_.Disable(core.GetRegister(kR0));
+}
 
 void GlHle::GlAlphaFuncx(IArmCore& core) {
   // void glAlphaFuncx(GLenum func, GLclampx ref) -- real disassembly
@@ -758,6 +827,8 @@ void GlHle::GlColor4x(IArmCore& core) {
 // o pipeline fixed-function. param chega como enum cru (nao 16.16). A variante
 // vetorial glTexEnvxv passa um ponteiro em R2 -> ler a primeira palavra.
 void GlHle::GlTexEnvx(IArmCore& core) {
+  GpuLog("TexEnvx target=0x%x pname=0x%x param=0x%x", core.GetRegister(kR0),
+         core.GetRegister(kR1), core.GetRegister(kR2));
   if (core.GetRegister(kR1) == 0x2200) {
     backend_.TexEnvMode(static_cast<GLenum>(core.GetRegister(kR2)));
   }
@@ -803,10 +874,13 @@ void GlHle::GlTexCoordPointer(IArmCore& core) {
   const int size = static_cast<int32_t>(core.GetRegister(kR0));
   const GLenum type = core.GetRegister(kR1);
   const int stride = static_cast<int32_t>(core.GetRegister(kR2));
-  texcoord_array_ = (size >= 2 && size <= 4 && GlTypeSize(type) > 0 && stride >= 0)
-                        ? ArrayState{texcoord_array_.enabled, size, type, stride,
-                                     core.GetRegister(kR3)}
-                        : ArrayState{};
+  // O ponteiro pertence a unidade escolhida pelo ultimo
+  // glClientActiveTexture (medido: a Z-Wheel alterna entre GL_TEXTURE0 e
+  // GL_TEXTURE1 a cada bloco de desenho).
+  ArrayState& slot = texcoord_arrays_[client_active_unit_];
+  slot = (size >= 2 && size <= 4 && GlTypeSize(type) > 0 && stride >= 0)
+             ? ArrayState{slot.enabled, size, type, stride, core.GetRegister(kR3)}
+             : ArrayState{};
 }
 
 void GlHle::GlNormalPointer(IArmCore& core) {
@@ -822,7 +896,8 @@ void GlHle::GlEnableClientState(IArmCore& core) {
   switch (core.GetRegister(kR0)) {
     case kGlVertexArray: vertex_array_.enabled = true; break;
     case kGlColorArray: color_array_.enabled = true; break;
-    case kGlTextureCoordArray: texcoord_array_.enabled = true; break;
+    // GL_TEXTURE_COORD_ARRAY e por unidade de cliente, como o ponteiro.
+    case kGlTextureCoordArray: texcoord_arrays_[client_active_unit_].enabled = true; break;
     case kGlNormalArray: normal_array_.enabled = true; break;
     default: break;
   }
@@ -833,7 +908,7 @@ void GlHle::GlDisableClientState(IArmCore& core) {
   switch (core.GetRegister(kR0)) {
     case kGlVertexArray: vertex_array_.enabled = false; break;
     case kGlColorArray: color_array_.enabled = false; break;
-    case kGlTextureCoordArray: texcoord_array_.enabled = false; break;
+    case kGlTextureCoordArray: texcoord_arrays_[client_active_unit_].enabled = false; break;
     case kGlNormalArray: normal_array_.enabled = false; break;
     default: break;
   }
@@ -875,8 +950,10 @@ GlVertexArrays GlHle::ExtractArrays(Memory& memory,
   out.has_position = extract(vertex_array_, out.positions, false, 2, 4);
   if (out.has_position) out.position_size = vertex_array_.size;
   out.has_color = extract(color_array_, out.colors, true, 4, 4);
-  out.has_texcoord = extract(texcoord_array_, out.texcoords, false, 2, 4);
-  if (out.has_texcoord) out.texcoord_size = texcoord_array_.size;
+  out.has_texcoord = extract(texcoord_arrays_[0], out.texcoords, false, 2, 4);
+  if (out.has_texcoord) out.texcoord_size = texcoord_arrays_[0].size;
+  out.has_texcoord1 = extract(texcoord_arrays_[1], out.texcoords1, false, 2, 4);
+  if (out.has_texcoord1) out.texcoord1_size = texcoord_arrays_[1].size;
   out.has_normal = extract(normal_array_, out.normals, false, 3, 3);
   return out;
 }
@@ -1028,7 +1105,245 @@ void GlHle::GlDeleteTextures(IArmCore& core) {
 
 void GlHle::GlBindTexture(IArmCore& core) {
   GpuLog("BindTexture target=0x%x name=%u", core.GetRegister(kR0), core.GetRegister(kR1));
+  GpuLog("BindTexture target=0x%x name=%u", core.GetRegister(kR0), core.GetRegister(kR1));
   backend_.BindTexture(core.GetRegister(kR0), core.GetRegister(kR1));
+}
+
+// --- Estado fixed-function que o jogo pede e que era Stub -----------------
+//
+// EVIDENCIA: histograma por slot da vtable IGL rodando a Z-Wheel
+// (tectoy.mod, clsid 17237912) por ~28 s. Todos os slots abaixo estavam como
+// Stub (devolviam 0 e nao faziam nada) e mesmo assim o jogo os chamava:
+// glActiveTexture 4240, glClientActiveTexture 4240, glMaterialxv 848,
+// glHint 424, glShadeModel 319, glCullFace 213, glFinish 212,
+// glStencilFunc 212, glStencilOp 212, glLightxv 106, glGetError 51,
+// glPixelStorei 25. glFrontFace (slot 34) NAO aparece: o jogo nunca o chama.
+
+namespace {
+
+// Quantos componentes tem cada pname de glLightxv (GLES1.x). Ler 4 sempre
+// seria ler memoria do guest que nao pertence ao parametro.
+int GlLightParamCount(GLenum pname) {
+  switch (pname) {
+    case 0x1200:  // GL_AMBIENT
+    case 0x1201:  // GL_DIFFUSE
+    case 0x1202:  // GL_SPECULAR
+    case 0x1203:  // GL_POSITION
+      return 4;
+    case 0x1204:  // GL_SPOT_DIRECTION
+      return 3;
+    default:
+      // GL_SPOT_EXPONENT/GL_SPOT_CUTOFF e as tres atenuacoes sao escalares.
+      return 1;
+  }
+}
+
+int GlMaterialParamCount(GLenum pname) {
+  switch (pname) {
+    case 0x1200:  // GL_AMBIENT
+    case 0x1201:  // GL_DIFFUSE
+    case 0x1202:  // GL_SPECULAR
+    case 0x1600:  // GL_EMISSION
+    case 0x1602:  // GL_AMBIENT_AND_DIFFUSE
+      return 4;
+    default:
+      return 1;  // GL_SHININESS
+  }
+}
+
+int GlLightModelParamCount(GLenum pname) {
+  return pname == 0x0B53 /* GL_LIGHT_MODEL_AMBIENT */ ? 4 : 1;
+}
+
+// Le `count` GLfixed consecutivos da memoria do guest e converte para float.
+// `ptr` zero => nada a fazer (o chamador nao deve inventar valores).
+bool ReadFixedVector(Memory& memory, uint32_t ptr, int count, float* out) {
+  if (ptr == 0 || count <= 0) return false;
+  for (int i = 0; i < count; ++i) {
+    out[i] = FixedToFloat(static_cast<GLfixed>(memory.Read32(ptr + static_cast<uint32_t>(i) * 4)));
+  }
+  return true;
+}
+
+}  // namespace
+
+// void glActiveTexture(GLenum texture) / void glClientActiveTexture(GLenum)
+// 4240 chamadas de cada em ~28 s -- uma por bloco de desenho. Ignoradas,
+// TUDO caia na unidade 0 do host, inclusive binds que o jogo queria em outra
+// unidade. R0 e o primeiro argumento real (esta vtable nao passa `po`).
+void GlHle::GlActiveTexture(IArmCore& core) {
+  GpuLog("ActiveTexture unit=0x%x", core.GetRegister(kR0));
+  // Chave de bissecao ZEEB_GL_NO_MULTITEX=1: colapsa tudo na unidade 0, que era
+  // o comportamento antigo. MOTIVO: a Z-Wheel faz multitextura real (unidade 0
+  // 3796x, unidade 1 2044x) e qualquer erro de amarre entre unidade e textura
+  // troca a textura da unidade 0 -- apareceria como superficie preta.
+  static const bool no_multitex = std::getenv("ZEEB_GL_NO_MULTITEX") != nullptr;
+  if (no_multitex) return;
+  backend_.ActiveTexture(core.GetRegister(kR0));
+}
+
+void GlHle::GlClientActiveTexture(IArmCore& core) {
+  // Alem de repassar ao host, ESTA e a unidade a que os proximos
+  // glTexCoordPointer/glEnableClientState(GL_TEXTURE_COORD_ARRAY) pertencem.
+  // Unidades acima da ultima suportada sao registradas e mantidas na ultima
+  // conhecida em vez de fingir que existe estado para elas.
+  const GLenum unit = core.GetRegister(kR0);
+  constexpr GLenum kGlTexture0 = 0x84C0;
+  const int index = static_cast<int>(unit - kGlTexture0);
+  if (index >= 0 && index < kMaxTextureUnits) {
+    client_active_unit_ = index;
+  } else {
+    GpuLog("ClientActiveTexture unidade 0x%x fora das %d suportadas", unit, kMaxTextureUnits);
+  }
+  GpuLog("ClientActiveTexture unit=0x%x", unit);
+  backend_.ClientActiveTexture(unit);
+}
+
+// void glCullFace(GLenum mode) -- 213 chamadas. O jogo escolhe qual face
+// descartar (GL_BACK 0x0405, GL_FRONT 0x0404, GL_FRONT_AND_BACK 0x0408);
+// engolir a escolha deixa o host no default e faz aparecer face de tras junto
+// com a da frente.
+void GlHle::GlCullFace(IArmCore& core) {
+  GpuLog("CullFace mode=0x%x", core.GetRegister(kR0));
+  // Chave de bissecao (ZEEB_GL_NO_CULLFACE=1): volta ao comportamento antigo
+  // (chamada engolida em silencio) para comparar A/B na tela, do mesmo jeito
+  // que ZEEB_NO_PBUFFER_FBO existe no backend do SDL. Medido na Z-Wheel: o
+  // jogo alterna GL_BACK (0x0405, 147x) e GL_FRONT (0x0404, 146x) em ~35 s,
+  // com GL_CULL_FACE sempre ligado (592 glEnable(0x0B44), zero glDisable) --
+  // ou seja, sao dois passes por quadro e ignorar a escolha fazia os dois
+  // descartarem a MESMA face.
+  static const bool ignore = std::getenv("ZEEB_GL_NO_CULLFACE") != nullptr;
+  if (ignore) return;
+  backend_.CullFace(core.GetRegister(kR0));
+}
+
+// void glFrontFace(GLenum mode) -- zero chamadas medidas na Z-Wheel.
+void GlHle::GlFrontFace(IArmCore& core) { backend_.FrontFace(core.GetRegister(kR0)); }
+
+// void glShadeModel(GLenum mode) -- 319 chamadas (GL_FLAT/GL_SMOOTH).
+void GlHle::GlShadeModel(IArmCore& core) { backend_.ShadeModel(core.GetRegister(kR0)); }
+
+// void glHint(GLenum target, GLenum mode) -- 424 chamadas.
+void GlHle::GlHint(IArmCore& core) {
+  backend_.Hint(core.GetRegister(kR0), core.GetRegister(kR1));
+}
+
+// void glFinish(void) -- 212 chamadas. O jogo depende disso antes de ler o
+// color buffer (eglGetColorBufferQUALCOMM) para compor o palco 3D no 2D.
+void GlHle::GlFinish(IArmCore&) { backend_.Finish(); }
+
+// GLenum glGetError(void) -- 51 chamadas. Devolver 0 fixo era uma mentira
+// util: escondia erro real de upload/estado do driver. Agora sai o erro do
+// host, que e o unico que pode ser verdadeiro aqui.
+void GlHle::GlGetError(IArmCore& core) {
+  GLenum err = backend_.GetError();
+  if (err != 0) GpuLog("glGetError -> 0x%x", err);
+  core.SetRegister(kR0, err);
+}
+
+// void glPixelStorei(GLenum pname, GLint param) -- 25 chamadas. O efeito que
+// importa e do lado de CA: com GL_UNPACK_ALIGNMENT != 1 cada linha da imagem
+// na memoria do guest e arredondada para cima, e GlTexImage2D tem de pular
+// esse padding em vez de ler width*bpp contiguos.
+void GlHle::GlPixelStorei(IArmCore& core) {
+  constexpr GLenum kGlUnpackAlignment = 0x0CF5;
+  GLenum pname = core.GetRegister(kR0);
+  int32_t param = static_cast<int32_t>(core.GetRegister(kR1));
+  // Chave de bissecao ZEEB_GL_NO_PIXELSTORE=1: volta a ignorar o alinhamento e
+  // ler width*bpp contiguos, como antes. MOTIVO: a compactacao de linhas do
+  // caminho de upload e um ponto unico de falha capaz de corromper textura
+  // inteira (apareceria como regiao preta ou embaralhada).
+  static const bool ignore_align = std::getenv("ZEEB_GL_NO_PIXELSTORE") != nullptr;
+  if (pname == kGlUnpackAlignment && !ignore_align &&
+      (param == 1 || param == 2 || param == 4 || param == 8)) {
+    unpack_alignment_ = param;
+  }
+  GpuLog("PixelStorei pname=0x%x param=%d", pname, param);
+  backend_.PixelStorei(pname, param);
+}
+
+// void glMaterialx(GLenum face, GLenum pname, GLfixed param)
+// void glMaterialxv(GLenum face, GLenum pname, const GLfixed *params)
+// 848 chamadas da forma vetorial. Junto com 424 glNormalPointer, e prova de
+// que a Z-Wheel usa iluminacao fixed-function de verdade -- com material
+// ignorado, o host usa o difuso default (cinza 0.8) para tudo.
+void GlHle::GlMaterialx(IArmCore& core) {
+  float value = FixedToFloat(static_cast<GLfixed>(core.GetRegister(kR2)));
+  if (std::getenv("ZEEB_GL_UNLIT") != nullptr) return;
+  backend_.Materialfv(core.GetRegister(kR0), core.GetRegister(kR1), &value, 1);
+}
+
+void GlHle::GlMaterialxv(IArmCore& core) {
+  GLenum face = core.GetRegister(kR0);
+  GLenum pname = core.GetRegister(kR1);
+  uint32_t ptr = core.GetRegister(kR2);
+  const int count = GlMaterialParamCount(pname);
+  float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  if (!ReadFixedVector(core.GetMemory(), ptr, count, values)) return;
+  GpuLog("Materialxv face=0x%x pname=0x%x v=[%f %f %f %f] n=%d", face, pname, values[0],
+         values[1], values[2], values[3], count);
+  if (std::getenv("ZEEB_GL_UNLIT") != nullptr) return;
+  backend_.Materialfv(face, pname, values, count);
+}
+
+// void glLightx(GLenum light, GLenum pname, GLfixed param)
+// void glLightxv(GLenum light, GLenum pname, const GLfixed *params) -- 106
+// chamadas da forma vetorial.
+void GlHle::GlLightx(IArmCore& core) {
+  float value = FixedToFloat(static_cast<GLfixed>(core.GetRegister(kR2)));
+  if (std::getenv("ZEEB_GL_UNLIT") != nullptr) return;
+  backend_.Lightfv(core.GetRegister(kR0), core.GetRegister(kR1), &value, 1);
+}
+
+void GlHle::GlLightxv(IArmCore& core) {
+  GLenum light = core.GetRegister(kR0);
+  GLenum pname = core.GetRegister(kR1);
+  uint32_t ptr = core.GetRegister(kR2);
+  const int count = GlLightParamCount(pname);
+  float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  if (!ReadFixedVector(core.GetMemory(), ptr, count, values)) return;
+  GpuLog("Lightxv light=0x%x pname=0x%x v=[%f %f %f %f] n=%d", light, pname, values[0], values[1],
+         values[2], values[3], count);
+  if (std::getenv("ZEEB_GL_UNLIT") != nullptr) return;
+  backend_.Lightfv(light, pname, values, count);
+}
+
+void GlHle::GlLightModelx(IArmCore& core) {
+  float value = FixedToFloat(static_cast<GLfixed>(core.GetRegister(kR1)));
+  backend_.LightModelfv(core.GetRegister(kR0), &value, 1);
+}
+
+void GlHle::GlLightModelxv(IArmCore& core) {
+  GLenum pname = core.GetRegister(kR0);
+  const int count = GlLightModelParamCount(pname);
+  float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  if (!ReadFixedVector(core.GetMemory(), core.GetRegister(kR1), count, values)) return;
+  backend_.LightModelfv(pname, values, count);
+}
+
+// void glStencilFunc(GLenum func, GLint ref, GLuint mask) -- 212 chamadas.
+// Sao 3 argumentos: cabem todos em r0..r2 pelo AAPCS, nenhum vai para a
+// pilha (ReadStackArg so entra a partir do 5o argumento, como em
+// glTexImage2D).
+void GlHle::GlStencilFunc(IArmCore& core) {
+  // Chave de bissecao ZEEB_GL_NO_STENCIL=1. MOTIVO: nenhum dos nossos FBOs
+  // tem anexo de estencil, entao programar o teste so pode DESCARTAR pixel.
+  // Sem buffer, o resultado do teste e indefinido no driver.
+  static const bool no_stencil = std::getenv("ZEEB_GL_NO_STENCIL") != nullptr;
+  if (no_stencil) return;
+  backend_.StencilFunc(core.GetRegister(kR0), static_cast<GLint>(core.GetRegister(kR1)),
+                       core.GetRegister(kR2));
+}
+
+// void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) -- 212 chamadas,
+// tambem 3 argumentos em r0..r2.
+void GlHle::GlStencilOp(IArmCore& core) {
+  // Chave de bissecao ZEEB_GL_NO_STENCIL=1. MOTIVO: nenhum dos nossos FBOs
+  // tem anexo de estencil, entao programar o teste so pode DESCARTAR pixel.
+  // Sem buffer, o resultado do teste e indefinido no driver.
+  static const bool no_stencil = std::getenv("ZEEB_GL_NO_STENCIL") != nullptr;
+  if (no_stencil) return;
+  backend_.StencilOp(core.GetRegister(kR0), core.GetRegister(kR1), core.GetRegister(kR2));
 }
 
 void GlHle::GlTexParameterx(IArmCore& core) {
@@ -1061,20 +1376,35 @@ void GlHle::GlTexImage2D(IArmCore& core) {
 
   std::vector<uint8_t> pixel_bytes;
   if (pixels_ptr != 0 && image.width > 0 && image.height > 0) {
-    const int pixel_size = GlPixelSize(image.format, image.type);
-    const uint64_t total64 = static_cast<uint64_t>(image.width) * image.height *
-                             static_cast<uint32_t>(std::max(pixel_size, 0));
-    if (pixel_size <= 0 || total64 > kMaxTextureUploadBytes ||
-        static_cast<uint64_t>(pixels_ptr) + total64 > 0x100000000ull) return;
-    const size_t total = static_cast<size_t>(total64);
-    try { pixel_bytes.resize(total); } catch (const std::exception&) { return; }
-    Memory& memory = core.GetMemory();
-    for (size_t i = 0; i < total; ++i) {
-      pixel_bytes[i] = memory.Read8(pixels_ptr + static_cast<uint32_t>(i));
+    if (!CopyGuestPixels(core.GetMemory(), pixels_ptr, image.width, image.height, image.format,
+                          image.type, unpack_alignment_, pixel_bytes)) {
+      return;
     }
     image.pixels = pixel_bytes.data();
   }
   ++DrawStats::Instance().gl_tex_image;
+  // Diagnostico de ordem de canais: despeja a textura EXATAMENTE como ela sai
+  // daqui para a GPU. Comparando com a arte original da' para dizer se R e B ja
+  // chegam trocados do guest ou se a troca e nossa.
+  if (const char* base = std::getenv("ZEEB_TEX_DUMP")) {
+    static int dumped = 0;
+    if (!pixel_bytes.empty() && dumped < 8 && image.width > 8 && image.height > 8) {
+      char path[512];
+      std::snprintf(path, sizeof(path), "%s_%02d_%dx%d_f%x.ppm", base, dumped, image.width,
+                    image.height, image.format);
+      if (FILE* f = std::fopen(path, "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", image.width, image.height);
+        const int comps = (image.format == 0x1908 /*GL_RGBA*/) ? 4 : 3;
+        for (size_t i = 0; i + comps <= pixel_bytes.size(); i += comps) {
+          std::fputc(pixel_bytes[i + 0], f);
+          std::fputc(pixel_bytes[i + 1], f);
+          std::fputc(pixel_bytes[i + 2], f);
+        }
+        std::fclose(f);
+        ++dumped;
+      }
+    }
+  }
   GpuLog("TexImage2D %dx%d internal=0x%x format=0x%x type=0x%x pixels=%s", image.width,
          image.height, image.internal_format, image.format, image.type,
          pixels_ptr != 0 ? "yes" : "null");
@@ -1095,16 +1425,9 @@ void GlHle::GlTexSubImage2D(IArmCore& core) {
 
   std::vector<uint8_t> pixel_bytes;
   if (pixels_ptr != 0 && image.width > 0 && image.height > 0) {
-    const int pixel_size = GlPixelSize(image.format, image.type);
-    const uint64_t total64 = static_cast<uint64_t>(image.width) * image.height *
-                             static_cast<uint32_t>(std::max(pixel_size, 0));
-    if (pixel_size <= 0 || total64 > kMaxTextureUploadBytes ||
-        static_cast<uint64_t>(pixels_ptr) + total64 > 0x100000000ull) return;
-    const size_t total = static_cast<size_t>(total64);
-    try { pixel_bytes.resize(total); } catch (const std::exception&) { return; }
-    Memory& memory = core.GetMemory();
-    for (size_t i = 0; i < total; ++i) {
-      pixel_bytes[i] = memory.Read8(pixels_ptr + static_cast<uint32_t>(i));
+    if (!CopyGuestPixels(core.GetMemory(), pixels_ptr, image.width, image.height, image.format,
+                          image.type, unpack_alignment_, pixel_bytes)) {
+      return;
     }
     image.pixels = pixel_bytes.data();
   }
@@ -1126,6 +1449,8 @@ void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   // border (stack arg 1) unused, same as GlTexImage2D.
   uint32_t image_size = HleRuntime::ReadStackArg(core, 2);
   uint32_t data_ptr = HleRuntime::ReadStackArg(core, 3);
+  GpuLog("CompressedTexImage2D %dx%d internal=0x%x size=%u", width, height, internal_format,
+         image_size);
   if (width <= 0 || height <= 0 || image_size > kMaxTextureUploadBytes || data_ptr == 0 ||
       static_cast<uint64_t>(data_ptr) + image_size > 0x100000000ull) return;
   Memory& memory = core.GetMemory();
@@ -1217,6 +1542,27 @@ void GlHle::GlCompressedTexImage2D(IArmCore& core) {
   auto decoded = DecodeAtitc(compressed.data(), compressed.size(), width, height, format);
   if (!decoded.has_value()) return;
 
+  // Mesmo diagnostico de canais do caminho nao comprimido, agora DEPOIS do
+  // decode ATITC -- e aqui que estao as artes grandes do palco.
+  if (const char* base = std::getenv("ZEEB_TEX_DUMP")) {
+    static int dumped_c = 0;
+    if (dumped_c < 12 && width > 8 && height > 8) {
+      char path[512];
+      std::snprintf(path, sizeof(path), "%s_atitc%02d_%dx%d.ppm", base, dumped_c, width, height);
+      if (FILE* f = std::fopen(path, "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", width, height);
+        const auto& px = *decoded;
+        for (size_t i = 0; i + 4 <= px.size(); i += 4) {
+          std::fputc(px[i + 0], f);
+          std::fputc(px[i + 1], f);
+          std::fputc(px[i + 2], f);
+        }
+        std::fclose(f);
+        ++dumped_c;
+      }
+    }
+  }
+
   GlTextureImage image;
   image.level = level;
   image.internal_format = kGlRgba;
@@ -1240,7 +1586,7 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       Stub,                                       // 0  AddRef
       Stub,                                       // 1  Release
       Stub,                                       // 2  QueryInterface
-      Stub,                                       // 3  glActiveTexture
+      [this](IArmCore& c) { GlActiveTexture(c); },  // 3  glActiveTexture
       [this](IArmCore& c) { GlAlphaFuncx(c); },     // 4  glAlphaFuncx
       [this](IArmCore& c) { GlBindTexture(c); },  // 5  glBindTexture
       [this](IArmCore& c) { GlBlendFunc(c); },      // 6  glBlendFunc
@@ -1248,7 +1594,7 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlClearColorx(c); },  // 8  glClearColorx
       [this](IArmCore& c) { GlClearDepthx(c); },  // 9  glClearDepthx
       Stub,                                       // 10 glClearStencil
-      Stub,                                       // 11 glClientActiveTexture
+      [this](IArmCore& c) { GlClientActiveTexture(c); },  // 11 glClientActiveTexture
       [this](IArmCore& c) { GlColor4x(c); },      // 12 glColor4x
       Stub,                                       // 13 glColorMask
       [this](IArmCore& c) { GlColorPointer(c); }, // 14 glColorPointer
@@ -1256,7 +1602,7 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       Stub,                                       // 16 glCompressedTexSubImage2D
       Stub,                                       // 17 glCopyTexImage2D
       Stub,                                       // 18 glCopyTexSubImage2D
-      Stub,                                       // 19 glCullFace
+      [this](IArmCore& c) { GlCullFace(c); },     // 19 glCullFace
       [this](IArmCore& c) { GlDeleteTextures(c); }, // 20 glDeleteTextures
       [this](IArmCore& c) { GlDepthFunc(c); },    // 21 glDepthFunc
       [this](IArmCore& c) { GlDepthMask(c); },    // 22 glDepthMask
@@ -1267,34 +1613,34 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlDrawElements(c); }, // 27 glDrawElements
       [this](IArmCore& c) { GlEnable(c); },       // 28 glEnable
       [this](IArmCore& c) { GlEnableClientState(c); },   // 29 glEnableClientState
-      Stub,                                       // 30 glFinish
+      [this](IArmCore& c) { GlFinish(c); },       // 30 glFinish
       Stub,                                       // 31 glFlush
       Stub,                                       // 32 glFogx
       Stub,                                       // 33 glFogxv
-      Stub,                                       // 34 glFrontFace
+      [this](IArmCore& c) { GlFrontFace(c); },    // 34 glFrontFace
       [this](IArmCore& c) { GlFrustumx(c); },     // 35 glFrustumx
       [this](IArmCore& c) { GlGenTextures(c); },  // 36 glGenTextures
-      Stub,                                       // 37 glGetError
+      [this](IArmCore& c) { GlGetError(c); },     // 37 glGetError
       [this](IArmCore& c) { GlGetIntegerv(c); },  // 38 glGetIntegerv
       [this](IArmCore& c) { GlGetString(c); },    // 39 glGetString
-      Stub,                                       // 40 glHint
-      Stub,                                       // 41 glLightModelx
-      Stub,                                       // 42 glLightModelxv
-      Stub,                                       // 43 glLightx
-      Stub,                                       // 44 glLightxv
+      [this](IArmCore& c) { GlHint(c); },         // 40 glHint
+      [this](IArmCore& c) { GlLightModelx(c); },  // 41 glLightModelx
+      [this](IArmCore& c) { GlLightModelxv(c); }, // 42 glLightModelxv
+      [this](IArmCore& c) { GlLightx(c); },       // 43 glLightx
+      [this](IArmCore& c) { GlLightxv(c); },      // 44 glLightxv
       Stub,                                       // 45 glLineWidthx
       [this](IArmCore& c) { GlLoadIdentity(c); }, // 46 glLoadIdentity
       [this](IArmCore& c) { GlLoadMatrixx(c); },  // 47 glLoadMatrixx
       Stub,                                       // 48 glLogicOp
-      Stub,                                       // 49 glMaterialx
-      Stub,                                       // 50 glMaterialxv
+      [this](IArmCore& c) { GlMaterialx(c); },    // 49 glMaterialx
+      [this](IArmCore& c) { GlMaterialxv(c); },   // 50 glMaterialxv
       [this](IArmCore& c) { GlMatrixMode(c); },   // 51 glMatrixMode
       [this](IArmCore& c) { GlMultMatrixx(c); },  // 52 glMultMatrixx
       Stub,                                       // 53 glMultiTexCoord4x
       Stub,                                       // 54 glNormal3x
       [this](IArmCore& c) { GlNormalPointer(c); }, // 55 glNormalPointer
       [this](IArmCore& c) { GlOrthox(c); },       // 56 glOrthox
-      Stub,                                       // 57 glPixelStorei
+      [this](IArmCore& c) { GlPixelStorei(c); },  // 57 glPixelStorei
       Stub,                                       // 58 glPointSizex
       Stub,                                       // 59 glPolygonOffsetx
       [this](IArmCore& c) { GlPopMatrix(c); },    // 60 glPopMatrix
@@ -1304,10 +1650,10 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       Stub,                                       // 64 glSampleCoveragex
       [this](IArmCore& c) { GlScalex(c); },       // 65 glScalex
       Stub,                                       // 66 glScissor
-      Stub,                                       // 67 glShadeModel
-      Stub,                                       // 68 glStencilFunc
+      [this](IArmCore& c) { GlShadeModel(c); },   // 67 glShadeModel
+      [this](IArmCore& c) { GlStencilFunc(c); },  // 68 glStencilFunc
       Stub,                                       // 69 glStencilMask
-      Stub,                                       // 70 glStencilOp
+      [this](IArmCore& c) { GlStencilOp(c); },    // 70 glStencilOp
       [this](IArmCore& c) { GlTexCoordPointer(c); }, // 71 glTexCoordPointer
       [this](IArmCore& c) { GlTexEnvx(c); },       // 72 glTexEnvx
       [this](IArmCore& c) { GlTexEnvxv(c); },      // 73 glTexEnvxv
@@ -1523,14 +1869,14 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   };
 
   // Core methods
-  methods[31] = Stub;                                                          // 31 ActiveTexture
+  methods[31] = GlesMethod([this](IArmCore& c) { GlActiveTexture(c); });      // 31 ActiveTexture
   methods[32] = GlesMethod([this](IArmCore& c) { GlAlphaFuncx(c); });          // 32 AlphaFuncx
   methods[33] = GlesMethod([this](IArmCore& c) { GlBindTexture(c); });         // 33 BindTexture
   methods[34] = GlesMethod([this](IArmCore& c) { GlBlendFunc(c); });           // 34 BlendFunc
   methods[35] = GlesMethod([this](IArmCore& c) { GlClear(c); });               // 35 Clear
   methods[36] = GlesMethod([this](IArmCore& c) { GlClearColorx(c); });         // 36 ClearColorx
   methods[37] = GlesMethod([this](IArmCore& c) { GlClearDepthx(c); });         // 37 ClearDepthx
-  methods[39] = Stub;                                                          // 39 ClientActiveTexture
+  methods[39] = GlesMethod([this](IArmCore& c) { GlClientActiveTexture(c); });// 39 ClientActiveTexture
   methods[40] = GlesMethod([this](IArmCore& c) { GlColor4x(c); });             // 40 Color4x
   methods[42] = GlesMethod([this](IArmCore& c) { GlColorPointer(c); });        // 42 ColorPointer
   methods[43] = GlesMethod([this](IArmCore& c) { GlCompressedTexImage2D(c); });// 43 CompressedTexImage2D
@@ -1544,12 +1890,15 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   methods[56] = GlesMethod([this](IArmCore& c) { GlEnable(c); });              // 56 Enable
   methods[57] = GlesMethod([this](IArmCore& c) { GlEnableClientState(c); });  // 57 EnableClientState
   methods[64] = GlesMethod([this](IArmCore& c) { GlGenTextures(c); });         // 64 GenTextures
-  methods[65] = [](IArmCore& core) {
+  methods[65] = [this](IArmCore& core) {
+    // int GetError(IGLES11* po, GLenum* pOut). Erro REAL do host, nao um zero
+    // fixo: com GL de verdade em baixo, mentir aqui esconde erro de upload.
     uint32_t out_err = core.GetRegister(kR1);
+    GLenum err = backend_.GetError();
     if (out_err != 0) {
-      core.GetMemory().Write32(out_err, 0);
+      core.GetMemory().Write32(out_err, err);
     }
-    core.SetRegister(kR0, 0);  // GL_NO_ERROR
+    core.SetRegister(kR0, 0);  // AEE_SUCCESS
   };
   methods[66] = GlesMethod([this](IArmCore& c) { GlGetIntegerv(c); });         // 66 GetIntegerv
   methods[67] = [this](IArmCore& core) {                                        // 67 GetString
@@ -1592,12 +1941,12 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   methods[80] = GlesMethod([this](IArmCore& c) { GlMultMatrixx(c); });         // 80 MultMatrixx
   methods[83] = GlesMethod([this](IArmCore& c) { GlNormalPointer(c); });       // 83 NormalPointer
   methods[84] = GlesMethod([this](IArmCore& c) { GlOrthox(c); });              // 84 Orthox
-  methods[85] = Stub;                                                          // 85 PixelStorei
+  methods[85] = GlesMethod([this](IArmCore& c) { GlPixelStorei(c); });        // 85 PixelStorei
   methods[88] = GlesMethod([this](IArmCore& c) { GlPopMatrix(c); });           // 88 PopMatrix
   methods[89] = GlesMethod([this](IArmCore& c) { GlPushMatrix(c); });          // 89 PushMatrix
   methods[91] = GlesMethod([this](IArmCore& c) { GlRotatex(c); });             // 91 Rotatex
   methods[94] = GlesMethod([this](IArmCore& c) { GlScalex(c); });              // 94 Scalex
-  methods[96] = Stub;                                                          // 96 ShadeModel
+  methods[96] = GlesMethod([this](IArmCore& c) { GlShadeModel(c); });         // 96 ShadeModel
   methods[100] = GlesMethod([this](IArmCore& c) { GlTexCoordPointer(c); });    // 100 TexCoordPointer
   methods[101] = GlesMethod([this](IArmCore& c) { GlTexEnvx(c); });            // 101 TexEnvx
   methods[102] = GlesMethod([this](IArmCore& c) { GlTexEnvxv(c); });           // 102 TexEnvxv
