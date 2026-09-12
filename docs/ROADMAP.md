@@ -2,6 +2,14 @@
 
 Documento vivo e exaustivo de planejamento estratégico, fases de entrega, auditoria formal de conformidade com o BREW SDK e pendências técnicas mapeadas para levar o **Zeebulator** da inicialização básica até a jogabilidade genuína em todo o catálogo comercial do Zeebo.
 
+**Estado verificável desta revisão** — `ctest`: 684 passam, 0 falham, 2 pulados
+(dependem de corpus ausente). Último ciclo: `f40379d`, `ea24662`, `bff18be`.
+Medição de referência da Z-Wheel (27 s, `tectoy.mod`, ClsId 17237912):
+telas 2D de abertura com verde 5 130 / amarelo 1 146 / azul 5 203 px nos
+primeiros 8 s, e palco 3D com 149 824 px pretos a partir dos 9 s.
+Toda afirmação aqui é acompanhada do número que a sustenta; onde não há
+medição, o item fica marcado como pendente em vez de concluído.
+
 ---
 
 ## 1. Visão Geral das Fases
@@ -13,7 +21,9 @@ Documento vivo e exaustivo de planejamento estratégico, fases de entrega, audit
 [ Fase 2: Robustez de Memória & Parsers ] (Concluída - Auditoria 59336ea)
                │
                ▼
-[ Fase 3: Desbloqueio da Z-Wheel & Pipeline Visual 2D/3D ] (Fase Atual / Em Andamento)
+[ Fase 3: Desbloqueio da Z-Wheel & Pipeline Visual 2D/3D ] (Fase Atual)
+     telas 2D de abertura renderizando; palco 3D preservado;
+     pendencia bloqueante: ordem de canais do ATITC
                │
                ▼
 [ Fase 4: Gráficos Avançados & Composição Offscreen ] (Planejada)
@@ -82,8 +92,16 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - Corrigido slot 15 do widget retornando `this` (fábrica de bitmap do `DrawRollerExt`), destravando `CreateCompatibleBitmap` e os callbacks de desenho `SetDrawHandler` (0x14250c) do carrossel/roller!
 - [ ] **Distinção de Formas no Slot 16**:
   - Tratar a variante sem struct `slot16(this)` medida em `0x22d58` versus a variante com struct `&{fn, ctx, dtor}` sem interpretar `r1 != 0` arbitrário como ponteiro de função.
-- [ ] **Readback GL para Pbuffer**:
-  - Implementar o readback do framebuffer OpenGL do host para a memória guest no ponteiro do pbuffer, permitindo que a composição 2D/3D híbrida funcione.
+- [x] **Readback GL para Pbuffer** (commits `3e53f00`, `9fe12c0`):
+  - `GlBackend::ReadPixelsRgba` + FBO dedicado do pbuffer. Uma superfície EGL de
+    pbuffer precisa do FBO **dela**: compartilhar o FBO de apresentação criava
+    realimentação e o readback devolvia a própria tela (batia 100% com as linhas
+    150–480 apresentadas). Medido depois: `readback=ok` 226/0 contra 0/226 antes.
+  - Separação de `SwapBuffers()` (só `eglSwapBuffers` real) de
+    `PresentGlFrameWithoutSwapMark()`. O latch `HasRealGlActivity` era ligado pelo
+    nosso próprio present sintético e desligava para sempre o present 2D de
+    software — a tela ia de **2 cores** (branco + contador de FPS) para **732
+    cores** com o palco composto em (0,50) 640×330.
 - [ ] **Árvore Hierárquica de Widgets & Ciclo de Vida**:
   - Manter relacionamentos pai-filho e geometria relativa de acordo com o slot 5.
   - Validação estrita de ponteiros de geometria no slot 5 (descartar leituras em páginas não mapeadas).
@@ -96,6 +114,101 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - Slot 8 (`GetParent` vs tocador de animações da Z-Wheel).
 - [x] **Despacho Ordenado de Entrada na Interface**:
   - Implementado avanço automático da tela de instruções do Z-Pad via `EVT_KEY` (0x100) com `AVK_0` (0xe030), transitando deterministamente para o carrossel do menu principal.
+
+---
+
+### 4.1 Pipeline de Imagem de Recurso (commits `f40379d`, `ea24662`, `bff18be`)
+
+- [x] **Decodificador BMP real** (`core/loader/bmp.{h,cpp}`, 21 testes):
+  - Validado pixel a pixel contra decodificador independente nos **65 BMPs reais**
+    do corpus. 16 bpp `BI_RGB` é **555, não 565** (com 555 o erro máximo é 1
+    unidade; lendo 565 chega a 132). 32 bpp `BI_RGB` sai opaco porque os 13
+    arquivos reais têm o 4º byte **zero** em todos os pixels.
+  - `biSizeImage`/`bfSize` ignorados: o recurso 5007 real declara 2 bytes a mais
+    que a geometria.
+- [x] **Estado fixo do GLES1 deixa de ser stub silencioso** (18 testes):
+  - 14 funções implementadas de verdade (`glCullFace`, `glActiveTexture`,
+    `glPixelStorei`, `glMaterialxv`, `glLightxv`, `glStencilFunc`, …).
+  - **Armadilha do decorador, segunda ocorrência**: `GlTextureRecordingBackend`
+    engolia `TexEnvMode` (4135 chamadas de `glTexEnvx` por execução morriam ali),
+    exatamente como antes engolia `ReadPixelsRgba`. Regra do projeto: toda
+    virtual nova de `GlBackend` exige override que encaminha **e** teste.
+  - `glCullFace` alterna `GL_BACK` (147×) e `GL_FRONT` (146×) sem nunca desligar
+    `GL_CULL_FACE`: são dois passes por quadro. A/B com `ZEEB_GL_NO_CULLFACE=1`
+    muda 24 442 pixels (8%) em x=84..555, y=259..379 — o raio duplo da roda.
+- [x] **`ISHELL_LoadResObject` real, um objeto por recurso**:
+  - Antes: um objeto falso único para todo recurso, `GetInfo` mentindo 640×480 e
+    `Draw` que não desenhava nada. Pior que stub honesto — o jogo recebia
+    "sucesso" e seguia.
+  - Formato do payload medido nos `.brf` reais: `[u16 header_len][mime NUL][bytes]`,
+    com `header_len` contando o próprio u16.
+  - Recursos reais que passam a existir: `opening_low.gif` 640×480, PNG 576×313
+    (id 5008) e BMP 214×34 (id 5007).
+- [x] **Desenho do conteúdo dos ImageWidget**:
+  - O jogo entrega a imagem por `IInterfaceModel::SetIPtr` e **nunca** chama
+    `IImage::Draw` — num BREW real quem desenha o conteúdo do widget é a
+    biblioteca do aparelho, que aqui somos nós. Medido: widget slot 12 =
+    `GetModel(AEEIID_IInterfaceModel 0x0101593c)`; no retorno, slot 5 =
+    `SetIPtr(pIImage, AEEIID_IImage 0x01013110)`.
+  - Resultado nos 8 primeiros segundos: de `cores=1` / 307 200 px brancos para
+    `cores=256` com **verde 5 130**, **amarelo 1 146** e **azul 5 203** px
+    simultâneos — a assinatura da bandeira.
+- [x] **Duas colisões de endereço de objeto HLE** (ambas achadas por medição):
+  - Os objetos `IImage` nasciam em `0x8006C000`, que **é** `kWidgetVtable`: o
+    primeiro recurso decodificado destruía a vtable de todos os widgets e o
+    applet saltava para `0x8006A000` (`bx r1` em `0x17ecf8`).
+  - O objeto de fallback e o primeiro recurso nasciam no mesmo endereço, então
+    todo recurso que não decodificava devolvia o GIF de abertura: o roller
+    pintava esse GIF 640×480 sobre a tela inteira 69× (`lr=0x0011ff28`, dentro de
+    `DrawRollerExt`).
+  - **Regra do projeto**: antes de atribuir qualquer faixa de vtable/objeto,
+    conferir colisão com `grep` no arquivo inteiro. Já é a terceira vez que uma
+    faixa reaproveitada produz um sintoma que parece defeito de CPU.
+
+### 4.2 Pendências abertas com evidência medida
+
+- [ ] **Ordem de canais do ATITC** (`core/loader/atitc.cpp`) — *prioridade alta*:
+  - As texturas ATITC `512×256` decodificam com **124 905 px** `(239,138,41)`;
+    o baseline antigo `zw_shot_exit.ppm` tinha **211 136 px azuis** e zero
+    laranja, dominante `(41,142,206)`. É o mesmo pixel com **R e B trocados**.
+  - Cadeia inteira já descartada: texturas não comprimidas corretas, readback
+    `RGBA→RGB565` correto (`R` vem de `rgba[+0]`), imagens novas corretas (PNG
+    casa em RGB com erro **2,28/255**). O defeito está no decode ATITC.
+  - **Não corrigido de propósito**: `atitc.cpp` tem testes que fixam a ordem
+    atual e o formato é usado por outros títulos. Antes de inverter é preciso
+    provar qual ordem é a verdadeira com um decodificador independente ou com a
+    arte equivalente não comprimida — senão só se troca o defeito de lugar.
+- [ ] **Geometria dos ImageWidget**:
+  - Tudo é desenhado em `(0,0)` porque `widget_geometry` não tem entrada para
+    esses objetos. Cor e orientação estão certas; o lugar não.
+  - Pista medida: as posições chegam por `EVT_WDG_SETPROPERTY` (0x801) com
+    wParam `0x152`, `0x153`, `0x130`, `0x140`.
+- [ ] **Composição 2D/3D por região suja**:
+  - Necessária quando o roller desenhar a arte 214×34 no lugar certo: hoje a
+    camada 2D é um quad de tela cheia e apagaria o palco GL.
+- [ ] **`AEECLSID_LCT_SIMCARDCTL` (0x01006c01)** sem implementação. O jogo trata
+  a falha (retorna 0x27) e segue para o menu — lacuna honesta, não bloqueio.
+- [ ] **`class_id = -1` da consulta da roda é do próprio jogo**, não nosso:
+  `mvn r2, #0` hardcoded no chamador `0x127c1c`. A consulta principal devolve 0
+  linhas também contra o banco real, e os nomes dos itens ficam vazios em
+  `item + 0x114`. Falta descobrir o caminho que deveria preencher a lista.
+- [ ] **Desempenho: 12 FPS medidos** (esperado 30/60). Suspeitos principais: o
+  `glReadPixels` por quadro (640×330 RGBA = 845 KB) e as 211 200 chamadas de
+  `Memory::Write16` por quadro em `SyncSurfaceColorBuffer`.
+- [ ] **Entrada por HID**: as teclas chegam ao `HandleEvent` e voltam 0; o jogo
+  usa o caminho do joystick (`Joystick.c:157 1 Joysticks connected`,
+  `Joystick.c:183 No keyboard reported`). Falta verificar a entrega de eventos de
+  botão do `IHIDDevice`.
+- [ ] **`tt_dlqueue.db` cresce indevidamente**: 49 linhas DBINFO contra 14 do
+  banco real — inserimos uma linha por execução.
+
+### 4.3 Interruptores de bissecção disponíveis
+
+Nenhuma hipótese deste ciclo foi aceita sem A/B. Chaves de ambiente ativas:
+`ZEEB_NO_RES_IMAGE`, `ZEEB_2D_ONLY`, `ZEEB_TEX_DUMP`, `ZEEB_LOG_OOR`,
+`ZEEB_LOG_SNPRINTF`, `ZEEB_GL_NO_CULLFACE`, `ZEEB_GL_UNLIT`, `ZEEB_GL_NO_STENCIL`,
+`ZEEB_GL_NO_PIXELSTORE`, `ZEEB_GL_NO_MULTITEX`, `ZEEB_NO_PBUFFER_FBO`,
+`ZEEB_NO_COLORBUF_READBACK`, `ZEEB_EGL_DUMP`, `ZEEB_GL_TRACE`, `ZEEB_LOG_GPU`.
 
 ---
 
