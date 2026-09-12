@@ -1348,9 +1348,17 @@ void ArmInterpreter::ExecuteCoprocessor(uint32_t instr) {
         return;
       }
       if (crn == 0 && crm == 0) {
-        // CPU ID / Cache type: return ARM1136J-S / ARM926 compatible ID
+        // CPU ID / Cache type: ARM1136J-S.
+        // MIDR do Zeebo REAL: 0x4117b362 (ARM1136 r1p2), nao 0x4107b364 (r0p4).
+        // EVIDENCIA EXTERNA, nao inferida por nos: log de boot do Linux 2.6.29-zeebo
+        // publicado por Fausto "TripleOxygen" (pastebin pdVwuLUV, build #85,
+        // 07/ago/2011, bootloader Zeeboot v0.1, Machine ID Zeebo 1009000). O kernel
+        // imprime "CPU: ARMv6-compatible processor [4117b362] revision 2 (ARMv6TEJ)",
+        // ou seja o proprio silicio reportando o registrador. Decodificado:
+        // implementer 0x41 (ARM), variant 1, arch 0x7 (ARMv6), part 0xb36 (ARM1136),
+        // revision 2. A parte (0xb36) ja estava certa aqui; variant e revision nao.
         if (rd != 15) {
-          regs_[rd] = (opc2 == 1) ? 0x1d152152u : 0x4107b364u;
+          regs_[rd] = (opc2 == 1) ? 0x1d152152u : 0x4117b362u;
         }
         return;
       }

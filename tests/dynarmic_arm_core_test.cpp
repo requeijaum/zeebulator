@@ -106,7 +106,9 @@ TEST(DynarmicArmCore, Cp15CpuIdMatchesInterpreter) {
   }
   EXPECT_NO_THROW(interp.Step());
   EXPECT_NO_THROW(jit.Step());
-  EXPECT_EQ(interp.GetRegister(kR0), 0x4107b364u);
+  // MIDR medido no Zeebo real (log de boot do Linux 2.6.29-zeebo, pastebin
+  // pdVwuLUV): ARM1136 r1p2. Ver o comentario em arm_interpreter.cpp.
+  EXPECT_EQ(interp.GetRegister(kR0), 0x4117b362u);
   EXPECT_EQ(jit.GetRegister(kR0), interp.GetRegister(kR0));
   EXPECT_EQ(jit.GetRegister(kPC), interp.GetRegister(kPC));
 }

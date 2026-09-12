@@ -73,7 +73,17 @@ class ZeeboCp15Coprocessor final : public Dynarmic::A32::Coprocessor {
  public:
   using CoprocReg = Dynarmic::A32::CoprocReg;
   static std::uint64_t ZeroFn(void*, std::uint32_t, std::uint32_t) { return 0; }
-  static std::uint64_t CpuIdFn(void*, std::uint32_t, std::uint32_t) { return 0x4107b364u; }
+  // MIDR do Zeebo REAL: 0x4117b362 (ARM1136 r1p2), nao 0x4107b364 (r0p4).
+  // EVIDENCIA EXTERNA, nao inferida por nos: log de boot do Linux 2.6.29-zeebo
+  // publicado por Fausto "TripleOxygen" (pastebin pdVwuLUV, build #85,
+  // 07/ago/2011, bootloader Zeeboot v0.1, Machine ID Zeebo 1009000). O kernel
+  // imprime "CPU: ARMv6-compatible processor [4117b362] revision 2 (ARMv6TEJ)",
+  // ou seja o proprio silicio reportando o registrador. Decodificado:
+  // implementer 0x41 (ARM), variant 1, arch 0x7 (ARMv6), part 0xb36 (ARM1136),
+  // revision 2. A parte (0xb36) ja estava certa aqui; variant e revision nao.
+  // O JIT PRECISA devolver o mesmo valor do interpretador: o interpretador e o
+  // oraculo diferencial, e divergencia de MIDR entre os dois quebraria a comparacao.
+  static std::uint64_t CpuIdFn(void*, std::uint32_t, std::uint32_t) { return 0x4117b362u; }
   static std::uint64_t CacheTypeFn(void*, std::uint32_t, std::uint32_t) { return 0x1d152152u; }
   static std::uint64_t CacheCleanFn(void*, std::uint32_t, std::uint32_t) {
     return 0x40000000u;  // CPSR Z when MRC destination is PC, matching interpreter.
