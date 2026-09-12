@@ -1,6 +1,6 @@
 # Zeebulator
 
-[![Build & Tests](https://img.shields.io/badge/tests-590%2F590%20passing-brightgreen.svg)]()
+[![Build & Tests](https://img.shields.io/badge/tests-621%2F623%20passing-brightgreen.svg)]()
 [![Compatibility](https://img.shields.io/badge/boot-63%2F63%20titles-blue.svg)](docs/COMPATIBILIDADE.md)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-informational.svg)]()
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
@@ -170,6 +170,14 @@ Custom reverse-engineering inspection tools are included in `build/tools/`:
 - **`zeebulator_bar_inspector`**: Inspects image, sound, and binary resources inside BREW `.bar` containers.
 - **`zeebulator_pakz_inspector`**: Validates and decompresses `.pakz` archive streams.
 - **`zeebulator_obm1_inspector`**: Inspects 3D meshes and geometry in `.obm1` model files.
+
+---
+
+## Technical Documentation & Roadmap
+
+- **[Roadmap Técnico (`docs/ROADMAP.md`)](docs/ROADMAP.md)**: Planejamento estratégico, fases de implementação, gaps atuais e critérios de avanço.
+- **[Situação dos Jogos & Auditoria (`docs/ARTIGO-SITUACAO-DOS-JOGOS.md`)](docs/ARTIGO-SITUACAO-DOS-JOGOS.md)**: Diagnóstico detalhado de cada título, rastreamento causal e lições aprendidas.
+- **[Compatibilidade do Catálogo (`docs/COMPATIBILIDADE.md`)](docs/COMPATIBILIDADE.md)**: Matriz de execução e comportamento dos 63 títulos oficiais da NAND.
 
 ---
 
