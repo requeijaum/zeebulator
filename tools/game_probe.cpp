@@ -925,20 +925,23 @@ int main(int argc, char** argv) {
     if (const char* forced = std::getenv("ZEEB_DATA_DIR")) return forced;
     if (const char* xdg = std::getenv("XDG_DATA_HOME")) return std::string(xdg) + "/zeebulator";
     if (const char* home = std::getenv("HOME")) return std::string(home) + "/.local/share/zeebulator";
-    return ".";
+    // Ambiente sem HOME/XDG: ainda nao escreva no cwd, que pode ser a ROM.
+    return (std::filesystem::temp_directory_path() / "zeebulator").string();
   }();
   {
     std::error_code ec;
     std::filesystem::create_directories(data_dir, ec);
   }
-  auto pick_existing_legacy = [](const std::string& preferred, const std::string& legacy) {
+  auto pick_load_source = [](const std::string& preferred, const std::string& legacy) {
     std::error_code ec;
     if (!std::filesystem::exists(preferred, ec) && std::filesystem::exists(legacy, ec)) return legacy;
     return preferred;
   };
-  const std::string save_state_path =
-      pick_existing_legacy(data_dir + "/" + module_key + ".savestate",
-                           std::string(argv[1]) + ".savestate");
+  // Destino e origem sao separados de proposito: legado ao lado da ROM pode
+  // ser IMPORTADO, nunca continuar sendo o destino de escrita.
+  const std::string save_state_path = data_dir + "/" + module_key + ".savestate";
+  const std::string save_state_load_path =
+      pick_load_source(save_state_path, std::string(argv[1]) + ".savestate");
   // Real save-game data (Double Dragon's own "./udata/ddz.sav", written
   // through FileHle's writable_files_ -- see file_hle.h) is a genuinely
   // separate concern from the save STATE above: a player's actual
@@ -947,9 +950,9 @@ int main(int argc, char** argv) {
   // this, writable_files_ was purely in-memory and silently reset to
   // empty on every process exit -- indistinguishable from the game "not
   // saving" at all (a real, live-reported bug this fixes).
-  const std::string userdata_path =
-      pick_existing_legacy(data_dir + "/" + module_key + ".userdata",
-                           std::string(argv[1]) + ".userdata");
+  const std::string userdata_path = data_dir + "/" + module_key + ".userdata";
+  const std::string userdata_load_path =
+      pick_load_source(userdata_path, std::string(argv[1]) + ".userdata");
 
   zeebulator::VirtualFilesystem vfs;
   // A title that doesn't ship a given ggz passes '-' for that slot (ABD is
@@ -1372,9 +1375,10 @@ int main(int argc, char** argv) {
   zeebulator::Mixer mixer(kAudioSampleRate);
   zeebulator::FileHle file_hle(cpu.GetMemory(), hle, vfs, /*object_region=*/0x80100000);
   {
-    std::ifstream userdata_in(userdata_path, std::ios::binary);
+    std::ifstream userdata_in(userdata_load_path, std::ios::binary);
     if (userdata_in && file_hle.Deserialize(userdata_in)) {
-      std::printf("loaded real save-game data from %s\n", userdata_path.c_str());
+      std::printf("loaded real save-game data from %s%s\n", userdata_load_path.c_str(),
+                  userdata_load_path == userdata_path ? "" : " (legacy import; future writes use XDG)");
     }
     // Anything else (no file yet, or a stream that failed to parse)
     // just leaves writable_files_ empty -- the same real "no save yet"
@@ -1728,9 +1732,15 @@ int main(int argc, char** argv) {
   // the concrete compatible-IBitmap DIB fields (measured at 0x85000000).
   // Other titles use this generic scaffold differently, so scope the real DIB
   // to the proven module. ZEEB_COMPAT_DIB remains an explicit diagnostic force.
-  const bool is_zenonia_title = std::string(argv[1]).find("zenonia.mod") != std::string::npos;
-  const bool compat_dib_enabled = is_zenonia_title || std::getenv("ZEEB_COMPAT_DIB") != nullptr;
+  const bool is_zenonia_title =
+      std::string(argv[1]).find("zenonia.mod") != std::string::npos;
+  // CreateCompatibleBitmap e contrato geral de IBitmap, nao quirk de Zenonia.
+  // Devolver objeto vazio para outros titulos fazia BitBlt ler vtable como pixels.
+  const bool compat_dib_enabled = true;
   constexpr uint32_t kCompatBitmapPixels = 0x85000000;
+  constexpr uint32_t kCompatBitmapPixelEnd = 0x86000000;
+  constexpr uint32_t kCompatBitmapObjectBase = 0x87000000;
+  constexpr uint32_t kCompatBitmapObjectEnd = 0x87100000;
   constexpr uint32_t kCompatBitmapBytes = 640u * 480u * 2u;
   if (compat_dib_enabled) {
     // Same start-up panel state as the screen itself: a surface the title has
@@ -1743,6 +1753,15 @@ int main(int argc, char** argv) {
 
   std::vector<zeebulator::HleRuntime::HleFunction> compat_bitmap_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  compat_bitmap_methods[0] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); };
+  compat_bitmap_methods[1] = [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 1); };
+  compat_bitmap_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+    const uint32_t cls = core.GetRegister(zeebulator::kR1);
+    const uint32_t out = core.GetRegister(zeebulator::kR2);
+    const bool supported = cls == 0x01001045u || cls == 0x01001021u || cls == 0x0100102cu;
+    if (out != 0) cpu.GetMemory().Write32(out, supported ? core.GetRegister(zeebulator::kR0) : 0);
+    core.SetRegister(zeebulator::kR0, supported ? 0 : 3);
+  };
   // IBitmap slot 3: NativeColor RGBToNative(IBitmap*, RGBVAL).
   // Zeebo's display is RGB565 and the game calls this before every source blit.
   compat_bitmap_methods[3] = [](zeebulator::IArmCore& core) {
@@ -1901,9 +1920,8 @@ int main(int argc, char** argv) {
   // same object and the same buffer to every caller makes concurrently live
   // surfaces (map tiles, sprites, UI) overwrite one another, which shows up as
   // smearing and black frames once a title keeps several of them at once.
-  device_bitmap_methods[13] = [&cpu, &hle, compat_bitmap_obj, compat_state, compat_dib_enabled,
-                                compat_next_object, compat_next_pixels,
-                                compat_bitmap_methods](zeebulator::IArmCore& core) {
+  device_bitmap_methods[13] = [&cpu, compat_bitmap_obj, compat_state, compat_dib_enabled,
+                                compat_next_object, compat_next_pixels](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);
     uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
     uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
@@ -1919,14 +1937,22 @@ int main(int argc, char** argv) {
       return;
     }
     if (*compat_next_object == 0) {
-      // First surface keeps the pre-built object so the proven WIPI path is
-      // unchanged; later surfaces get fresh ones.
-      *compat_next_object = compat_bitmap_obj + 0x1000;
+      // Primeiro objeto preserva o endereco historico; os seguintes usam arena
+      // dedicada, sem atravessar vtables HLE vizinhas.
+      *compat_next_object = kCompatBitmapObjectBase;
       *compat_next_pixels = kCompatBitmapPixels + kCompatBitmapBytes;
     } else {
-      obj = zeebulator::BuildInterfaceObject(m, hle, /*vtable=*/0x8008C000, *compat_next_object,
-                                             compat_bitmap_methods);
-      *compat_next_object += 0x1000;
+      const uint32_t pixel_bytes = width * height * 2u;
+      const uint32_t pixel_step = (pixel_bytes + 0xfffu) & ~0xfffu;
+      if (*compat_next_object > kCompatBitmapObjectEnd - 0x100u ||
+          static_cast<uint64_t>(*compat_next_pixels) + pixel_step > kCompatBitmapPixelEnd) {
+        if (out != 0) m.Write32(out, 0);
+        core.SetRegister(zeebulator::kR0, 2);  // ENOMEMORY
+        return;
+      }
+      obj = *compat_next_object;
+      *compat_next_object += 0x100;
+      m.Write32(obj, 0x8008C000);  // vtable compartilhada, objeto independente
     }
     uint32_t pixels = kCompatBitmapPixels;
     if (obj != compat_bitmap_obj) {
@@ -1991,8 +2017,7 @@ int main(int argc, char** argv) {
   // educated implementation of the one behavior everything points at
   // (see file_hle.h's own doc comment on BuildLastOpenedFileProxy for
   // the full reasoning and what's still unconfirmed about it).
-  uint32_t last_opened_file_proxy =
-      file_hle.BuildLastOpenedFileProxy(/*vtable=*/0x80012000, /*object=*/0x80013000);
+  file_hle.BuildLastOpenedFileProxy(/*vtable=*/0x80012000, /*object=*/0x80013000);
 
   // ClsId 0x01001014: AEECLSID_UNZIPSTREAM (IUnzipAStream) from Qualcomm BREW SDK.
   // Decompresses a compressed IAStream (deflate / gzip / zlib) into uncompressed bytes.
@@ -2053,15 +2078,10 @@ int main(int argc, char** argv) {
     // /media/.../debug_nand, que e removivel e pode estar so para leitura.
     namespace fs = std::filesystem;
     std::string mod_path = argv[1];
-    fs::path db_dir = fs::path(data_dir) / (module_key + ".sqldb");
-    {
-      // Um banco ja criado pela convencao antiga continua valendo.
-      std::error_code ec;
-      fs::path legacy = fs::path(mod_path + ".sqldb");
-      if (!fs::exists(db_dir, ec) && fs::exists(legacy, ec)) db_dir = legacy;
-    }
+    const fs::path db_dir = fs::path(data_dir) / (module_key + ".sqldb");
+    const fs::path legacy_db_dir = fs::path(mod_path + ".sqldb");
     fs::path mod_dir = fs::absolute(mod_path).parent_path();
-    sql_hle.SetPathResolver([db_dir, mod_dir, &vfs](const std::string& name) -> std::string {
+    sql_hle.SetPathResolver([db_dir, legacy_db_dir, mod_dir, &vfs](const std::string& name) -> std::string {
       std::error_code ec;
       fs::create_directories(db_dir, ec);
       std::string base = fs::path(name).filename().string();
@@ -2071,7 +2091,11 @@ int main(int argc, char** argv) {
         // Semente: primeiro o VFS do proprio jogo, depois o arquivo solto
         // ao lado do .mod. Se nao houver nenhum dos dois, o SQLite cria
         // um banco vazio -- que e o que o console faria na primeira vez.
-        if (const std::vector<uint8_t>* data = vfs.Find(base)) {
+        // Convencao antiga: copie como semente, mas jamais abra/grave o DB
+        // ao lado do .mod. Isso preserva progresso sem voltar a poluir a ROM.
+        if (fs::exists(legacy_db_dir / base, ec)) {
+          fs::copy_file(legacy_db_dir / base, target, fs::copy_options::overwrite_existing, ec);
+        } else if (const std::vector<uint8_t>* data = vfs.Find(base)) {
           std::ofstream out(target, std::ios::binary);
           out.write(reinterpret_cast<const char*>(data->data()),
                     static_cast<std::streamsize>(data->size()));
@@ -2108,8 +2132,10 @@ int main(int argc, char** argv) {
   //   0x800 -> PEGA O FILHO de numero `id` e escreve o ponteiro em [valor]
   //   0x801 -> GRAVA a propriedade `id` com `valor`
   constexpr uint32_t kWidgetVtable = 0x8006C000;
-  constexpr uint32_t kWidgetObject = 0x8006D000;
-  constexpr uint32_t kWidgetChildBase = 0x8006D100;  // filhos entregues pelo 0x800
+  constexpr uint32_t kWidgetObject = 0x8006D000;  // prototipo; factories usam objetos unicos
+  constexpr uint32_t kWidgetInstanceBase = 0x86000000;
+  constexpr uint32_t kWidgetInstanceEnd = 0x87000000;
+  constexpr uint32_t kWidgetInstanceStride = 0x100;
   // ATENCAO (bug corrigido): as duas tabelas sao indexadas por (this, id), NAO
   // so por id. O codigo antigo usava `id` puro, como se existisse UM widget no
   // sistema. Existem varios: a instrumentacao mostrou o guest falando com
@@ -2121,24 +2147,57 @@ int main(int argc, char** argv) {
   // "propriedade numerica" de "objeto pendurado".
   auto widget_props = std::make_shared<std::map<uint64_t, uint32_t>>();
   auto widget_children = std::make_shared<std::map<uint64_t, uint32_t>>();
+  auto widget_ref_counts = std::make_shared<std::map<uint32_t, uint32_t>>();
+  auto widget_classes = std::make_shared<std::map<uint32_t, uint32_t>>();
+  auto widget_parents = std::make_shared<std::map<uint32_t, uint32_t>>();
+  auto widget_visibility = std::make_shared<std::map<uint32_t, bool>>();
+  auto widget_extents = std::make_shared<std::map<uint32_t, std::array<uint32_t, 2>>>();
+  auto next_widget_object = std::make_shared<uint32_t>(kWidgetInstanceBase);
   // Estrutura para armazenar tratadores de eventos de widget (slot 4) e desenho (slot 16)
-  struct WidgetHandler { uint32_t function = 0; uint32_t context = 0; };
+  struct WidgetHandler {
+    uint32_t function = 0;
+    uint32_t context = 0;
+    uint32_t destructor = 0;
+  };
   auto widget_handlers = std::make_shared<std::map<uint32_t, WidgetHandler>>();
   auto widget_draw_callbacks = std::make_shared<std::map<uint32_t, WidgetHandler>>();
-  auto registered_widget_handlers = std::make_shared<std::vector<WidgetHandler>>();
+  struct RegisteredWidgetHandler { uint32_t object = 0; WidgetHandler handler; };
+  auto registered_widget_handlers = std::make_shared<std::vector<RegisteredWidgetHandler>>();
 
   std::vector<zeebulator::HleRuntime::HleFunction> widget_methods(
-      24, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
-  // Slot 2: QueryInterface / PegarInterface
-  widget_methods[2] = [&cpu](zeebulator::IArmCore& core) {
+      24, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 20); });
+  widget_methods[0] = [widget_ref_counts](zeebulator::IArmCore& core) {
+    uint32_t& refs = (*widget_ref_counts)[core.GetRegister(zeebulator::kR0)];
+    if (refs == 0) refs = 1;
+    if (refs != 0xffffffffu) ++refs;
+    core.SetRegister(zeebulator::kR0, refs);
+  };
+  widget_methods[1] = [widget_ref_counts](zeebulator::IArmCore& core) {
+    auto it = widget_ref_counts->find(core.GetRegister(zeebulator::kR0));
+    if (it == widget_ref_counts->end()) { core.SetRegister(zeebulator::kR0, 0); return; }
+    if (it->second > 0) --it->second;
+    const uint32_t refs = it->second;
+    if (refs == 0) widget_ref_counts->erase(it);
+    core.SetRegister(zeebulator::kR0, refs);
+  };
+  // Slot 2: QueryInterface / PegarInterface. A familia expõe a mesma interface;
+  // a resposta adquire referencia como todo IQI bem-sucedido.
+  widget_methods[2] = [&cpu, widget_ref_counts](zeebulator::IArmCore& core) {
+    const uint32_t self = core.GetRegister(zeebulator::kR0);
     uint32_t out = core.GetRegister(zeebulator::kR2);
-    if (out != 0) cpu.GetMemory().Write32(out, core.GetRegister(zeebulator::kR0));
-    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+    if (out == 0 || widget_ref_counts->find(self) == widget_ref_counts->end()) {
+      core.SetRegister(zeebulator::kR0, 14);
+      return;
+    }
+    ++(*widget_ref_counts)[self];
+    cpu.GetMemory().Write32(out, self);
+    core.SetRegister(zeebulator::kR0, 0);
   };
   widget_methods[12] = widget_methods[2]; // Slot 12: PegarInterface
 
   // Slot 3: Acessador (le/grava propriedades e filhos)
-  widget_methods[3] = [&cpu, widget_props, widget_children](zeebulator::IArmCore& core) {
+  widget_methods[3] = [&cpu, widget_props, widget_children, widget_ref_counts,
+                       next_widget_object](zeebulator::IArmCore& core) {
     const uint32_t this_obj = core.GetRegister(zeebulator::kR0);
     const uint32_t selector = core.GetRegister(zeebulator::kR1);
     const uint32_t id = core.GetRegister(zeebulator::kR2);
@@ -2152,9 +2211,14 @@ int main(int argc, char** argv) {
       if (id >= kPrimeiroObjeto) {
         auto it = widget_children->find(key);
         if (it == widget_children->end()) {
-          const uint32_t child =
-              kWidgetChildBase + 0x40 * static_cast<uint32_t>(widget_children->size());
-          cpu.GetMemory().Write32(child, kWidgetVtable);  // filho e outro widget
+          if (*next_widget_object > kWidgetInstanceEnd - kWidgetInstanceStride) {
+            core.SetRegister(zeebulator::kR0, 0);
+            return;
+          }
+          const uint32_t child = *next_widget_object;
+          *next_widget_object += kWidgetInstanceStride;
+          cpu.GetMemory().Write32(child, kWidgetVtable);
+          (*widget_ref_counts)[child] = 1;
           it = widget_children->emplace(key, child).first;
         }
         if (value != 0) cpu.GetMemory().Write32(value, it->second);
@@ -2167,7 +2231,8 @@ int main(int argc, char** argv) {
       return;
     }
     if (selector == 0x801) {
-      (*widget_props)[key] = value;
+      if (id >= kPrimeiroObjeto) (*widget_children)[key] = value;
+      else (*widget_props)[key] = value;
       core.SetRegister(zeebulator::kR0, 1);
       return;
     }
@@ -2202,13 +2267,16 @@ int main(int argc, char** argv) {
     if (ptr != 0) {
       uint32_t fn = cpu.GetMemory().Read32(ptr + 0);
       uint32_t ctx = cpu.GetMemory().Read32(ptr + 4);
-      WidgetHandler previous{0, 0};
+      uint32_t dtor = cpu.GetMemory().Read32(ptr + 8);
+      WidgetHandler previous{};
       auto it = widget_handlers->find(this_obj);
       if (it != widget_handlers->end()) previous = it->second;
       cpu.GetMemory().Write32(ptr + 0, previous.function);
       cpu.GetMemory().Write32(ptr + 4, previous.context);
-      (*widget_handlers)[this_obj] = WidgetHandler{fn, ctx};
-      registered_widget_handlers->push_back(WidgetHandler{fn, ctx});
+      cpu.GetMemory().Write32(ptr + 8, previous.destructor);
+      (*widget_handlers)[this_obj] = WidgetHandler{fn, ctx, dtor};
+      registered_widget_handlers->push_back(
+          RegisteredWidgetHandler{this_obj, WidgetHandler{fn, ctx, dtor}});
       if (std::getenv("ZEEB_LOG_WIDGET")) {
         std::fprintf(stderr,
                      "[widget] SetHandler obj=0x%08x fn=0x%08x ctx=0x%08x prev=0x%08x/0x%08x\n",
@@ -2222,9 +2290,10 @@ int main(int argc, char** argv) {
   // Ver o comentario dentro do handler sobre por que a leitura e VALIDADA em
   // vez de assumida.
   auto widget_geometry = std::make_shared<std::map<uint64_t, std::array<uint32_t, 6>>>();
-  widget_methods[5] = [&cpu, widget_geometry](zeebulator::IArmCore& core) {
+  widget_methods[5] = [&cpu, widget_geometry, widget_parents](zeebulator::IArmCore& core) {
     const uint32_t parent = core.GetRegister(zeebulator::kR0);
     const uint32_t child = core.GetRegister(zeebulator::kR1);
+    if (child != 0) (*widget_parents)[child] = parent;
     uint32_t r2 = core.GetRegister(zeebulator::kR2);
     // Bloco de posicao (documento da roda, secao 6.2): quando o terceiro
     // argumento e um PONTEIRO, ele aponta seis palavras:
@@ -2289,31 +2358,26 @@ int main(int argc, char** argv) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
   // Slot 6: DefinirVisivel
-  widget_methods[6] = [](zeebulator::IArmCore& core) {
-    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  widget_methods[6] = [widget_visibility](zeebulator::IArmCore& core) {
+    (*widget_visibility)[core.GetRegister(zeebulator::kR0)] = core.GetRegister(zeebulator::kR1) != 0;
+    core.SetRegister(zeebulator::kR0, 0);
   };
   // Slot 7: DefinirTamanho
-  widget_methods[7] = [](zeebulator::IArmCore& core) {
-    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
+  widget_methods[7] = [widget_extents](zeebulator::IArmCore& core) {
+    (*widget_extents)[core.GetRegister(zeebulator::kR0)] =
+        {core.GetRegister(zeebulator::kR1), core.GetRegister(zeebulator::kR2)};
+    core.SetRegister(zeebulator::kR0, 0);
   };
   // Slot 8: PegarPai
-  widget_methods[8] = [&cpu](zeebulator::IArmCore& core) {
+  widget_methods[8] = [&cpu, widget_parents](zeebulator::IArmCore& core) {
     uint32_t out = core.GetRegister(zeebulator::kR1);
-    if (out != 0) cpu.GetMemory().Write32(out, 0);
+    auto it = widget_parents->find(core.GetRegister(zeebulator::kR0));
+    if (out != 0) cpu.GetMemory().Write32(out, it != widget_parents->end() ? it->second : 0);
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
   };
-  // Slot 13: CreateCompatibleBitmap (utilizado em 0x24100..0x24198 do tectoy.mod)
-  widget_methods[13] = [&cpu, compat_bitmap_obj, compat_state](zeebulator::IArmCore& core) {
-    uint32_t out = core.GetRegister(zeebulator::kR1);
-    uint32_t w = core.GetRegister(zeebulator::kR2) & 0xffff;
-    uint32_t h = core.GetRegister(zeebulator::kR3) & 0xffff;
-    if (w != 0) compat_state->width = w;
-    if (h != 0) compat_state->height = h;
-    if (out != 0) {
-      cpu.GetMemory().Write32(out, compat_bitmap_obj);
-    }
-    core.SetRegister(zeebulator::kR0, 0); // SUCCESS
-  };
+  // Slot 13: mesma ABI de IBitmap::CreateCompatibleBitmap. Reusar a factory
+  // real acima: cada chamada ganha objeto, pixels RGB565 e geometria proprios.
+  widget_methods[13] = device_bitmap_methods[13];
   // Slot 14: Anexar / Attach (associa widget ou modelo)
   widget_methods[14] = [](zeebulator::IArmCore& core) {
     core.SetRegister(zeebulator::kR0, 0); // SUCCESS
@@ -2330,12 +2394,14 @@ int main(int argc, char** argv) {
     if (ptr != 0) {
       uint32_t fn = cpu.GetMemory().Read32(ptr + 0);
       uint32_t ctx = cpu.GetMemory().Read32(ptr + 4);
-      WidgetHandler previous{0, 0};
+      uint32_t dtor = cpu.GetMemory().Read32(ptr + 8);
+      WidgetHandler previous{};
       auto it = widget_draw_callbacks->find(this_obj);
       if (it != widget_draw_callbacks->end()) previous = it->second;
       cpu.GetMemory().Write32(ptr + 0, previous.function);
       cpu.GetMemory().Write32(ptr + 4, previous.context);
-      (*widget_draw_callbacks)[this_obj] = WidgetHandler{fn, ctx};
+      cpu.GetMemory().Write32(ptr + 8, previous.destructor);
+      (*widget_draw_callbacks)[this_obj] = WidgetHandler{fn, ctx, dtor};
       if (std::getenv("ZEEB_LOG_WIDGET")) {
         std::fprintf(stderr,
                      "[widget] SetDrawHandler obj=0x%08x fn=0x%08x ctx=0x%08x prev=0x%08x/0x%08x\n",
@@ -2371,8 +2437,19 @@ int main(int argc, char** argv) {
     }
   }
 
-  uint32_t widget_obj = zeebulator::BuildInterfaceObject(
+  zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, kWidgetVtable, kWidgetObject, widget_methods);
+  // O codigo antigo registrava kWidgetObject como singleton para NOVE classes.
+  // Agora cada CreateInstance recebe identidade propria e estado por `this`.
+  auto allocate_widget = [&cpu, widget_ref_counts, widget_classes, next_widget_object](uint32_t cls) {
+    if (*next_widget_object > kWidgetInstanceEnd - kWidgetInstanceStride) return 0u;
+    const uint32_t obj = *next_widget_object;
+    *next_widget_object += kWidgetInstanceStride;
+    cpu.GetMemory().Write32(obj, kWidgetVtable);
+    (*widget_ref_counts)[obj] = 1;
+    (*widget_classes)[obj] = cls;
+    return obj;
+  };
   // Registra toda a familia de widgets da Z-Wheel
   const uint32_t kZWheelWidgetClasses[] = {
     0x01028e51, // root form / widget principal
@@ -2386,7 +2463,7 @@ int main(int argc, char** argv) {
     0x01028e47, // formulario visual
   };
   for (uint32_t cls : kZWheelWidgetClasses) {
-    shell_hle.RegisterInstance(cls, widget_obj);
+    shell_hle.RegisterFactory(cls, [allocate_widget, cls]() { return allocate_widget(cls); });
   }
 
   // 0x0100104f -- a colecao generica da Z-Wheel: guarda itens e e percorrida.
@@ -4899,7 +4976,8 @@ int main(int argc, char** argv) {
     // Z-Wheel boot animation trigger (AnimationVideo_Form, confirmed via Zeebx & disassembly of 0x101828):
     // The console signals (0x801, 0x5064, 1) to the root widget's handler registered via slot 4.
     // This arms the 1000ms timer (callback 0x1014ac) which advances frames and plays sounds_loading.wav.
-    for (const auto& handler : *registered_widget_handlers) {
+    for (const auto& registration : *registered_widget_handlers) {
+      const auto& handler = registration.handler;
       if (handler.function != 0) {
         std::printf("[zwheel] Triggering boot animation handler fn=0x%08x ctx=0x%08x\n",
                     handler.function, handler.context);
@@ -4914,7 +4992,6 @@ int main(int argc, char** argv) {
     }
 
     stage = "HandleEvent(EVT_APP_RESUME)";
-    constexpr uint32_t kEvtAppResume = 3;
     // Root cause of the "first-party tick-1 wall" (AirRacez/Bajaz/Boiaz/
     // JetBoardz/tennis/volley/... — RE'd 2026-09-02): these applets do NOT
     // build their "current scene" object (app+0x64) during EVT_APP_START.
@@ -5023,7 +5100,7 @@ int main(int argc, char** argv) {
   gl_recorder.ClearLog();
 
   if (auto_load_state) {
-    std::ifstream state_in(save_state_path, std::ios::binary);
+    std::ifstream state_in(save_state_load_path, std::ios::binary);
     bool ok = state_in && zeebulator::LoadState(cpu, state_in);
     // Continues reading the same stream right where LoadState left off
     // (see F1's own comment on why this is written right after the
@@ -5043,7 +5120,7 @@ int main(int argc, char** argv) {
     // before the save, exactly the pre-existing gap, not a new failure.
     bool audio_ok = gl_ok && mixer.Deserialize(state_in) && media_hle.Deserialize(state_in);
     std::printf("--load-state: %s %s (GL texture replay: %s, audio state: %s)\n",
-                ok ? "loaded" : "FAILED to load", save_state_path.c_str(),
+                ok ? "loaded" : "FAILED to load", save_state_load_path.c_str(),
                 gl_ok ? "ok" : "FAILED", audio_ok ? "restored" : "not present in this save file");
     backend.ShowStatusMessage(ok && gl_ok ? "STATE LOADED" : "LOAD FAILED");
   }
@@ -5630,10 +5707,36 @@ int main(int argc, char** argv) {
           constexpr uint32_t kEvtKeyDown = 0x101;
           constexpr uint32_t kEvtKeyUp = 0x102;
           uint32_t evt = (event.type == SDL_KEYDOWN) ? kEvtKeyDown : kEvtKeyUp;
+          bool consumed = false;
+          // Handler mais novo primeiro. Ignore entradas historicas substituidas;
+          // so o handler atualmente instalado em cada objeto pode receber tecla.
+          for (auto rit = registered_widget_handlers->rbegin();
+               rit != registered_widget_handlers->rend() && !consumed; ++rit) {
+            auto current = widget_handlers->find(rit->object);
+            if (current == widget_handlers->end() ||
+                current->second.function != rit->handler.function ||
+                current->second.context != rit->handler.context ||
+                current->second.function == 0) continue;
+            try {
+              const auto wr = CallArmFunctionChecked(
+                  cpu, kTrapBase, kBase, mod_size, current->second.function,
+                  current->second.context, evt, avk, 0,
+                  /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+              consumed = wr.r0 != 0 && !wr.wandered_outside_module && !wr.exceeded_step_budget;
+            } catch (const std::exception& e) {
+              std::fprintf(stderr, "[widget] key handler obj=0x%08x abortou: %s\n",
+                           rit->object, e.what());
+            }
+          }
           try {
-            auto key_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size,
-                                                      handle_event_fn, applet_ptr, evt, avk, 0,
-                                                      /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+            CallResult key_result{};
+            if (!consumed) {
+              key_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size,
+                                                   handle_event_fn, applet_ptr, evt, avk, 0,
+                                                   /*trace=*/false, /*hle_trace=*/false, &display,
+                                                   &backend);
+            }
+            key_result.r0 = consumed ? 1 : key_result.r0;
             std::printf("HandleEvent(evt=0x%x, wParam=0x%x) returned %u%s\n", evt, avk,
                         key_result.r0,
                         key_result.wandered_outside_module ? " (wandered!)" : "");
@@ -5744,11 +5847,15 @@ int main(int argc, char** argv) {
     // Fires real MM_STATUS_DONE notifications for voices that finished
     // since the last tick -- see MediaHle::Tick's own doc comment; real
     // Double Dragon sound-channel bookkeeping depends on this firing.
-    media_hle.Tick();
-    // Same asynchronous-notification contract as media: stream Readable
-    // callbacks are delivered here, never from inside the guest's own call.
-    mem_astream_hle.Tick();
-    unzip_stream_hle.Tick();
+    // Um callback guest usa o MESMO contexto ARM. Nao empilhe notificacoes
+    // cruas sobre uma continuacao que cedeu: CallArmFunction sobrescreveria
+    // PC/LR/registradores e o resume retomaria a notificacao, nao o callback
+    // original. Adie todos os ticks ate a continuacao terminar.
+    if (!callback_continuation_active) {
+      media_hle.Tick();
+      mem_astream_hle.Tick();
+      unzip_stream_hle.Tick();
+    }
     // Real BREW timers are one-shot -- real game code re-arms its own via
     // ISHELL_SetTimer from inside the callback (see core/brew/ishell.h).
     // Driving these is what actually runs the game's per-frame logic;
@@ -5985,18 +6092,6 @@ int main(int argc, char** argv) {
       // is its own real display moment; presenting once per real timer
       // here matches that instead of only ever showing the real *last*
       // timer in a real burst.
-      // OwnerDraw / StageWidget drawing: invoke callbacks registered via widget slot 16.
-      // In Z-Wheel, the 3D stage and bottom carousel are drawn here (matching Zeebx desenha_widgets).
-      for (const auto& [obj, handler] : *widget_draw_callbacks) {
-        if (handler.function != 0) {
-          try {
-            CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handler.function,
-                                   handler.context, display_obj, 0, 0,
-                                   /*trace=*/false, /*hle_trace=*/false, &display, &backend);
-          } catch (...) {}
-        }
-      }
-
       if (!backend.HasRealGlActivity()) {
         // Espelha o buffer do IDIB, quando o jogo escreveu nele.
         //
@@ -6028,6 +6123,36 @@ int main(int argc, char** argv) {
         // framebuffer via the generic slot-107 path but never present it.
         if (abd_font_atlas.has_value() || std::getenv("ZEEB_GENERIC_RENDER") != nullptr) {
           display.PresentLiveFramebuffer();
+        }
+      }
+    }
+    // OwnerDraw nao depende de existir timer vencido. Antes este passe ficava
+    // DENTRO do for de timers; uma tela sem timer jamais desenhava. Falhas nao
+    // podem sumir em catch(...): registrem objeto, funcao e motivo.
+    static uint32_t last_widget_draw_ms = 0;
+    const uint32_t widget_draw_now = SDL_GetTicks();
+    if (!dbg_paused && !callback_continuation_active &&
+        widget_draw_now - last_widget_draw_ms >= 16) {
+      last_widget_draw_ms = widget_draw_now;
+      for (const auto& [obj, handler] : *widget_draw_callbacks) {
+        if (handler.function == 0) continue;
+        try {
+          const auto draw_result = CallArmFunctionChecked(
+              cpu, kTrapBase, kBase, mod_size, handler.function,
+              handler.context, display_obj, 0, 0,
+              /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+          if (draw_result.wandered_outside_module || draw_result.exceeded_step_budget) {
+            std::fprintf(stderr,
+                         "[widget] draw nao confiavel obj=0x%08x fn=0x%08x wandered=%d exceeded=%d\n",
+                         obj, handler.function, draw_result.wandered_outside_module,
+                         draw_result.exceeded_step_budget);
+          }
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "[widget] draw abortou obj=0x%08x fn=0x%08x: %s\n",
+                       obj, handler.function, e.what());
+        } catch (...) {
+          std::fprintf(stderr, "[widget] draw abortou obj=0x%08x fn=0x%08x: excecao desconhecida\n",
+                       obj, handler.function);
         }
       }
     }
