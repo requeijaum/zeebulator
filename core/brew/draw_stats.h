@@ -19,6 +19,8 @@ struct DrawStats {
   uint64_t gl_draw_arrays = 0;
   uint64_t gl_clear = 0;
   uint64_t gl_swap = 0;
+  // Quantas vezes o color buffer de um pbuffer EGL foi realmente lido do host.
+  uint64_t gl_color_buffer_readback = 0;
   uint64_t gl_tex_image = 0;
   uint64_t disp_bitblt = 0;
   uint64_t disp_draw_text = 0;

@@ -229,10 +229,22 @@ class GlHle {
     int32_t height = 0;
     uint32_t color_buffer = 0;  // RGB565 guest pointer; zero for window surface
   };
+
+  // Traz os pixels reais do color buffer do host para o ponteiro RGB565 que o
+  // guest recebeu de eglGetColorBufferQUALCOMM. Sem isso o BitBlt do palco 3D
+  // copia lixo/zeros. Silenciosamente nao faz nada quando o backend nao tem
+  // GL real (ReadPixelsRgba devolve false) -- nunca inventa conteudo.
+  bool SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surface);
   std::map<uint32_t, EglSurfaceState> egl_surfaces_;
   uint32_t next_egl_surface_ = 2;       // 1 e a janela
   uint32_t current_draw_surface_ = 0;
   uint32_t next_pbuffer_pixels_ = 0x8a000000u;
+  // Ultimo glViewport pedido pelo guest: e a regiao do FBO que o readback do
+  // pbuffer deve ler (o Z-Wheel usa 640x330 para o palco 3D).
+  int32_t last_viewport_x_ = 0;
+  int32_t last_viewport_y_ = 0;
+  int32_t last_viewport_w_ = 0;
+  int32_t last_viewport_h_ = 0;
 };
 
 }  // namespace zeebulator

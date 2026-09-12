@@ -82,6 +82,35 @@ class GlBackend {
   virtual void DestroyContext() = 0;
   virtual void SwapBuffers() = 0;
 
+  // Alvo offscreen dedicado para superficies pbuffer EGL.
+  //
+  // MOTIVO MEDIDO: o FBO de apresentacao e compartilhado -- o jogo desenha o
+  // 3D nele e NOS desenhamos nele o quad do framebuffer 2D. Ler esse FBO de
+  // volta para o pbuffer devolvia a TELA APRESENTADA, nao a cena 3D
+  // (comprovado: o readback batia 100% com as linhas 150..480 da tela). Isso
+  // criava realimentacao e ainda apagava o conteudo que o proprio jogo tinha
+  // desenhado no bitmap do palco. Um pbuffer precisa do seu proprio alvo.
+  //
+  // BindOffscreenTarget devolve false quando o backend nao sabe fazer isso;
+  // nesse caso quem chama NAO deve fingir que deu certo.
+  virtual bool BindOffscreenTarget(int width, int height) {
+    (void)width; (void)height;
+    return false;
+  }
+  virtual void UnbindOffscreenTarget() {}
+
+  // Readback real do color buffer do host (origem no topo, RGBA8888).
+  // Necessario para a extensao EGL_QUALCOMM_COLOR_BUFFER: o guest renderiza
+  // o palco 3D num pbuffer e depois faz BitBlt do ponteiro devolvido por
+  // eglGetColorBufferQUALCOMM. Sem readback o ponteiro existe mas os pixels
+  // ficam zerados -- o 3D some da composicao 2D. Backends sem GL real (ex.:
+  // software) devolvem false, e o chamador nao inventa conteudo nenhum.
+  virtual bool ReadPixelsRgba(int x, int y, int width, int height,
+                              std::vector<uint8_t>& out) {
+    (void)x; (void)y; (void)width; (void)height; (void)out;
+    return false;
+  }
+
   // Core GL state / transform calls, host-native (float, not GLfixed).
   // GLenum/GLbitfield are passed through as-is: their values are the same
   // industry-standard Khronos constants on every real GL/GLES

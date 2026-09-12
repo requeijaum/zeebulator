@@ -2,6 +2,7 @@
 
 #include "core/control/debug_sink.h"
 
+#include <array>
 #include <cstdarg>
 #include <cstring>
 #include <cstdio>
@@ -14,6 +15,36 @@
 #include "core/brew/draw_stats.h"
 
 namespace zeebulator {
+
+namespace {
+// Histograma de chamadas GL/GLES por slot (ZEEB_GL_TRACE=1).
+// MOTIVO: a vtable do IGLES11 tem 150 slots e a maioria nasceu como Stub
+// silencioso (devolve AEE_SUCCESS e nao faz nada). Sem contar slot a slot nao
+// da para afirmar que "o backend segue as instrucoes do jogo" -- da so para
+// torcer. O destrutor global despeja o histograma no fim do processo.
+struct GlCallStats {
+  std::array<uint64_t, 160> gles{};
+  std::array<bool, 160> gles_stub{};
+  std::array<uint64_t, 96> gl{};
+  std::array<bool, 96> gl_stub{};
+  ~GlCallStats() {
+    if (std::getenv("ZEEB_GL_TRACE") == nullptr) return;
+    std::fprintf(stderr, "\n=== histograma de chamadas GL (slot: chamadas [STUB]) ===\n");
+    for (size_t i = 0; i < gles.size(); ++i) {
+      if (gles[i] == 0) continue;
+      std::fprintf(stderr, "IGLES11 slot %3zu: %10llu %s\n", i,
+                   static_cast<unsigned long long>(gles[i]), gles_stub[i] ? "STUB" : "");
+    }
+    for (size_t i = 0; i < gl.size(); ++i) {
+      if (gl[i] == 0) continue;
+      std::fprintf(stderr, "IGL     slot %3zu: %10llu %s\n", i,
+                   static_cast<unsigned long long>(gl[i]), gl_stub[i] ? "STUB" : "");
+    }
+  }
+};
+GlCallStats g_gl_call_stats;
+}  // namespace
+
 
 namespace {
 
@@ -218,6 +249,23 @@ void GlHle::EglCreateWindowSurface(IArmCore& core) {
   core.SetRegister(kR0, kSurfaceHandle);
 }
 
+namespace {
+// Log dedicado do caminho EGL/pbuffer (ZEEB_LOG_EGL=1). Existe porque o
+// palco 3D da Z-Wheel depende de uma cadeia inteira (criar pbuffer ->
+// tornar corrente -> desenhar -> pedir o color buffer -> BitBlt) e sem
+// observar cada elo nao da para saber qual elo esta quebrado.
+void EglLog(const char* fmt, ...) {
+  static const bool on = std::getenv("ZEEB_LOG_EGL") != nullptr;
+  if (!on) return;
+  va_list ap;
+  va_start(ap, fmt);
+  std::fprintf(stderr, "[egl] ");
+  std::vfprintf(stderr, fmt, ap);
+  std::fprintf(stderr, "\n");
+  va_end(ap);
+}
+}  // namespace
+
 void GlHle::EglCreatePbufferSurface(IArmCore& core) {
   // EGLSurface eglCreatePbufferSurface(EGLDisplay,EGLConfig,const EGLint*).
   // A lista termina em EGL_NONE; Z-Wheel pede explicitamente 640x330.
@@ -249,6 +297,7 @@ void GlHle::EglCreatePbufferSurface(IArmCore& core) {
   for (uint32_t off = 0; off < bytes; off += 2) core.GetMemory().Write16(pixels + off, 0);
   const uint32_t handle = next_egl_surface_++;
   egl_surfaces_[handle] = EglSurfaceState{width, height, pixels};
+  EglLog("CreatePbufferSurface %dx%d handle=%u pixels=0x%08x", width, height, handle, pixels);
   core.SetRegister(kR0, handle);
 }
 
@@ -365,17 +414,122 @@ void GlHle::EglMakeCurrent(IArmCore& core) {
   }
   context_current_ = true;
   current_draw_surface_ = draw;
+  // Superficie pbuffer = alvo offscreen proprio. Superficie de janela = FBO de
+  // apresentacao. Sem essa separacao o jogo desenha o palco 3D no mesmo lugar
+  // onde nos desenhamos a tela 2D, e o readback vira realimentacao.
+  const auto& surf = egl_surfaces_[draw];
+  if (surf.color_buffer != 0) {
+    const bool bound = backend_.BindOffscreenTarget(surf.width, surf.height);
+    EglLog("MakeCurrent pbuffer %dx%d alvo_offscreen=%s", surf.width, surf.height,
+           bound ? "ok" : "INDISPONIVEL");
+  } else {
+    backend_.UnbindOffscreenTarget();
+  }
+  EglLog("MakeCurrent draw=%u read=%u ctx=0x%08x -> TRUE", draw, read, ctx);
   core.SetRegister(kR0, kEglTrue);
 }
 
 void GlHle::EglGetColorBufferQualcomm(IArmCore& core) {
   // SDK platform/ui/inc/deprecated/gles/EGLext.h:
   //   void *eglGetColorBufferQUALCOMM(void)
-  // Sem argumentos. Devolve o RGB565 cru da superficie corrente. O buffer
-  // possui identidade/tamanho reais; readback do backend host ainda e uma
-  // etapa separada quando a renderizacao nao for software.
+  // Sem argumentos. Devolve o RGB565 cru da superficie corrente.
+  //
+  // O ponteiro sozinho nao basta: o guest (Z-Wheel, tectoy.mod 0x133b40 cria
+  // um pbuffer 640x330) faz BitBlt DESSE buffer para compor o palco 3D com a
+  // interface 2D. Enquanto nao haviamos feito readback do GL do host, o
+  // buffer ficava zerado e o palco 3D simplesmente sumia da tela. Agora
+  // trazemos os pixels reais do FBO do host e convertemos para RGB565.
   const auto it = egl_surfaces_.find(current_draw_surface_);
-  core.SetRegister(kR0, it != egl_surfaces_.end() ? it->second.color_buffer : 0);
+  if (it == egl_surfaces_.end()) {
+    EglLog("GetColorBufferQUALCOMM sem superficie corrente (draw=%u) -> 0", current_draw_surface_);
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  const bool synced = SyncSurfaceColorBuffer(core.GetMemory(), it->second);
+  EglLog("GetColorBufferQUALCOMM surface=%u %dx%d buf=0x%08x readback=%s",
+         current_draw_surface_, it->second.width, it->second.height, it->second.color_buffer,
+         synced ? "ok" : "FALHOU");
+  core.SetRegister(kR0, it->second.color_buffer);
+}
+
+bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surface) {
+  // Readback real: RGBA8888 (origem no topo) -> RGB565 no ponteiro do guest.
+  if (surface.color_buffer == 0 || surface.width <= 0 || surface.height <= 0) return false;
+  // O guest desenha na regiao de viewport que ele mesmo pediu. Se ainda nao
+  // houve glViewport, assumimos a origem do FBO com o tamanho da superficie.
+  // O alvo offscreen tem EXATAMENTE o tamanho da superficie, entao lemos o
+  // retangulo inteiro a partir da origem. Usar o ultimo glViewport aqui era
+  // errado: glReadPixels tem origem embaixo, e pedir (0,0,640,330) num FBO de
+  // 640x480 devolvia as 330 linhas DE BAIXO (comprovado: batia 100% com as
+  // linhas 150..480 da tela apresentada).
+  const int rect_x = 0;
+  const int rect_y = 0;
+  const int rect_w = surface.width;
+  const int rect_h = surface.height;
+  std::vector<uint8_t> rgba;
+  if (!backend_.ReadPixelsRgba(rect_x, rect_y, rect_w, rect_h, rgba)) return false;
+  if (rgba.size() < static_cast<size_t>(rect_w) * static_cast<size_t>(rect_h) * 4u) return false;
+  ++DrawStats::Instance().gl_color_buffer_readback;
+  // Diagnostico de ordem de canais: grava o RGBA CRU vindo do host, antes de
+  // qualquer conversao nossa. Comparando este arquivo com o bitmap que o guest
+  // acaba exibindo, da para provar em qual etapa R e B trocam de lugar.
+  if (const char* dump = std::getenv("ZEEB_EGL_DUMP")) {
+    static uint64_t dump_calls = 0;
+    // Reescreve o mesmo arquivo a cada 30 leituras: o primeiro quadro ainda e
+    // a tela branca inicial, e o interessante e o estado ja em regime.
+    if ((dump_calls++ % 30) == 0) {
+      if (FILE* f = std::fopen(dump, "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", rect_w, rect_h);
+        for (int y = 0; y < rect_h; ++y) {
+          for (int x = 0; x < rect_w; ++x) {
+            const size_t p = (static_cast<size_t>(y) * static_cast<size_t>(rect_w) +
+                              static_cast<size_t>(x)) * 4u;
+            std::fputc(rgba[p + 0], f);
+            std::fputc(rgba[p + 1], f);
+            std::fputc(rgba[p + 2], f);
+          }
+        }
+        std::fclose(f);
+      }
+    }
+  }
+  // Conta pixels nao pretos do que veio do host: distingue "readback ok, mas
+  // o FBO estava vazio" de "readback ok com conteudo real".
+  if (std::getenv("ZEEB_LOG_EGL") != nullptr) {
+    size_t nonzero = 0, nonwhite = 0;
+    for (size_t p = 0; p + 3 < rgba.size(); p += 4) {
+      const bool black = rgba[p] == 0 && rgba[p + 1] == 0 && rgba[p + 2] == 0;
+      const bool white = rgba[p] >= 250 && rgba[p + 1] >= 250 && rgba[p + 2] >= 250;
+      if (!black) ++nonzero;
+      if (!black && !white) ++nonwhite;
+    }
+    static uint64_t calls = 0;
+    if ((calls++ % 30) == 0) {
+      std::fprintf(stderr,
+                   "[egl] readback rect=%d,%d %dx%d nao_preto=%zu nao_branco=%zu/%zu "
+                   "draw_arrays=%llu clear=%llu tex=%llu\n",
+                   rect_x, rect_y, rect_w, rect_h, nonzero, nonwhite, rgba.size() / 4,
+                   (unsigned long long)DrawStats::Instance().gl_draw_arrays,
+                   (unsigned long long)DrawStats::Instance().gl_clear,
+                   (unsigned long long)DrawStats::Instance().gl_tex_image);
+    }
+  }
+  for (int y = 0; y < rect_h; ++y) {
+    for (int x = 0; x < rect_w; ++x) {
+      const size_t src = (static_cast<size_t>(y) * static_cast<size_t>(rect_w) +
+                          static_cast<size_t>(x)) * 4u;
+      const uint16_t r5 = static_cast<uint16_t>(rgba[src + 0] >> 3);
+      const uint16_t g6 = static_cast<uint16_t>(rgba[src + 1] >> 2);
+      const uint16_t b5 = static_cast<uint16_t>(rgba[src + 2] >> 3);
+      const uint16_t rgb565 = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
+      const uint32_t dst = surface.color_buffer +
+                           static_cast<uint32_t>((static_cast<size_t>(y) *
+                                                  static_cast<size_t>(surface.width) +
+                                                  static_cast<size_t>(x)) * 2u);
+      memory.Write16(dst, rgb565);
+    }
+  }
+  return true;
 }
 
 void GlHle::EglGetProcAddress(IArmCore& core) {
@@ -426,6 +580,12 @@ void GlHle::GlClearColorx(IArmCore& core) {
 void GlHle::GlViewport(IArmCore& core) {
   GpuLog("Viewport x=%d y=%d w=%d h=%d", core.GetRegister(kR0), core.GetRegister(kR1),
          core.GetRegister(kR2), core.GetRegister(kR3));
+  // Guardado para o readback do pbuffer: o retangulo que o guest acabou de
+  // pedir e exatamente a regiao do FBO onde ele desenhou o palco 3D.
+  last_viewport_x_ = static_cast<int32_t>(core.GetRegister(kR0));
+  last_viewport_y_ = static_cast<int32_t>(core.GetRegister(kR1));
+  last_viewport_w_ = static_cast<int32_t>(core.GetRegister(kR2));
+  last_viewport_h_ = static_cast<int32_t>(core.GetRegister(kR3));
   backend_.Viewport(static_cast<int>(core.GetRegister(kR0)),
                      static_cast<int>(core.GetRegister(kR1)),
                      static_cast<int>(core.GetRegister(kR2)),
@@ -1158,6 +1318,16 @@ uint32_t GlHle::BuildGl(Memory& memory, HleRuntime& hle, uint32_t vtable_address
       [this](IArmCore& c) { GlVertexPointer(c); }, // 78 glVertexPointer
       [this](IArmCore& c) { GlViewport(c); },     // 79 glViewport
   };
+  // Mesmo histograma para a vtable IGL fixa (80 slots), pelo mesmo motivo.
+  for (size_t slot = 0; slot < methods.size() && slot < g_gl_call_stats.gl.size(); ++slot) {
+    auto* fnptr = methods[slot].target<void (*)(IArmCore&)>();
+    g_gl_call_stats.gl_stub[slot] = (fnptr != nullptr && *fnptr == &Stub);
+    auto inner = methods[slot];
+    methods[slot] = [slot, inner](IArmCore& c) {
+      ++g_gl_call_stats.gl[slot];
+      inner(c);
+    };
+  }
   gl_vtable_addr_ = vtable_address;
   gl_object_ = object_address;
   // Funcoes de extensao alcancaveis so por eglGetProcAddress (nao tem slot
@@ -1442,6 +1612,18 @@ uint32_t GlHle::BuildGles11(Memory& memory, HleRuntime& hle, uint32_t vtable_add
   // fed a plane equation pointer into glViewport as x/y/w/h.
   methods[109] = GlesMethod([](IArmCore& c) { c.SetRegister(kR0, 0); });        // 109 ClipPlanef
 
+  // Instrumentacao: envolve cada slot num contador, marcando os que ainda sao
+  // Stub silencioso. Nao muda comportamento; so torna a omissao visivel
+  // (ZEEB_GL_TRACE=1 imprime o histograma no fim do processo).
+  for (size_t slot = 0; slot < methods.size() && slot < g_gl_call_stats.gles.size(); ++slot) {
+    auto* fnptr = methods[slot].target<void (*)(IArmCore&)>();
+    g_gl_call_stats.gles_stub[slot] = (fnptr != nullptr && *fnptr == &Stub);
+    auto inner = methods[slot];
+    methods[slot] = [slot, inner](IArmCore& c) {
+      ++g_gl_call_stats.gles[slot];
+      inner(c);
+    };
+  }
   gles11_object_ = BuildInterfaceObject(memory, hle, vtable_address, object_address, methods);
   return gles11_object_;
 }

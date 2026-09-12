@@ -104,6 +104,19 @@ class GlTextureRecordingBackend : public GlBackend {
   bool CreateContext() override { return real_.CreateContext(); }
   void DestroyContext() override { real_.DestroyContext(); }
   void SwapBuffers() override { real_.SwapBuffers(); }
+  // ARMADILHA DE DECORATOR: este wrapper precisa encaminhar TODO metodo novo
+  // de GlBackend. Quando ReadPixelsRgba nasceu e ficou so no default
+  // (return false), o readback do pbuffer da Z-Wheel falhava silenciosamente
+  // em todo frame ("[egl] ... readback=FALHOU") e o palco 3D sumia da
+  // composicao 2D, mesmo com o backend real sabendo ler os pixels.
+  bool ReadPixelsRgba(int x, int y, int width, int height,
+                      std::vector<uint8_t>& out) override {
+    return real_.ReadPixelsRgba(x, y, width, height, out);
+  }
+  bool BindOffscreenTarget(int width, int height) override {
+    return real_.BindOffscreenTarget(width, height);
+  }
+  void UnbindOffscreenTarget() override { real_.UnbindOffscreenTarget(); }
 
   void Clear(GLbitfield mask) override { real_.Clear(mask); }
   void ClearColor(float r, float g, float b, float a) override { real_.ClearColor(r, g, b, a); }
