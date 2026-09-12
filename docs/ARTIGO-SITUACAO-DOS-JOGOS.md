@@ -13,9 +13,16 @@ arquivo; onde nao houver evidencia, o texto diz que nao ha.
 
 ## Metodo
 
-- Video e audio reais, `DISPLAY=:0`, sem driver offscreen.
-- Captura por X11, contando pixels nao pretos e cores distintas. Cerca de
-  500 px e 2 cores e apenas o overlay de FPS, ou seja, tela vazia.
+- Video e audio reais, sem driver offscreen. **Ciclo atual: Wayland**
+  (`SDL_VIDEODRIVER=wayland`, `WAYLAND_DISPLAY=wayland-0`); os ciclos
+  anteriores desta tabela foram medidos em X11 (`DISPLAY=:0`). Onde a
+  diferenca importa, o texto diz qual foi usado.
+- Captura pelo canal de controle do proprio probe (comando `screenshot`),
+  contando pixels e cores distintas. Cerca de 500 px e 2 cores e apenas o
+  overlay de FPS, ou seja, tela vazia.
+- Contagem por criterio de cor, nao por impressao visual: verde = `G>R+25 e
+  G>B+25`; amarelo = `R>150, G>150, B<110`; azul = `B>R+25 e B>G+25`. O
+  criterio esta escrito porque "parece azul" nao e medicao.
 - Entrada por canal de controle do proprio probe, que injeta o mesmo evento
   HID que o teclado gera.
 - Analise estatica de containers e strings antes de qualquer desmontagem.
@@ -56,6 +63,13 @@ sempre uniforme dentro da mesma família:
 
 ## Tabela de Situação Diagnóstica Detalhada
 
+> **Validade das linhas.** Apenas a linha da **Z-Wheel (`274755`)** foi
+> remedida no ciclo atual. As demais linhas vêm de ciclos anteriores e **não
+> foram reverificadas** — algumas podem ter melhorado de carona com as
+> correções de GL, recursos de imagem e colisão de vtable deste ciclo, e
+> outras podem ter regredido. Enquanto não houver nova medição, elas são
+> registro histórico, não estado presente.
+
 | ID / Pasta | Título | Família / Engine | Status Medido no Zeebulator | Próxima Ação Técnica |
 |---|---|---|---|---|
 | `277455` | *Zenonia* | Gamevil WIPI (Nexus2) | **Entra no jogo; não certificado como jogável**. Mapas carregam após `strstr` e áudio não-reentrante; sprites/frames ainda apresentam artefatos. | Medir transparência, blits e estabilidade em sessão longa |
@@ -69,16 +83,112 @@ sempre uniforme dentro da mesma família:
 | `279382` | *Zeeboids* | TTD Middleware | Loop de eventos ativo, tela em branco | Idem ao Tênis |
 | `278962` | *Peggle* | PopCap | Loop de eventos ativo, quads sólidos detectados | Implementar apresentação de quads genéricos no backend |
 | `274802` | *Quake* | id Tech / Tectoy | Loop de eventos ativo, splash carregado | Investigar inicialização do contexto de software rasterizer |
-| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Boot parcial, avançou nesta sessão**: `EVT_APP_START` retorna sem exceção, o formulário de animação e o `LoadResStringEx` deixaram de falhar; **tela branca pura (307.200 px / 1 cor)** e nenhum desenho. Bloqueio medido: formulário do z-pad devolve `EUNABLETOLOAD` (6). | Ver a seção "Z-Wheel: o que foi medido" abaixo |
+| `274755` | *Z-Wheel (Menu)* | Rocket Mobile / Tectoy | **Renderiza**: telas 2D de abertura (verde 5.130 / amarelo 1.146 / azul 5.203 px nos 8 s iniciais) e palco 3D (149.824 px pretos a partir dos 9 s). O bloqueio antigo do z-pad (`EUNABLETOLOAD` 6) **não ocorre mais**; restam 3 erros do guest: IDOWNLOAD (2 linhas encadeadas) e `AEECLSID_LCT_SIMCARDCTL`. Defeito conhecido: cores do palco com **R e B trocados** no decode ATITC. | Ver "Z-Wheel: estado atual medido" abaixo |
 | `277495` | *Opera Mini (reksio)*| Opera Software | Loop de eventos ativo (Requer stack de sockets/rede) | Fornecer bridge HLE para sockets TCP/IP |
 
 ---
 
-## Z-Wheel: o que foi medido (sessão atual)
+## Z-Wheel: estado atual medido
+
+Título: `mod/274755/tectoy.mod`, ClsId `17237912`, applet `0x01070798`.
+Ambiente: Wayland (`SDL_VIDEODRIVER=wayland`, `WAYLAND_DISPLAY=wayland-0`),
+vídeo e áudio SDL reais. Medições de 27 s, captura pelo canal de controle.
+
+### Linha do tempo da tela (contagem de pixels, não impressão visual)
+
+| t | cores | verde | amarelo | azul | branco | preto |
+|---|---|---|---|---|---|---|
+| 3–7 s | 256 | **5.130** | **1.146** | **5.203** | 266.177 | 0 |
+| 9–19 s | 274 | 1 | 440 | 9.322 | 107.752 | **149.824** |
+
+Verde, amarelo e azul simultâneos nos primeiros segundos são a assinatura da
+bandeira na abertura. Antes deste ciclo, esses mesmos instantes mediam
+`cores=1` com 307.200/307.200 pixels brancos.
+
+### O que passou a funcionar, e por quê
+
+1. **Recursos de imagem existem de verdade.** `ISHELL_LoadResObject` devolvia um
+   objeto falso único para todo recurso, com `GetInfo` mentindo 640×480 e `Draw`
+   que não desenhava nada. Agora cada recurso decodificado tem objeto e buffer
+   próprios. Decodificados na Z-Wheel: `opening_low.gif` 640×480, PNG 576×313
+   (id 5008) e BMP 214×34 (id 5007).
+2. **Quem desenha o conteúdo do widget somos nós.** O jogo entrega a imagem por
+   `IInterfaceModel::SetIPtr` e **nunca** chama `IImage::Draw` — num BREW real
+   quem pinta o conteúdo é a biblioteca de widgets do aparelho. Medido: slot 12 =
+   `GetModel(AEEIID_IInterfaceModel 0x0101593c)` e, no objeto devolvido, slot 5 =
+   `SetIPtr(pIImage, AEEIID_IImage 0x01013110)`. Nosso slot 5 tratava isso como
+   "adicionar filho", então a imagem ficava guardada e ninguém pintava.
+3. **Duas colisões de endereço de objeto HLE**, ambas encontradas por medição e
+   ambas capazes de parecer defeito de CPU: os objetos `IImage` nasciam em
+   `0x8006C000`, que **é** `kWidgetVtable`; e o objeto de fallback nascia no
+   mesmo endereço do primeiro recurso, fazendo todo recurso não decodificável
+   devolver o GIF de abertura (pintado 69× sobre a tela inteira a partir de
+   `DrawRollerExt`, `lr=0x0011ff28`).
+
+### Defeito conhecido e não corrigido: canais trocados no ATITC
+
+As três texturas ATITC `512×256` do palco decodificam com **124.905 pixels
+alaranjados** cada (critério `R>B+25`), dominantes `(239,138,41)` e
+`(231,134,41)`. A captura de referência antiga `zw_shot_exit.ppm` tinha
+**211.136 pixels azulados** e **zero** alaranjados, dominante `(41,142,206)`.
+É o mesmo pixel com **R e B trocados**.
+
+A cadeia inteira foi descartada por medição, uma etapa de cada vez:
+
+| etapa | veredito |
+|---|---|
+| texturas não comprimidas (`glTexImage2D`, `GL_RGB`) | corretas, zero pixel alaranjado |
+| decode ATITC (`glCompressedTexImage2D`) | **é aqui** |
+| readback do host (`ZEEB_EGL_DUMP`) | já chega alaranjado — defeito é anterior |
+| conversão RGBA→RGB565 (`SyncSurfaceColorBuffer`) | correta (`R` vem de `rgba[+0]`) |
+| imagens novas (GIF/PNG/BMP) | corretas — PNG casa em RGB com erro **2,28/255** |
+
+**Por que não foi corrigido:** `core/loader/atitc.cpp` tem testes que fixam a
+ordem atual e o formato é usado por outros títulos do corpus. Inverter os canais
+sem antes provar qual ordem é a verdadeira — com decodificador independente ou
+com a arte equivalente não comprimida — só mudaria o defeito de lugar. É
+exatamente a armadilha de fixture que este documento cobra dos outros casos.
+
+### Outras pendências medidas
+
+- **Posição das imagens 2D**: tudo é desenhado em `(0,0)` porque
+  `widget_geometry` não tem entrada para esses objetos. Cor e orientação estão
+  certas; o lugar não. As posições chegam por `EVT_WDG_SETPROPERTY` (0x801) com
+  wParam `0x152`, `0x153`, `0x130`, `0x140`.
+- **`class_id = -1` é do próprio jogo**, não nosso: `mvn r2, #0` hardcoded no
+  chamador `0x127c1c`. A consulta principal da roda devolve 0 linhas também
+  contra o banco real, e por isso os nomes dos itens ficam vazios em
+  `item + 0x114`.
+- **`AEECLSID_LCT_SIMCARDCTL` (0x01006c01)** não é implementada; o jogo trata a
+  falha (retorna `0x27`) e segue para o menu.
+- **Entrada por HID**: as teclas chegam ao `HandleEvent` e voltam 0. O jogo usa o
+  caminho do joystick (`Joystick.c:157 1 Joysticks connected`,
+  `Joystick.c:183 No keyboard reported`).
+- **Desempenho**: 12 FPS medidos, esperado 30/60.
+
+### Erros do guest que restam (3, contra o bloqueio total anterior)
+
+```
+Unable to create instance of IDOWNLOAD in ShopAction_Init
+Unable to init ShopAction in Gamelib_CheckPreLoaded
+ERROR: Unable to create instance of AEECLSID_LCT_SIMCARDCTL, cannot do SIM check
+```
+
+---
+
+## Z-Wheel: histórico de desbloqueio (ciclo anterior — bloqueio já superado)
+
+> **Aviso de validade.** Esta seção descreve o ciclo em que a Z-Wheel ainda
+> parava no formulário do z-pad com `EUNABLETOLOAD` (6). Esse bloqueio **não
+> existe mais** — verificado nos logs do ciclo atual, onde a mensagem
+> `Couldn't create z-pad instruction form` não aparece nenhuma vez. A análise
+> foi mantida porque documenta o método que levou à correção, não o estado
+> presente. Para o estado presente, ver "Z-Wheel: estado atual medido".
 
 Titulo: `mod/274755/tectoy.mod`, ClsId `17237912` (`0x0107...`), applet
-`0x01070798`. Todas as execucoes sao passivas (`ZEEB_DISABLE_INPUT=1`), sem JIT,
-com video SDL real e `DISPLAY=:0`.
+`0x01070798`. Execucoes daquele ciclo: passivas (`ZEEB_DISABLE_INPUT=1`), sem
+JIT, com video SDL real e `DISPLAY=:0`. (O ciclo atual roda em Wayland:
+`SDL_VIDEODRIVER=wayland`, `WAYLAND_DISPLAY=wayland-0`.)
 
 ### Antes e depois, medido
 
@@ -359,6 +469,12 @@ handler de `wParam=10`. Separadamente, a tela branca continua ligada a infraestr
 singleton entre nove classes e o bitmap compartilhado foram corrigidos; ainda
 faltam ownership completo de fonte/modelo, selecao da arvore/tela atual e
 readback do pbuffer GL. O callback slot 16 continuou ausente na execucao medida.
+
+> **Atualizacao (ciclo do pipeline de imagem).** Esta conclusao ja nao vale: a
+> tela branca acabou. O readback do pbuffer GL foi implementado (FBO proprio,
+> `readback=ok` 226/0 contra 0/226 antes), o callback do slot 16 passou a ser
+> exercitado e as telas 2D de abertura renderizam. O que restou do diagnostico
+> acima e o ownership de fonte/modelo. Ver "Z-Wheel: estado atual medido".
 
 
 Execucao passiva unica depois das factories (25 s, sem entrada) mostrou

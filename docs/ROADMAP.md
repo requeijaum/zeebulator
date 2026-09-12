@@ -168,9 +168,10 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
 ### 4.2 Pendências abertas com evidência medida
 
 - [ ] **Ordem de canais do ATITC** (`core/loader/atitc.cpp`) — *prioridade alta*:
-  - As texturas ATITC `512×256` decodificam com **124 905 px** `(239,138,41)`;
-    o baseline antigo `zw_shot_exit.ppm` tinha **211 136 px azuis** e zero
-    laranja, dominante `(41,142,206)`. É o mesmo pixel com **R e B trocados**.
+  - As três texturas ATITC `512×256` decodificam com **124 905 px alaranjados**
+    cada (critério `R>B+25`), dominantes exatos `(239,138,41)` e `(231,134,41)`.
+    O baseline antigo `zw_shot_exit.ppm` tinha **211 136 px azulados** e **zero**
+    alaranjados, dominante `(41,142,206)`. É o mesmo pixel com **R e B trocados**.
   - Cadeia inteira já descartada: texturas não comprimidas corretas, readback
     `RGBA→RGB565` correto (`R` vem de `rgba[+0]`), imagens novas corretas (PNG
     casa em RGB com erro **2,28/255**). O defeito está no decode ATITC.
