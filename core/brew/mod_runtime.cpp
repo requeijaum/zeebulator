@@ -1873,6 +1873,127 @@ void ModRuntime::FormatSingleIntImpl(IArmCore& core) {
   core.SetRegister(kR0, out - dest);
 }
 
+
+void ModRuntime::SnprintfImpl(IArmCore& core) {
+  // AEEHelperFuncs slot 81 (offset 0x144): `int snprintf(char* str, size_t size, const char* format, ...)`.
+  // AAPCS calling convention:
+  //   r0 = dest
+  //   r1 = size
+  //   r2 = format
+  //   r3 = first vararg
+  //   [sp + 0] = second vararg, [sp + 4] = third, etc.
+  // Crucial for Z-Wheel (tectoy.mod 0x142f4c): PREFSDB_GetRecords formats
+  // "SELECT * FROM PREFSINFO %s" into the query buffer before querying the language ("Lang").
+  // Without this implementation, the query buffer retained previous stale SQL ("SELECT version, subversion FROM DBINFO"),
+  // causing PREFSDB_GetRecords to return 0 records and event 0x7b0a (wParam=10) to fail with NULL,
+  // which cascaded into "Unable to launch z-pad intructions form: 6".
+  uint32_t dest = core.GetRegister(kR0);
+  uint32_t size = core.GetRegister(kR1);
+  uint32_t fmt = core.GetRegister(kR2);
+
+  uint32_t arg_idx = 0;
+  auto read_next_arg = [&]() -> uint32_t {
+    if (arg_idx == 0) { ++arg_idx; return core.GetRegister(kR3); }
+    uint32_t sp = core.GetRegister(kSP);
+    uint32_t val = memory_.Read32(sp + (arg_idx - 1) * 4);
+    ++arg_idx;
+    return val;
+  };
+
+  std::string formatted_str;
+  for (uint32_t i = 0;; ++i) {
+    uint8_t c = memory_.Read8(fmt + i);
+    if (c == 0) break;
+    if (c != '%') {
+      formatted_str.push_back(static_cast<char>(c));
+      continue;
+    }
+    uint32_t spec_start = i;
+    ++i;
+    bool zero_pad = memory_.Read8(fmt + i) == '0';
+    if (zero_pad) ++i;
+    uint32_t width = 0;
+    bool has_width = false;
+    for (;;) {
+      uint8_t d = memory_.Read8(fmt + i);
+      if (d < '0' || d > '9') break;
+      has_width = true;
+      width = width * 10 + (d - '0');
+      ++i;
+    }
+    uint8_t spec = memory_.Read8(fmt + i);
+    if (spec == 0) break;
+    if (spec == '%' && !zero_pad && !has_width) {
+      formatted_str.push_back('%');
+      continue;
+    }
+    std::string item_str;
+    switch (spec) {
+      case 'd':
+      case 'i': {
+        int32_t val = static_cast<int32_t>(read_next_arg());
+        item_str = std::to_string(val);
+        break;
+      }
+      case 'u': {
+        uint32_t val = read_next_arg();
+        item_str = std::to_string(val);
+        break;
+      }
+      case 'x':
+      case 'X': {
+        uint32_t val = read_next_arg();
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), spec == 'x' ? "%x" : "%X", val);
+        item_str = buf;
+        break;
+      }
+      case 'c': {
+        char ch = static_cast<char>(read_next_arg());
+        item_str = std::string(1, ch);
+        break;
+      }
+      case 's': {
+        uint32_t str_ptr = read_next_arg();
+        if (str_ptr != 0) {
+          for (uint32_t j = 0; ; ++j) {
+            uint8_t sc = memory_.Read8(str_ptr + j);
+            if (sc == 0) break;
+            item_str.push_back(static_cast<char>(sc));
+          }
+        }
+        break;
+      }
+      default:
+        for (uint32_t k = spec_start; k <= i; ++k) {
+          item_str.push_back(static_cast<char>(memory_.Read8(fmt + k)));
+        }
+        break;
+    }
+    bool numeric_directive = spec == 'd' || spec == 'i' || spec == 'u' || spec == 'x' || spec == 'X';
+    if (numeric_directive && has_width && item_str.size() < width) {
+      bool negative = numeric_directive && !item_str.empty() && item_str[0] == '-';
+      std::string digits = negative ? item_str.substr(1) : item_str;
+      std::string sign = negative ? "-" : "";
+      if (sign.size() + digits.size() < width) {
+        digits = std::string(width - sign.size() - digits.size(), zero_pad ? '0' : ' ') + digits;
+      }
+      item_str = sign + digits;
+    }
+    formatted_str += item_str;
+  }
+
+  uint32_t total_chars = static_cast<uint32_t>(formatted_str.size());
+  if (dest != 0 && size > 0) {
+    uint32_t copy_len = std::min(total_chars, size - 1);
+    for (uint32_t n = 0; n < copy_len; ++n) {
+      memory_.Write8(dest + n, static_cast<uint8_t>(formatted_str[n]));
+    }
+    memory_.Write8(dest + copy_len, 0);
+  }
+  core.SetRegister(kR0, total_chars);
+}
+
 void ModRuntime::GetAppContextImpl(IArmCore& core) {
   // Only (re-)written when a Set*() call is actually pending, not on
   // every call -- see the `*_pending_` members' doc comment in
@@ -2239,7 +2360,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   uint32_t unknown_0xd8_fn = strstr_fn;
   uint32_t unknown_0x34_fn = hle_.Register([this](IArmCore& core) { WstrchrImpl(core); });
   uint32_t wstrrchr_fn = hle_.Register([this](IArmCore& core) { WstrrchrImpl(core); });
-  uint32_t unknown_0x144_fn = hle_.Register([](IArmCore& core) { core.SetRegister(kR0, 0); });
+  uint32_t snprintf_fn = hle_.Register([this](IArmCore& core) { SnprintfImpl(core); });
   uint32_t strlower_fn = hle_.Register([this](IArmCore& core) { StrlowerImpl(core); });
   uint32_t strupper_fn = hle_.Register([this](IArmCore& core) { StrupperImpl(core); });
   uint32_t strlcpy_fn = hle_.Register([this](IArmCore& core) { StrlcpyImpl(core); });
@@ -2391,7 +2512,7 @@ void ModRuntime::Install(uint32_t module_base, uint32_t table_address) {
   memory_.Write32(table_address + kUnknownSlotOffset0x140, unknown_0x140_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x138, unknown_0x138_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x30, unknown_0x30_fn);
-  memory_.Write32(table_address + kUnknownSlotOffset0x144, unknown_0x144_fn);
+  memory_.Write32(table_address + kUnknownSlotOffset0x144, snprintf_fn);
   memory_.Write32(table_address + 0x114, strlower_fn);
   memory_.Write32(table_address + 0x118, strupper_fn);
   memory_.Write32(table_address + kUnknownSlotOffset0x14c, strlcpy_fn);

@@ -335,14 +335,55 @@ const char* const kBrewResSuffixes[] = {"", "_pt", "li", "_en", "_es", "_esmx"};
 
 // Procura o container de recursos no VFS pelo nome que o guest passou.
 // Devolve o arquivo por ponteiro e escreve em `used_name` o nome que casou.
+namespace {
+std::vector<std::string> GetBrewResourceCandidates(const std::string& base) {
+  std::vector<std::string> candidates;
+  candidates.push_back(base);
+
+  std::string s = base;
+  if (s.size() >= 4) {
+    std::string ext = s.substr(s.size() - 4);
+    for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (ext == ".brf") s.resize(s.size() - 4);
+  }
+  std::string stem = s;
+  for (const char* suf : {"_pt", "_es", "_esmx", "_en", "li", "_PT", "_ES", "_ESMX", "_EN", "LI"}) {
+    size_t slen = std::strlen(suf);
+    if (s.size() >= slen && s.rfind(suf) == s.size() - slen) {
+      stem = s.substr(0, s.size() - slen);
+      break;
+    }
+  }
+
+  // Fallback prioritario: arquivo independente de idioma ("li"), depois base, depois outros idiomas.
+  candidates.push_back(stem + "li.brf");
+  candidates.push_back(stem + "li");
+  candidates.push_back(stem + ".brf");
+  candidates.push_back(stem);
+  for (const char* suf : {"_pt", "_es", "_esmx", "_en"}) {
+    candidates.push_back(stem + suf + ".brf");
+    candidates.push_back(stem + suf);
+  }
+
+  // Deduplica preservando ordem
+  std::vector<std::string> unique_cands;
+  for (const auto& c : candidates) {
+    if (std::find(unique_cands.begin(), unique_cands.end(), c) == unique_cands.end()) {
+      unique_cands.push_back(c);
+    }
+  }
+  return unique_cands;
+}
+} // namespace
+
 const std::vector<uint8_t>* IShellHle::FindBrewResourceFile(const std::string& base,
                                                             std::string* used_name) const {
   if (vfs_ == nullptr) return nullptr;
-  for (const char* suffix : kBrewResSuffixes) {
-    *used_name = base + suffix + ".brf";
-    if (const std::vector<uint8_t>* f = vfs_->Find(*used_name)) return f;
-    *used_name = base + suffix;  // o chamador pode ja ter passado "tectoy_pt"
-    if (const std::vector<uint8_t>* f = vfs_->Find(*used_name)) return f;
+  for (const auto& cand : GetBrewResourceCandidates(base)) {
+    if (const std::vector<uint8_t>* f = vfs_->Find(cand)) {
+      if (used_name) *used_name = cand;
+      return f;
+    }
   }
   return nullptr;
 }
@@ -357,18 +398,22 @@ void IShellHle::LoadResStringImpl(IArmCore& core) {
   const uint32_t size_bytes = HleRuntime::ReadStackArg(core, 0);
 
   std::string used_name;
-  const std::vector<uint8_t>* file = FindBrewResourceFile(base, &used_name);
   uint32_t written = 0;
-  if (file != nullptr && p_buff != 0 && size_bytes >= 2) {
-    BrewResourceDirectory dir;
-    std::vector<uint16_t> chars;
-    if (ParseBrewResourceDirectory(*file, &dir) && ReadBrewResourceString(*file, dir, id, &chars)) {
-      // nSize e o tamanho do buffer EM BYTES (documentado); AECHAR e uint16.
-      const uint32_t capacity = size_bytes / 2;
-      const uint32_t to_copy = std::min<uint32_t>(static_cast<uint32_t>(chars.size()), capacity - 1);
-      for (uint32_t i = 0; i < to_copy; ++i) memory_.Write16(p_buff + i * 2, chars[i]);
-      memory_.Write16(p_buff + to_copy * 2, 0);
-      written = to_copy;
+  if (vfs_ != nullptr && p_buff != 0 && size_bytes >= 2) {
+    for (const auto& cand : GetBrewResourceCandidates(base)) {
+      if (const std::vector<uint8_t>* file = vfs_->Find(cand)) {
+        BrewResourceDirectory dir;
+        std::vector<uint16_t> chars;
+        if (ParseBrewResourceDirectory(*file, &dir) && ReadBrewResourceString(*file, dir, id, &chars)) {
+          const uint32_t capacity = size_bytes / 2;
+          const uint32_t to_copy = std::min<uint32_t>(static_cast<uint32_t>(chars.size()), capacity - 1);
+          for (uint32_t i = 0; i < to_copy; ++i) memory_.Write16(p_buff + i * 2, chars[i]);
+          memory_.Write16(p_buff + to_copy * 2, 0);
+          written = to_copy;
+          used_name = cand;
+          break;
+        }
+      }
     }
   }
   if (std::getenv("ZEEB_LOG_RES")) {
@@ -376,7 +421,7 @@ void IShellHle::LoadResStringImpl(IArmCore& core) {
                  "[res] LoadResString(base='%s' id=%u buf=0x%08x size=%u) -> arquivo '%s' %s, "
                  "%u caracteres\n",
                  base.c_str(), id, p_buff, size_bytes, used_name.c_str(),
-                 file != nullptr ? "achado" : "AUSENTE", written);
+                 !used_name.empty() ? "achado" : "AUSENTE", written);
   }
   core.SetRegister(kR0, written);
 }
@@ -406,18 +451,22 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
   if (file_it != resource_files_.end()) {
     entry = file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   }
-  if (entry == nullptr) {
+  if (entry == nullptr && vfs_ != nullptr) {
     std::string used_name;
-    if (const std::vector<uint8_t>* brf = FindBrewResourceFile(filename, &used_name)) {
-      BrewResourceDirectory dir;
-      uint32_t start = 0, size = 0;
-      if (ParseBrewResourceDirectory(*brf, &dir) &&
-          ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
-                                 /*type_match_any=*/false, &start, &size)) {
-        brf_data.assign(brf->begin() + start, brf->begin() + start + size);
-        if (std::getenv("ZEEB_LOG_RES")) {
-          std::fprintf(stderr, "[res] LoadResData('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
-                       filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+    for (const auto& cand : GetBrewResourceCandidates(filename)) {
+      if (const std::vector<uint8_t>* brf = vfs_->Find(cand)) {
+        BrewResourceDirectory dir;
+        uint32_t start = 0, size = 0;
+        if (ParseBrewResourceDirectory(*brf, &dir) &&
+            ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
+                                   /*type_match_any=*/false, &start, &size)) {
+          brf_data.assign(brf->begin() + start, brf->begin() + start + size);
+          used_name = cand;
+          if (std::getenv("ZEEB_LOG_RES")) {
+            std::fprintf(stderr, "[res] LoadResData('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
+                         filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+          }
+          break;
         }
       }
     }
@@ -489,20 +538,24 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
   if (file_it != resource_files_.end()) {
     entry = file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   }
-  if (entry == nullptr) {
+  if (entry == nullptr && vfs_ != nullptr) {
     std::string used_name;
-    if (const std::vector<uint8_t>* brf = FindBrewResourceFile(filename, &used_name)) {
-      BrewResourceDirectory dir;
-      uint32_t start = 0, size = 0;
-      if (ParseBrewResourceDirectory(*brf, &dir) &&
-          ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
-                                 /*type_match_any=*/false, &start, &size)) {
-        brf_data.assign(brf->begin() + start, brf->begin() + start + size);
-        brf_found = true;
-        if (std::getenv("ZEEB_LOG_RES")) {
-          std::fprintf(stderr,
-                       "[res] LoadResDataEx('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
-                       filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+    for (const auto& cand : GetBrewResourceCandidates(filename)) {
+      if (const std::vector<uint8_t>* brf = vfs_->Find(cand)) {
+        BrewResourceDirectory dir;
+        uint32_t start = 0, size = 0;
+        if (ParseBrewResourceDirectory(*brf, &dir) &&
+            ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
+                                   /*type_match_any=*/false, &start, &size)) {
+          brf_data.assign(brf->begin() + start, brf->begin() + start + size);
+          brf_found = true;
+          used_name = cand;
+          if (std::getenv("ZEEB_LOG_RES")) {
+            std::fprintf(stderr,
+                         "[res] LoadResDataEx('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
+                         filename.c_str(), used_name.c_str(), id, type, brf_data.size());
+          }
+          break;
         }
       }
     }

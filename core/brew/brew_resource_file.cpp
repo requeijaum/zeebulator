@@ -33,8 +33,13 @@ bool ParseBrewResourceDirectory(const std::vector<uint8_t>& file, BrewResourceDi
   if (records_end > file.size() || out->offset_table != records_end) return false;
   const uint64_t table_end = static_cast<uint64_t>(out->offset_table) +
                              static_cast<uint64_t>(out->offset_count) * 4u;
-  if (table_end > data_start || data_start > out->data_end || out->data_end > file.size()) {
+  if (table_end > data_start || data_start > file.size()) {
     return false;
+  }
+  // Em arquivos reais (ex: tectoyli.brf, tamanho 1439595), o campo data_end declarado
+  // pode ser maior (0x195146) do que o tamanho em disco. Clamp seguro para o fim real do arquivo:
+  if (out->data_end > file.size() || out->data_end < data_start) {
+    out->data_end = static_cast<uint32_t>(file.size());
   }
   return true;
 }
@@ -53,10 +58,10 @@ bool ReadBrewResourceRecord(const std::vector<uint8_t>& file, const BrewResource
     const uint16_t index = Rd16(file, rec + 6);
     if (index >= dir.offset_count) return false;
     const uint32_t start = Rd32(file, dir.offset_table + static_cast<size_t>(index) * 4);
-    const uint32_t end = (index + 1 < dir.offset_count)
+    const uint32_t end = (static_cast<uint32_t>(index + 1) < dir.offset_count)
                              ? Rd32(file, dir.offset_table + static_cast<size_t>(index + 1) * 4)
                              : dir.data_end;
-    if (start < data_start || start >= end || end > dir.data_end || end > file.size()) return false;
+    if (start < data_start || start >= end || end > file.size()) return false;
     *out_start = start;
     *out_size = end - start;
     return true;

@@ -750,6 +750,7 @@ class ModRuntime {
   void StrstrImpl(IArmCore& core);
   void SprintfImpl(IArmCore& core);
   void FormatSingleIntImpl(IArmCore& core);
+  void SnprintfImpl(IArmCore& core);
   void GetAppContextImpl(IArmCore& core);
   void GetUpTimeMsImpl(IArmCore& core);
   void SleepImpl(IArmCore& core);
