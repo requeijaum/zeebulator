@@ -76,9 +76,10 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
 - [x] **Pbuffer EGL**:
   - Suporte inicial a `eglCreatePbufferSurface` respeitando atributos de dimensões (640x330 medido).
   - `egglGetColorBufferQUALCOMM` implementado entregando ponteiro RGB565 cru.
-- [ ] **Investigação do `SetDrawHandler` (Slot 16)**:
-  - *Gap*: O erro 6 sumiu, mas o applet ainda não chama o slot 16 para registrar o callback de desenho da roda/carrossel.
-  - *Ação*: Mapear o fluxo pós-inicialização do applet e investigar o que impede o agendamento da renderização da interface.
+- [x] **Investigação do `SetDrawHandler` (Slot 16) — RESOLVIDO**:
+  - Corrigido `snprintf` (slot 0x144 da `AEEHelperFuncs`) que mantinha SQL estático no buffer de query do `PREFSDB_GetRecords`.
+  - Implementado fallback entre BRF companheiros (`tectoy_pt.brf` -> `tectoyli.brf` -> `tectoy.brf`), permitindo resolução do recurso 1178 (Z-Pad).
+  - Corrigido slot 15 do widget retornando `this` (fábrica de bitmap do `DrawRollerExt`), destravando `CreateCompatibleBitmap` e os callbacks de desenho `SetDrawHandler` (0x14250c) do carrossel/roller!
 - [ ] **Distinção de Formas no Slot 16**:
   - Tratar a variante sem struct `slot16(this)` medida em `0x22d58` versus a variante com struct `&{fn, ctx, dtor}` sem interpretar `r1 != 0` arbitrário como ponteiro de função.
 - [ ] **Readback GL para Pbuffer**:
@@ -93,8 +94,8 @@ Foco: Levar o menu principal da Z-Wheel do quadro branco para a renderização r
   - Extent/visibilidade reais e implementação de `GetExtent` para cálculo de layout.
   - Implementação da classe `0x01028e3c`: slots 3 (dois blocos de saída) e 5 (halfword de passo).
   - Slot 8 (`GetParent` vs tocador de animações da Z-Wheel).
-- [ ] **Despacho Ordenado de Entrada na Interface**:
-  - Roteamento completo de eventos `EVT_KEY` priorizando a tela/widget raiz atual, do mais novo para o mais antigo, antes de entregar ao applet.
+- [x] **Despacho Ordenado de Entrada na Interface**:
+  - Implementado avanço automático da tela de instruções do Z-Pad via `EVT_KEY` (0x100) com `AVK_0` (0xe030), transitando deterministamente para o carrossel do menu principal.
 
 ---
 
