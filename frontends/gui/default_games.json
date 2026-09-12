@@ -1,0 +1,17 @@
+{
+  "_note": "ClsIds medidos e validados por sonda nesta sessao. Camada BASE: o manifesto do usuario (~/.local/share/zeebulator/games.json) sobrescreve qualquer entrada daqui.",
+  "_metodo": "Cada valor foi obtido lendo o despacho do CreateInstance no proprio .mod (ZEEB_TRACE_CI=1) e validado exigindo CreateInstance OK e laco de eventos ativo.",
+  "games": {
+    "274755": "0x01070798",
+    "274259": "0x01081970",
+    "277455": "0xBF2E2021",
+    "278200": "0x010978A2",
+    "276121": "0x0108C0BC",
+    "279159": "0x0108FF18",
+    "279380": "0x0108FF19",
+    "278738": "0x0108FF16",
+    "278965": "0x01095146",
+    "280214": "0x0109DA8E",
+    "280647": "0x0108FF17"
+  }
+}

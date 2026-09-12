@@ -25,6 +25,16 @@ target_link_libraries(zeebulator_sar_inspector PRIVATE zeebulator_core)
 add_executable(zeebulator_mod_probe mod_probe.cpp)
 target_link_libraries(zeebulator_mod_probe PRIVATE zeebulator_core)
 
+# Lista a biblioteca de jogos de um NAND. Compartilha a MESMA camada que a GUI
+# usa (frontends/gui/game_library.cpp), para nao existirem duas implementacoes
+# de descoberta de titulo -- e para dar como medir a GUI sem abrir janela.
+add_executable(zeebulator_library ${PROJECT_SOURCE_DIR}/tools/library_dump.cpp
+                                   ${PROJECT_SOURCE_DIR}/frontends/gui/game_library.cpp)
+target_include_directories(zeebulator_library PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(zeebulator_library PRIVATE zeebulator_core)
+target_compile_definitions(zeebulator_library PRIVATE
+  GUI_DEFAULT_MANIFEST="${PROJECT_SOURCE_DIR}/frontends/gui/default_games.json")
+
 if(ZEEBULATOR_BUILD_STANDALONE)
   add_executable(zeebulator_game_probe
     game_probe.cpp
