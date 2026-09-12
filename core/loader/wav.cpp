@@ -143,6 +143,9 @@ std::optional<WavAudio> ParseWav(const uint8_t* data, size_t size) {
 
   if (!have_fmt || data_chunk == nullptr) return std::nullopt;
   if (channels != 1 && channels != 2) return std::nullopt;
+  // sample_rate=0 produz step=0 no mixer: a voz repete a primeira amostra para
+  // sempre e nunca emite DONE. Limite superior evita conversao int/abuso.
+  if (sample_rate == 0 || sample_rate > 384000) return std::nullopt;
 
   if (audio_format == kWavFormatImaAdpcm) {
     WavAudio out;

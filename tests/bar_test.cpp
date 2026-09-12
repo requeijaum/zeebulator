@@ -252,3 +252,19 @@ TEST(Bar, OutOfBoundsEntryIndexInDirectoryIsRejected) {
   auto blob = BuildBar({{1, 2, 3}}, {BarResourceId{1, 4000, 0, 5}});  // only entry 0 exists
   EXPECT_THROW(BarArchive::Parse(blob), std::runtime_error);
 }
+
+TEST(Bar, RejectsWrappedResourceDirectoryEndBeforeAllocating) {
+  std::vector<uint8_t> blob(32, 0);
+  auto w32 = [&](size_t off, uint32_t v) {
+    for (int i = 0; i < 4; ++i) blob[off + i] = static_cast<uint8_t>(v >> (i * 8));
+  };
+  w32(8, 32);
+  w32(12, 0xffffffe0u);  // 32 + size wrapped to zero in the old uint32 check
+  w32(16, 0);
+  EXPECT_THROW(BarArchive::Parse(blob), std::runtime_error);
+}
+
+TEST(Bar, ExtractRejectsPublicEntryOutsideArchive) {
+  auto archive = BarArchive::Parse(BuildBar({{1, 2, 3}}, {BarResourceId{1, 1, 0, 0}}));
+  EXPECT_THROW(archive.Extract(BarEntry{0xfffffff0u, 0x40u}), std::runtime_error);
+}

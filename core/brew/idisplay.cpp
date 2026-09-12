@@ -13,7 +13,6 @@
 namespace zeebulator {
 
 namespace {
-void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
 
 // RGBVAL -> RGB565. Qualcomm AEERGBVAL.h defines
 // MAKE_RGB(r,g,b) = (r<<8) | (g<<16) | (b<<24).
@@ -317,7 +316,8 @@ uint32_t IDisplayHle::AllocateDib(IArmCore& core, int width, int height,
                                    int depth, uint32_t* status) {
   constexpr uint32_t kAeeSuccess = 0;
   constexpr uint32_t kEFailed = 1;
-  constexpr uint32_t kENoMemory = 4;
+  constexpr uint32_t kENoMemory = 2;     // AEEError.h: ENOMEMORY
+  constexpr uint32_t kEUnsupported = 20; // AEEError.h: EUNSUPPORTED
 
   // No configured arena/runtime cannot succeed.
   if (hle_ == nullptr || dib_arena_end_ == 0) {
@@ -326,14 +326,17 @@ uint32_t IDisplayHle::AllocateDib(IArmCore& core, int width, int height,
   }
   // Only 16bpp DIBs are supported by this backend today.
   if (depth != 16 || width <= 0 || height <= 0) {
-    *status = kEFailed;
+    *status = kEUnsupported;
     return 0;
   }
 
   const int pitch = ((width * depth + 31) / 32) * 4;
   const uint32_t buffer_size = static_cast<uint32_t>(pitch) * static_cast<uint32_t>(height);
   auto align4 = [](uint32_t v) { return (v + 3u) & ~3u; };
-  const uint32_t vtable_size = 6u * 4u;
+  // IBitmap tem 16 slots (AEEIBitmap.h): 64 bytes. A reserva antiga de
+  // 6 slots colocava o objeto em vtable+24; BuildInterfaceObject gravava os
+  // slots 6..15 POR CIMA do proprio IDIB.
+  const uint32_t vtable_size = 16u * 4u;
   const uint32_t object_size = 36u;
 
   uint32_t vtable_addr = align4(dib_arena_next_);

@@ -49,8 +49,10 @@ TEST(BitmapHle, LayoutAndVtableMethodsWorkCorrectly) {
   EXPECT_EQ(res, 0u);
   EXPECT_EQ(memory.Read32(object_addr + 16), 0xF81Fu);
 
-  res = hle.CallArmFunction(memory.Read32(vtable_addr + 15 * 4), object_addr);
-  EXPECT_EQ(res, 0xF81Fu);
+  const uint32_t color_out = 0x4800;
+  res = hle.CallArmFunction(memory.Read32(vtable_addr + 15 * 4), object_addr, color_out);
+  EXPECT_EQ(res, 0u);
+  EXPECT_EQ(memory.Read32(color_out), 0xF81Fu);
 
   // Test QueryInterface (slot 2)
   uint32_t out_ptr_addr = 0x5000;

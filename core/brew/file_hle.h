@@ -158,6 +158,7 @@ class FileHle {
   const VirtualFilesystem& vfs_;
   uint32_t file_vtable_address_ = 0;
   uint32_t next_object_address_;
+  uint32_t object_region_end_;
   size_t enum_cursor_ = 0;
   std::unordered_map<uint32_t, OpenFile> open_files_;
   // Runtime-created/written files (e.g. save games) -- separate from

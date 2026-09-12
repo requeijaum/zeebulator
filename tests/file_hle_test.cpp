@@ -310,6 +310,21 @@ TEST(FileHle, WriteThenReadBackRoundTripsOnACreatedFile) {
   }
 }
 
+TEST(FileHle, WriteRejectsWrappingGuestLengthWithoutChangingTheFile) {
+  Fixture f;
+  WriteCString(f.cpu.GetMemory(), kScratch, "./udata/save.dat");
+  constexpr uint32_t kOfmCreate = 4;
+  const uint32_t handle = f.hle.CallArmFunction(f.MgrSlot(kMgrOpenFile), f.mgr, kScratch, kOfmCreate);
+  ASSERT_NE(handle, 0u);
+  f.cpu.GetMemory().Write8(kScratch + 0x100, 0x42);
+  ASSERT_EQ(f.hle.CallArmFunction(f.FileSlotAddr(kFileWrite), handle, kScratch + 0x100, 1), 1u);
+  EXPECT_EQ(f.hle.CallArmFunction(f.FileSlotAddr(kFileWrite), handle, kScratch + 0x100, 0xffffffffu),
+            0xffffffffu);
+  f.hle.CallArmFunction(f.FileSlotAddr(kFileSeek), handle, 0, 0);
+  EXPECT_EQ(f.hle.CallArmFunction(f.FileSlotAddr(kFileRead), handle, kScratch + 0x200, 2), 1u);
+  EXPECT_EQ(f.cpu.GetMemory().Read8(kScratch + 0x200), 0x42u);
+}
+
 TEST(FileHle, TestRecognizesAFileCreatedAtRuntime) {
   Fixture f;
   WriteCString(f.cpu.GetMemory(), kScratch, "./udata/save.dat");
@@ -505,4 +520,30 @@ TEST(FileHle, GetInfoExPopulatesSizeAtOffset12) {
   EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 4), 0u);
   EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 8), 0u);
   EXPECT_EQ(f.cpu.GetMemory().Read32(info_struct + 12), 5u);  // "hello" is 5 bytes
+}
+
+TEST(FileHle, FullSdkFileMgrVtableIsPresentAndUnsupportedTailReturnsError) {
+  Fixture f;
+  const uint32_t slot20 = f.cpu.GetMemory().Read32(kMgrVtable + 20 * 4);
+  ASSERT_NE(slot20, 0u);
+  EXPECT_EQ(f.hle.CallArmFunction(slot20, f.mgr), 20u);
+}
+
+TEST(FileHle, DeserializeRejectsHugeCountsBeforeAllocating) {
+  Fixture f;
+  std::stringstream in(std::ios::in | std::ios::out | std::ios::binary);
+  const uint32_t hostile_count = 0xffffffffu;
+  in.write(reinterpret_cast<const char*>(&hostile_count), sizeof(hostile_count));
+  in.seekg(0);
+  EXPECT_FALSE(f.file_hle.Deserialize(in));
+}
+
+TEST(FileHle, DeserializeRejectsHugeNameBeforeAllocating) {
+  Fixture f;
+  std::stringstream in(std::ios::in | std::ios::out | std::ios::binary);
+  const uint32_t one = 1, hostile_name = 0xffffffffu;
+  in.write(reinterpret_cast<const char*>(&one), sizeof(one));
+  in.write(reinterpret_cast<const char*>(&hostile_name), sizeof(hostile_name));
+  in.seekg(0);
+  EXPECT_FALSE(f.file_hle.Deserialize(in));
 }

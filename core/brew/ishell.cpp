@@ -413,7 +413,7 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
       uint32_t start = 0, size = 0;
       if (ParseBrewResourceDirectory(*brf, &dir) &&
           ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
-                                 /*type_match_any=*/true, &start, &size)) {
+                                 /*type_match_any=*/false, &start, &size)) {
         brf_data.assign(brf->begin() + start, brf->begin() + start + size);
         if (std::getenv("ZEEB_LOG_RES")) {
           std::fprintf(stderr, "[res] LoadResData('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
@@ -458,23 +458,34 @@ void IShellHle::LoadResDataImpl(IArmCore& core) {
 }
 
 void IShellHle::LoadResDataExImpl(IArmCore& core) {
-  // AEEResult LoadResDataEx(IShell *pIShell, const char *pszResFile,
-  //   uint16 wResID, AEERESTYPE resType, void *pBuffer, uint32 *pnLen)
-  // Real calling convention and the real `(void*)-1` "size only" buffer
-  // sentinel confirmed against a real Peggle call site -- see this
-  // class's own doc comment.
-  std::string filename = ReadCString(memory_, core.GetRegister(kR1));
-  uint32_t id = core.GetRegister(kR2);
-  uint32_t type = core.GetRegister(kR3);
-  uint32_t buffer = HleRuntime::ReadStackArg(core, 0);
-  uint32_t len_addr = HleRuntime::ReadStackArg(core, 1);
+  // void *LoadResDataEx(IShell *po, const char *pszResFile, uint16 wResID,
+  //                     ResType nType, void *pBuf, uint32 *pnBufSize)
+  //
+  // Contrato primario: platform/system/inc/AEEIShell.h, bloco
+  // "LoadResDataEx()". IMPORTANTE: o retorno e um PONTEIRO, nao AEEResult.
+  //   pBuf == NULL : aloca, *pnBufSize=tamanho, retorna o ponteiro.
+  //   pBuf == -1   : nao aloca, *pnBufSize=tamanho, retorna 0xffffffff.
+  //   pBuf real    : *pnBufSize ENTRA como capacidade; se couber, copia,
+  //                  *pnBufSize=tamanho e retorna pBuf; se nao, retorna NULL.
+  //   pnBufSize    : nunca pode ser NULL.
+  //
+  // O codigo antigo violava os quatro pontos: devolvia 0 para o sentinel e
+  // para o buffer do chamador, devolvia 1 nas falhas, ignorava a capacidade e
+  // copiava o recurso inteiro. O ultimo e corrupcao direta de memoria guest.
+  const std::string filename = ReadCString(memory_, core.GetRegister(kR1));
+  const uint32_t id = core.GetRegister(kR2) & 0xffffu;
+  const uint32_t type = core.GetRegister(kR3) & 0xffffu;
+  const uint32_t buffer = HleRuntime::ReadStackArg(core, 0);
+  const uint32_t len_addr = HleRuntime::ReadStackArg(core, 1);
+  if (len_addr == 0) {
+    core.SetRegister(kR0, 0);  // NULL: parametro obrigatorio ausente
+    return;
+  }
 
-  // Mesmos dois containers do LoadResData (ver o comentario la): .bar
-  // registrado, ou o `.brf` no VFS. Os wrappers do guest usam ESTE slot para
-  // perguntar o tamanho (pBuffer = (void*)-1) e depois para copiar.
   auto file_it = resource_files_.find(filename);
   const BarEntry* entry = nullptr;
   std::vector<uint8_t> brf_data;
+  bool brf_found = false;
   if (file_it != resource_files_.end()) {
     entry = file_it->second.Find(static_cast<uint16_t>(type), static_cast<uint16_t>(id));
   }
@@ -485,8 +496,9 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
       uint32_t start = 0, size = 0;
       if (ParseBrewResourceDirectory(*brf, &dir) &&
           ReadBrewResourceRecord(*brf, dir, static_cast<uint16_t>(type), static_cast<uint16_t>(id),
-                                 /*type_match_any=*/true, &start, &size)) {
+                                 /*type_match_any=*/false, &start, &size)) {
         brf_data.assign(brf->begin() + start, brf->begin() + start + size);
+        brf_found = true;
         if (std::getenv("ZEEB_LOG_RES")) {
           std::fprintf(stderr,
                        "[res] LoadResDataEx('%s' -> '%s', id=0x%x, type=0x%x) BRF size=%zu\n",
@@ -495,46 +507,59 @@ void IShellHle::LoadResDataExImpl(IArmCore& core) {
       }
     }
   }
-  if (entry == nullptr && brf_data.empty()) {
+  if (entry == nullptr && !brf_found) {
     if (std::getenv("ZEEB_LOG_FILE")) {
       std::fprintf(stderr,
                    "[res] LoadResDataEx('%s', id=0x%x, type=0x%x) -> NAO ACHOU (nem .bar nem "
                    ".brf)\n",
                    filename.c_str(), id, type);
     }
-    core.SetRegister(kR0, 1);  // EFAILED
-    return;
-  }
-  const uint32_t resource_size =
-      (entry != nullptr) ? entry->size : static_cast<uint32_t>(brf_data.size());
-  if (std::getenv("ZEEB_LOG_RES")) {
-    std::fprintf(stderr, "[res] LoadResDataEx('%s', id=0x%x, type=0x%x, buf=0x%08x) -> size=%u\n",
-                 filename.c_str(), id, type, buffer, resource_size);
-  }
-
-  constexpr uint32_t kSizeOnlySentinel = 0xFFFFFFFF;
-  if (buffer == kSizeOnlySentinel) {
-    if (len_addr != 0) memory_.Write32(len_addr, resource_size);
-    core.SetRegister(kR0, 0);  // SUCCESS
+    core.SetRegister(kR0, 0);  // NULL: recurso ausente
     return;
   }
 
   std::vector<uint8_t> data = (entry != nullptr) ? file_it->second.Extract(*entry) : brf_data;
-  uint32_t dest_buffer = buffer;
-  bool caller_allocated = (dest_buffer != 0);
-  if (!caller_allocated) {
-    // If pBuffer is NULL, allocate buffer in guest memory and return pointer
-    dest_buffer = malloc_fn_ ? malloc_fn_(static_cast<uint32_t>(data.size() + 4)) : 0;
+  if (data.size() > 0xffffffffu) {
+    core.SetRegister(kR0, 0);
+    return;
+  }
+  const uint32_t resource_size = static_cast<uint32_t>(data.size());
+  if (std::getenv("ZEEB_LOG_RES")) {
+    std::fprintf(stderr,
+                 "[res] LoadResDataEx('%s', id=0x%x, type=0x%x, buf=0x%08x) -> size=%u\n",
+                 filename.c_str(), id, type, buffer, resource_size);
   }
 
-  if (dest_buffer != 0) {
-    for (uint32_t i = 0; i < data.size(); ++i) {
-      memory_.Write8(dest_buffer + i, data[i]);
+  constexpr uint32_t kSizeOnlySentinel = 0xffffffffu;
+  if (buffer == kSizeOnlySentinel) {
+    memory_.Write32(len_addr, resource_size);
+    core.SetRegister(kR0, kSizeOnlySentinel);
+    return;
+  }
+
+  uint32_t dest = buffer;
+  if (dest != 0) {
+    const uint32_t capacity = memory_.Read32(len_addr);
+    memory_.Write32(len_addr, resource_size);  // tamanho real, inclusive na falha
+    if (capacity < resource_size) {
+      core.SetRegister(kR0, 0);  // NULL, sem copiar byte nenhum
+      return;
+    }
+  } else {
+    if (data.size() > 0xfffffffbu) {
+      core.SetRegister(kR0, 0);
+      return;
+    }
+    dest = malloc_fn_ ? malloc_fn_(resource_size + 4) : 0;
+    memory_.Write32(len_addr, resource_size);
+    if (dest == 0) {
+      core.SetRegister(kR0, 0);
+      return;
     }
   }
-  if (len_addr != 0) memory_.Write32(len_addr, resource_size);
-  // When caller supplied buffer, return 0 (AEE_SUCCESS); when allocated on demand, return pointer.
-  core.SetRegister(kR0, caller_allocated ? 0 : dest_buffer);
+
+  for (uint32_t n = 0; n < resource_size; ++n) memory_.Write8(dest + n, data[n]);
+  core.SetRegister(kR0, dest);
 }
 
 void IShellHle::GetHandlerImpl(IArmCore& core) {
@@ -716,7 +741,7 @@ void IShellHle::GetDeviceInfoExImpl(IArmCore& core) {
   // When pBuff is NULL, the caller is querying the required buffer size.
   constexpr uint32_t kDeviceItemImei = 28;
   constexpr uint32_t kEunsupported = 20;
-  constexpr uint32_t kEbadParm = 2;
+  constexpr uint32_t kEbadParm = 14;  // AEEError.h: EBADPARM
   constexpr const char* kImei = "350000000000006"; // 15-digit Luhn-valid synthetic IMEI
   constexpr uint32_t kImeiLen = 16; // 15 digits + null terminator
 

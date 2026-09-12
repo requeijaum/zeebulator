@@ -151,3 +151,12 @@ TEST(BrewResourceFile, ReadsBigEndianStringsWhenTheBomSaysSo) {
   EXPECT_EQ(chars[0], 'O');
   EXPECT_EQ(chars[2], 'a');
 }
+
+TEST(BrewResourceFile, RejectsNonCanonicalRecordOriginInsteadOfReadingHardcodedTwenty) {
+  auto b = BuildBrf();
+  // Parser antigo aceitava 0x28, mas ReadBrewResourceRecord continuava lendo
+  // registros em 0x20. O formato real medido fixa a origem em 0x20.
+  b[8] = 0x28;
+  zeebulator::BrewResourceDirectory dir;
+  EXPECT_FALSE(zeebulator::ParseBrewResourceDirectory(b, &dir));
+}

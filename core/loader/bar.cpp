@@ -37,7 +37,9 @@ BarArchive BarArchive::Parse(std::vector<uint8_t> data) {
   uint32_t data_start = ReadU32LE(d + 24);
   uint32_t data_size = ReadU32LE(d + 28);
 
-  if (table1_start != kHeaderSize || table_start != table1_start + table1_size) {
+  const uint64_t table1_end = static_cast<uint64_t>(table1_start) + table1_size;
+  if (table1_start != kHeaderSize || table1_end > size || table1_end > 0xffffffffull ||
+      table_start != table1_end) {
     throw std::runtime_error("BAR: inconsistent header sub-table offsets");
   }
 
@@ -55,7 +57,7 @@ BarArchive BarArchive::Parse(std::vector<uint8_t> data) {
 
   std::vector<uint32_t> offsets(entry_count + 1);
   for (uint32_t i = 0; i <= entry_count; ++i) {
-    offsets[i] = ReadU32LE(d + table_start + i * 4);
+    offsets[i] = ReadU32LE(d + static_cast<size_t>(table_start) + static_cast<size_t>(i) * 4);
     // Monotonically non-decreasing, not strictly increasing: a real,
     // shipped title (Alien Breaker Deluxe's own data.bar) has a
     // genuine zero-length resource entry (two consecutive offsets
@@ -109,8 +111,12 @@ BarArchive BarArchive::Parse(std::vector<uint8_t> data) {
 }
 
 std::vector<uint8_t> BarArchive::Extract(const BarEntry& entry) const {
+  const uint64_t end = static_cast<uint64_t>(entry.offset) + entry.size;
+  if (entry.offset > data_.size() || end > data_.size()) {
+    throw std::runtime_error("BAR: requested entry lies outside archive data");
+  }
   return std::vector<uint8_t>(data_.begin() + entry.offset,
-                               data_.begin() + entry.offset + entry.size);
+                              data_.begin() + static_cast<size_t>(end));
 }
 
 const BarEntry* BarArchive::Find(uint16_t type, uint16_t id) const {

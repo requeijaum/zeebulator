@@ -214,3 +214,8 @@ TEST(Wav, RejectsTruncatedFile) {
   // if enabled, and by simply not crashing here).
   (void)result;
 }
+
+TEST(Wav, RejectsZeroSampleRateInsteadOfCreatingAnImmortalVoice) {
+  auto wav = BuildWav(1, 1, 0, 16, {0, 0});
+  EXPECT_FALSE(ParseWav(wav.data(), wav.size()).has_value());
+}

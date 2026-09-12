@@ -508,9 +508,10 @@ TEST(IShellHle, LoadResDataExWithSizeSentinelReportsRealSizeWithoutCopying) {
   cpu.GetMemory().Write32(kSpAddr + 4, kLenAddr);
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
-  // int LoadResDataEx(IShell*, const char *pszResFile, uint16 wResID,
-  //   AEERESTYPE resType, void *pBuffer, uint32 *pnLen)
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1), 0u);
+  // SDK AEEIShell.h: pBuffer == (void*)-1 devolve o proprio sentinel e escreve
+  // o tamanho em pnLen. Nao e AEEResult.
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1),
+            0xFFFFFFFFu);
   EXPECT_EQ(cpu.GetMemory().Read32(kLenAddr), 5u);
 }
 
@@ -530,9 +531,11 @@ TEST(IShellHle, LoadResDataExWithARealBufferCopiesTheResourceBytes) {
   cpu.SetRegister(zeebulator::kSP, kSpAddr);
   cpu.GetMemory().Write32(kSpAddr, kBufferAddr);
   cpu.GetMemory().Write32(kSpAddr + 4, kLenAddr);
+  cpu.GetMemory().Write32(kLenAddr, 4);  // capacidade de entrada, em bytes
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1), 0u);
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1),
+            kBufferAddr);
   EXPECT_EQ(cpu.GetMemory().Read32(kLenAddr), 4u);
   for (uint32_t i = 0; i < resource.size(); ++i) {
     EXPECT_EQ(cpu.GetMemory().Read8(kBufferAddr + i), resource[i]);
@@ -550,7 +553,44 @@ TEST(IShellHle, LoadResDataExFailsForAnUnregisteredResourceFile) {
   cpu.SetRegister(zeebulator::kSP, 0x90200);
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1), 1u);
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/4000, /*type=*/1), 0u);
+}
+
+TEST(IShellHle, LoadResDataExRejectsASmallCallerBufferWithoutWritingPastIt) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  IShellHle shell_hle(cpu.GetMemory(), hle);
+  shell_hle.RegisterResourceFile("resources.bar", BuildBarWithOneResource(1, 4000, {10, 20, 30, 40}));
+  shell_hle.Build(kVtableAddr, kObjectAddr);
+
+  constexpr uint32_t kName = 0x90000, kLen = 0x90100, kSp = 0x90200, kBuf = 0x90300;
+  WriteAeeCharString(cpu.GetMemory(), kName, "resources.bar");
+  cpu.GetMemory().Write32(kBuf, 0xA5A5A5A5);  // sentinela: nao pode ser tocada
+  cpu.GetMemory().Write32(kLen, 3);           // capacidade insuficiente para 4 bytes
+  cpu.SetRegister(zeebulator::kSP, kSp);
+  cpu.GetMemory().Write32(kSp, kBuf);
+  cpu.GetMemory().Write32(kSp + 4, kLen);
+
+  const uint32_t fn = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
+  EXPECT_EQ(hle.CallArmFunction(fn, kObjectAddr, kName, 4000, 1), 0u);  // NULL
+  EXPECT_EQ(cpu.GetMemory().Read32(kLen), 4u);       // tamanho necessario
+  EXPECT_EQ(cpu.GetMemory().Read32(kBuf), 0xA5A5A5A5u);  // zero bytes copiados
+}
+
+TEST(IShellHle, LoadResDataExRejectsNullLengthPointer) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, kTrapBase, kTrapSize);
+  IShellHle shell_hle(cpu.GetMemory(), hle);
+  shell_hle.RegisterResourceFile("resources.bar", BuildBarWithOneResource(1, 4000, {1}));
+  shell_hle.Build(kVtableAddr, kObjectAddr);
+
+  constexpr uint32_t kName = 0x90000, kSp = 0x90200, kBuf = 0x90300;
+  WriteAeeCharString(cpu.GetMemory(), kName, "resources.bar");
+  cpu.SetRegister(zeebulator::kSP, kSp);
+  cpu.GetMemory().Write32(kSp, kBuf);
+  cpu.GetMemory().Write32(kSp + 4, 0);  // pnBufSize e obrigatorio pelo SDK
+  const uint32_t fn = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
+  EXPECT_EQ(hle.CallArmFunction(fn, kObjectAddr, kName, 4000, 1), 0u);
 }
 
 TEST(IShellHle, LoadResDataExFailsForATypeIdPairNotInTheDirectory) {
@@ -566,7 +606,7 @@ TEST(IShellHle, LoadResDataExFailsForATypeIdPairNotInTheDirectory) {
   cpu.SetRegister(zeebulator::kSP, 0x90200);
 
   uint32_t sentinel = cpu.GetMemory().Read32(kVtableAddr + 41 * 4);
-  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/9999, /*type=*/1), 1u);
+  EXPECT_EQ(hle.CallArmFunction(sentinel, kObjectAddr, name_addr, /*id=*/9999, /*type=*/1), 0u);
 }
 
 TEST(IDisplayHle, ResetToBlankPanelPresentsAWhiteScreen) {
@@ -802,6 +842,7 @@ TEST(IDisplayHle, CreateDIBitmapAllocatesUsableOffscreenDib) {
   // The returned object must expose a working GetInfo (slot 12 of BitmapHle):
   // read the DIB's own vtable and query dimensions.
   uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
+  EXPECT_GE(dib_obj, dib_vtable + 16u * 4u);  // vtable inteira fora do IDIB
   uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
   constexpr uint32_t kInfoStruct = 0x80031000;
   hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 12);
@@ -851,6 +892,7 @@ TEST(IDisplayHle, CreateDIBitmapExAllocatesUsableOffscreenDib) {
   EXPECT_NE(dib_obj, 0u);
 
   uint32_t dib_vtable = cpu.GetMemory().Read32(dib_obj);
+  EXPECT_GE(dib_obj, dib_vtable + 16u * 4u);  // vtable inteira fora do IDIB
   uint32_t get_info_fn = cpu.GetMemory().Read32(dib_vtable + 12 * 4);
   constexpr uint32_t kInfoStruct = 0x80031000;
   hle.CallArmFunction(get_info_fn, dib_obj, kInfoStruct, 12);

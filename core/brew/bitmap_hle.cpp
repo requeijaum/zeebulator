@@ -8,9 +8,7 @@ namespace zeebulator {
 
 namespace {
 
-void Stub(IArmCore& core) {
-  core.SetRegister(kR0, 0);
-}
+
 
 int CalculatePitchBytes(int width, int depth) {
   if (width <= 0 || depth <= 0) return 0;
@@ -34,11 +32,15 @@ BitmapHle::BitmapHle(Memory& memory, HleRuntime& hle, int width, int height,
       transparent_color_(transparent_color) {}
 
 void BitmapHle::AddRef(IArmCore& core) {
-  core.SetRegister(kR0, core.GetRegister(kR0));
+  if (ref_count_ != 0xffffffffu) ++ref_count_;
+  core.SetRegister(kR0, ref_count_);
 }
 
 void BitmapHle::Release(IArmCore& core) {
-  core.SetRegister(kR0, 0);
+  if (ref_count_ != 0) --ref_count_;
+  // A arena e owned_dibs_ possuem o armazenamento; zerar a referencia nao pode
+  // liberar/mover o objeto enquanto ponteiros guest ainda existem.
+  core.SetRegister(kR0, ref_count_);
 }
 
 void BitmapHle::QueryInterface(IArmCore& core) {
@@ -52,7 +54,12 @@ void BitmapHle::QueryInterface(IArmCore& core) {
   if (pp_out != 0) {
     memory_.Write32(pp_out, res_obj);
   }
-  core.SetRegister(kR0, res_obj != 0 ? 0 : 4);  // 0 = SUCCESS, 4 = CLASSNOTSUPPORT
+  if (res_obj != 0) {
+    if (ref_count_ != 0xffffffffu) ++ref_count_;  // QueryInterface adquire referencia
+    core.SetRegister(kR0, 0);
+  } else {
+    core.SetRegister(kR0, 3);  // ECLASSNOTSUPPORT, AEEError.h
+  }
 }
 
 void BitmapHle::GetInfo(IArmCore& core) {
@@ -82,7 +89,7 @@ void BitmapHle::GetInfo(IArmCore& core) {
 }
 
 void BitmapHle::SetTransparencyColor(IArmCore& core) {
-  // void SetTransparencyColor(IBitmap *pIBitmap, uint32 color)
+  // int SetTransparencyColor(IBitmap *pIBitmap, NativeColor color)
   transparent_color_ = core.GetRegister(kR1);
   if (object_addr_ != 0) {
     memory_.Write32(object_addr_ + 16, transparent_color_);
@@ -91,7 +98,14 @@ void BitmapHle::SetTransparencyColor(IArmCore& core) {
 }
 
 void BitmapHle::GetTransparencyColor(IArmCore& core) {
-  core.SetRegister(kR0, transparent_color_);
+  // SDK AEEIBitmap.h: int GetTransparencyColor(IBitmap*, NativeColor *pColor).
+  const uint32_t out = core.GetRegister(kR1);
+  if (out == 0) {
+    core.SetRegister(kR0, 14);  // EBADPARM
+    return;
+  }
+  memory_.Write32(out, transparent_color_);
+  core.SetRegister(kR0, 0);
 }
 
 uint32_t BitmapHle::Build(uint32_t vtable_address, uint32_t object_address) {

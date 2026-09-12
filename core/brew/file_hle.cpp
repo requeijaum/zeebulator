@@ -12,11 +12,16 @@ namespace zeebulator {
 namespace {
 
 void Stub(IArmCore& core) { core.SetRegister(kR0, 0); }
-void StubFailed(IArmCore& core) { core.SetRegister(kR0, 1); }  // AEE_EFAILED-ish
+void StubOne(IArmCore& core) { core.SetRegister(kR0, 1); }
+void StubFailed(IArmCore& core) { core.SetRegister(kR0, 1); }  // EFAILED
+void StubUnsupported(IArmCore& core) { core.SetRegister(kR0, 20); }  // EUNSUPPORTED
 
 std::string ReadCString(Memory& memory, uint32_t addr) {
   std::string s;
-  for (uint8_t c = memory.Read8(addr); c != 0; c = memory.Read8(++addr)) {
+  if (addr == 0) return s;
+  for (uint32_t i = 0; i < 4096 && addr + i >= addr; ++i) {
+    const uint8_t c = memory.Read8(addr + i);
+    if (c == 0) break;
     s.push_back(static_cast<char>(c));
   }
   return s;
@@ -56,7 +61,13 @@ std::string NormalizeWritablePath(std::string path) {
 
 FileHle::FileHle(Memory& memory, HleRuntime& hle, const VirtualFilesystem& vfs,
                   uint32_t file_object_region_start)
-    : memory_(memory), hle_(hle), vfs_(vfs), next_object_address_(file_object_region_start) {}
+    : memory_(memory),
+      hle_(hle),
+      vfs_(vfs),
+      next_object_address_(file_object_region_start),
+      object_region_end_(file_object_region_start <= 0xffff0000u
+                             ? file_object_region_start + 0x10000u
+                             : 0xffffffffu) {}
 
 std::optional<std::vector<uint8_t>> FileHle::SnapshotOpenFile(uint32_t handle) const {
   auto it = open_files_.find(handle);
@@ -81,6 +92,7 @@ void FileHle::WriteFileInfo(uint32_t dest_addr, const std::string& name, uint32_
 
 uint32_t FileHle::AllocateFileObject(const std::string& name, const std::vector<uint8_t>* data,
                                       std::vector<uint8_t>* mutable_data) {
+  if (next_object_address_ > object_region_end_ - 4u) return 0;
   uint32_t obj_addr = next_object_address_;
   next_object_address_ += 4;
   memory_.Write32(obj_addr, file_vtable_address_);
@@ -252,15 +264,29 @@ void FileHle::WriteImpl(IArmCore& core) {
     return;
   }
   OpenFile& f = it->second;
-  uint32_t src = core.GetRegister(kR1);
-  uint32_t want = core.GetRegister(kR2);
-  if (f.position + want > f.mutable_data->size()) {
-    f.mutable_data->resize(f.position + want);
+  const uint32_t src = core.GetRegister(kR1);
+  const uint32_t want = core.GetRegister(kR2);
+  // nWant e controlado pelo guest. A soma uint32 antiga podia fazer wrap:
+  // position=10,want=0xffffffff virava 9, pulava resize e escrevia fora do
+  // std::vector. Tambem nao deixe uma unica chamada reservar gigabytes.
+  constexpr uint64_t kMaxMutableFileBytes = 64ull * 1024ull * 1024ull;
+  const uint64_t end = static_cast<uint64_t>(f.position) + want;
+  const uint64_t src_end = static_cast<uint64_t>(src) + want;
+  if ((want != 0 && src == 0) || end > kMaxMutableFileBytes ||
+      end > 0xffffffffull || src_end > 0x100000000ull) {
+    core.SetRegister(kR0, static_cast<uint32_t>(-1));
+    return;
+  }
+  try {
+    if (end > f.mutable_data->size()) f.mutable_data->resize(static_cast<size_t>(end));
+  } catch (const std::exception&) {
+    core.SetRegister(kR0, static_cast<uint32_t>(-1));
+    return;
   }
   for (uint32_t i = 0; i < want; ++i) {
-    (*f.mutable_data)[f.position + i] = memory_.Read8(src + i);
+    (*f.mutable_data)[static_cast<size_t>(f.position) + i] = memory_.Read8(src + i);
   }
-  f.position += want;
+  f.position = static_cast<uint32_t>(end);
   dirty_ = true;
   if (std::getenv("ZEEB_LOG_FILE")) {
     std::fprintf(stderr, "[file] Write('%s') bytes=%u pos=%u\n", f.name.c_str(), want, f.position);
@@ -374,9 +400,12 @@ uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_obje
   // up per-file state by "po" (R0) at dispatch time, not by vtable
   // identity.
   std::vector<HleRuntime::HleFunction> file_methods = {
-      Stub,                                          // 0  AddRef
-      Stub,                                          // 1  Release
-      Stub,                                          // 2  Readable
+      StubOne,                                       // 0  AddRef (objetos HLE estaveis)
+      [this](IArmCore& c) {                           // 1  Release fecha o handle
+        open_files_.erase(c.GetRegister(kR0));
+        c.SetRegister(kR0, 0);
+      },
+      StubUnsupported,                               // 2  Readable assincrono
       [this](IArmCore& c) { ReadImpl(c); },           // 3  Read
       Stub,                                          // 4  Cancel
       [this](IArmCore& c) { WriteImpl(c); },          // 5  Write
@@ -393,8 +422,8 @@ uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_obje
   }
 
   std::vector<HleRuntime::HleFunction> mgr_methods = {
-      Stub,                                            // 0  AddRef
-      Stub,                                            // 1  Release
+      StubOne,                                         // 0  AddRef
+      StubOne,                                         // 1  Release (singleton imortal)
       [this](IArmCore& c) { OpenFileImpl(c); },         // 2  OpenFile
       [this](IArmCore& c) { FileMgrGetInfoImpl(c); },   // 3  GetInfo
       StubFailed,                                      // 4  Remove (read-only)
@@ -406,6 +435,14 @@ uint32_t FileHle::Build(uint32_t file_mgr_vtable_address, uint32_t file_mgr_obje
       [this](IArmCore& c) { EnumInitImpl(c); },         // 10 EnumInit
       [this](IArmCore& c) { EnumNextImpl(c); },         // 11 EnumNext
       StubFailed,                                      // 12 Rename (read-only)
+      StubUnsupported,                                 // 13 EnumNextEx
+      StubUnsupported,                                 // 14 SetDescription
+      StubUnsupported,                                 // 15 GetInfoEx
+      StubUnsupported,                                 // 16 Use
+      StubUnsupported,                                 // 17 GetFileUseInfo
+      StubUnsupported,                                 // 18 ResolvePath
+      StubUnsupported,                                 // 19 CheckPathAccess
+      StubUnsupported,                                 // 20 GetFreeSpaceEx
   };
   return BuildInterfaceObject(memory_, hle_, file_mgr_vtable_address,
                                file_mgr_object_address, mgr_methods);
@@ -455,20 +492,25 @@ bool FileHle::Serialize(std::ostream& out) const {
 
 bool FileHle::Deserialize(std::istream& in) {
   uint32_t count = 0;
-  if (!ReadU32(in, count)) return false;
+  if (!ReadU32(in, count) || count > 65536u) return false;
 
+  constexpr uint32_t kMaxNameBytes = 4096;
+  constexpr uint64_t kMaxTotalDataBytes = 64ull * 1024ull * 1024ull;
+  uint64_t total_data_bytes = 0;
   std::unordered_map<std::string, std::vector<uint8_t>> loaded;
   loaded.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     uint32_t name_len = 0;
-    if (!ReadU32(in, name_len)) return false;
+    if (!ReadU32(in, name_len) || name_len > kMaxNameBytes) return false;
     std::string name(name_len, '\0');
     if (name_len != 0) {
       in.read(name.data(), name_len);
       if (!in.good()) return false;
     }
     uint32_t data_len = 0;
-    if (!ReadU32(in, data_len)) return false;
+    if (!ReadU32(in, data_len) || data_len > kMaxTotalDataBytes ||
+        total_data_bytes + data_len > kMaxTotalDataBytes) return false;
+    total_data_bytes += data_len;
     std::vector<uint8_t> data(data_len);
     if (data_len != 0) {
       in.read(reinterpret_cast<char*>(data.data()), data_len);
@@ -484,10 +526,11 @@ bool FileHle::Deserialize(std::istream& in) {
     constexpr uint32_t kDirsMagic = 0x53524944;  // "DIRS" little-endian
     uint32_t magic = 0;
     uint32_t dir_count = 0;
-    if (!ReadU32(in, magic) || magic != kDirsMagic || !ReadU32(in, dir_count)) return false;
+    if (!ReadU32(in, magic) || magic != kDirsMagic || !ReadU32(in, dir_count) ||
+        dir_count > 65536u) return false;
     for (uint32_t i = 0; i < dir_count; ++i) {
       uint32_t name_len = 0;
-      if (!ReadU32(in, name_len)) return false;
+      if (!ReadU32(in, name_len) || name_len > kMaxNameBytes) return false;
       std::string name(name_len, '\0');
       if (name_len != 0) {
         in.read(name.data(), name_len);
@@ -514,7 +557,9 @@ uint32_t FileHle::BuildLastOpenedFileProxy(uint32_t vtable_address, uint32_t obj
   // Sized to cover every real IFile slot (see file_methods in Build()),
   // even though only Read (slot 3) is expected to be called on this
   // one -- see the class doc comment for why.
-  std::vector<HleRuntime::HleFunction> methods(9, Stub);
+  std::vector<HleRuntime::HleFunction> methods(12, StubUnsupported);
+  methods[0] = StubOne;
+  methods[1] = StubOne;
   methods[3] = [this](IArmCore& core) { ReadFromHandle(core, last_opened_handle_); };
   return BuildInterfaceObject(memory_, hle_, vtable_address, object_address, methods);
 }

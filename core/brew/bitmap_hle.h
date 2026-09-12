@@ -60,6 +60,7 @@ class BitmapHle {
   uint32_t transparent_color_;
   uint32_t vtable_addr_ = 0;
   uint32_t object_addr_ = 0;
+  uint32_t ref_count_ = 1;
 };
 
 }  // namespace zeebulator
