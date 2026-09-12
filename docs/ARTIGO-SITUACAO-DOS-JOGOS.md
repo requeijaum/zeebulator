@@ -216,10 +216,10 @@ Cada linha foi conferida no codigo e, quando possivel, medida em execucao.
 | §3.1 itens tipados (`>= 0x5000` objeto, `< 0x5000` numero) | ja existia; nesta sessao passou a ser por `(this, id)` |
 | §3.2 familia de classes de widget | ja registrada (`e05 e14 e19 e26 e2a e36 e3f e47` + `e51`) |
 | §4 recusar `0x01006c01` de proposito | fazemos isso; o log mostra a recusa e o fluxo segue |
-| §4 pbuffer com o tamanho dos atributos | **aberto** |
-| §4 `eglGetColorBufferQUALCOMM` devolve pixel cru | **aberto** |
+| §4 pbuffer com o tamanho dos atributos | implementado (640x330 medido; limites 640x480) |
+| §4 `eglGetColorBufferQUALCOMM` devolve pixel cru | parcial: ponteiro RGB565 real; falta readback do GL host |
 | §5.1 instrumentar o desfecho de cada callback | feito nesta sessao (`ZEEB_LOG_WIDGET_ALL`) |
-| §5.2 slot 13 = `CreateCompatibleBitmap(&bmp,w,h)` | ja existia |
+| §5.2 slot 13 = `CreateCompatibleBitmap(&bmp,w,h)` | corrigido: objeto/pixels/geometria por superficie, arenas limitadas |
 | §5.3 acessador chamado com endereco de filho no lugar do seletor | ja existia |
 | §5.4 slot 17 aceito (e segurar a fonte) | aceito; **nao** seguramos referencia da fonte |
 | §5.5 slots 4 e 16 devolvem o registro anterior | feito nesta sessao |
@@ -241,18 +241,198 @@ diferente, e a leitura do codigo do guest (nao do documento) e que resolve.
 
 ---
 
+## 3-Legged 5-Why + espinha de peixe: por que o formulario do z-pad nao monta
+
+**Fato observado (medido, nao inferido).** Execucao passiva da Z-Wheel
+(`tectoy.mod`, ClsId 17237912), 50 s, sem entrada:
+
+```
+[sendevent] clsApp=0x01070798 evt=0x7b0a wParam=10 dwParam=0x0038ffe0
+            -> applet HandleEvent=0x00100e1c devolveu 1; resposta=0x00000000
+[guest] Tectoy.c:743  Unable to launch z-pad intructions form: 6
+[guest] Tectoy.c:760  Couldn't create z-pad instruction form (6)
+```
+
+Cadeia estatica correspondente (trace de execucao em 0x17f5e0-0x17f840):
+
+```
+0x17f6f8  ldrsh r1,[r5,#0x24]        ; id do recurso = 1178 (= "Z-Pad" em tectoyli.brf)
+0x17f700  bl 0x179518                ; (shell, 1178)
+0x179528    bl 0x1785a4              ; -> SendEvent(0x7b0a, wParam=10, &resposta)
+0x17952c    movs r4,r0 ; beq 0x17956c ; resposta == 0 -> devolve 0
+0x17f70c  mov r4,#6                  ; EUNABLETOLOAD (AEEError.h)
+```
+
+### As tres pernas, e o que cada uma responde
+
+- **Perna M (mecanismo)**: o que o codigo faz, instrucao por instrucao.
+- **Perna C (contrato)**: o que o SDK/BREW define que deveria acontecer.
+- **Perna P (processo/metodo)**: por que este projeto nao viu o problema antes.
+
+### Round 1 -- o sintoma
+
+| Perna | Resposta |
+|---|---|
+| M | O wrapper `0x179518` devolve 0 e o chamador traduz esse 0 em `EUNABLETOLOAD` (6) |
+| C | O wrapper so devolve 0 quando a resposta do evento 0x7b0a e nula |
+| P | Nos tratavamos esse mesmo ponto como "resolvido" porque o boot seguia |
+
+### Round 2 -- por que o wrapper devolveu 0
+
+| Perna | Resposta |
+|---|---|
+| M | `SendEvent(0x7b0a, wParam=10)` voltou com `resposta=0x00000000`, e o applet devolveu **1** ("tratei") ao mesmo tempo |
+| C | Quem responde 0x7b0a e o proprio applet, escrevendo o ponteiro pedido no `dwParam`; resposta nula = "nao tenho esse dado" |
+| P | Nos substituiamos a resposta do applet por uma constante chumbada (`w==1||w==0xa` escrevia o idioma "pt  "); enquanto isso o boot andava por ficcao, nao por emulacao |
+
+### Round 3 -- por que o applet nao tinha o dado
+
+| Perna | Resposta |
+|---|---|
+| M | Imediatamente antes da resposta nula o applet abre `tt_prefs.db`, percorre chaves e escreve 0 |
+| C | O caminho observado e interno ao applet/SQL; `ISHELL_GetPrefs`/`SetPrefs` seriam outro caminho possivel, mas precisam aparecer no trace para poderem ser culpados |
+| P | A primeira analise promoveu proximidade temporal (`OpenDatabase`) e dois stubs existentes (`GetPrefs`/`SetPrefs`) a causalidade sem provar a chamada |
+
+### Round 4 -- a hipotese de GetPrefs foi falsificada
+
+| Perna | Resposta |
+|---|---|
+| M | `ZEEB_STUB_TRACE=1` registrou 91 amostras de stubs na mesma execucao e **nenhuma** chamada a `IShell::GetPrefs` ou `SetPrefs` |
+| C | Ausencia no trace completo da vtable exercitada falsifica a alegacao de que esses slots produziram diretamente o zero desta cadeia |
+| P | O artigo anterior dizia "causa-raiz" e so depois admitia que o passo principal era hipotese. Isso estava metodologicamente invertido |
+
+### Round 5 -- o stub realmente exercitado
+
+| Perna | Resposta |
+|---|---|
+| M | O helper `AEEHelperFuncs::aee_stribegins`, offset `0x1a4`, foi chamado dezenas de vezes enquanto o guest varria chaves no BSS; o stub devolvia 0 em todas |
+| C | O SDK e explicito: `AEEStdLib.h:217` declara `boolean (*aee_stribegins)(const char *cpszPrefix, const char *psz)` e `AEEStdLib_static.h:103` repete o prototipo; 1 significa que `psz` comeca com o prefixo. A comparacao sem diferenciar caixa e inferida do par separado `strbegins`/`stribegins`, nao de uma frase explicita da documentacao |
+| P | A tabela tinha o nome correto, mas nomear slot nao e implementar slot. `LoggedStub` continuava sendo comportamento falso, apenas mais silencioso |
+
+### Convergencia corrigida
+
+A convergencia publicada antes estava **errada**: `GetPrefs`/`SetPrefs` nao sao a
+causa direta porque nao foram chamados. O que agora se pode afirmar e:
+
+> **O bloqueio medido era a resposta nula ao evento `0x7b0a/wParam=10`, dentro
+> de um caminho de lookup de dados do applet. Nesse caminho, o unico stub
+> fortemente exercitado e semanticamente relevante encontrado foi
+> `aee_stribegins`: ele respondia falso para toda chave e podia tornar qualquer
+> varredura incapaz de achar `game_id`, `BrowserClassID` e chaves vizinhas.**
+
+Teste falsificavel depois da implementacao correta do helper: uma execucao passiva
+unica de 25 s nao repetiu `wParam=10 -> resposta=0`, nao imprimiu as mensagens
+`Unable to launch z-pad... (6)`/`Couldn't create... (6)` e `EVT_APP_START`
+retornou 1. Isto prova que o fluxo mudou e que o erro imediato desapareceu nessa
+execucao. **Nao prova** que o menu ou a roda montaram: nao houve callback slot 16
+nem frame diferente de branco comprovado.
+
+### Espinha de peixe corrigida
+
+```
+              FORMULARIO DO Z-PAD NAO MONTAVA -> MENU AUSENTE -> QUADRO BRANCO
+                                   |
+  METODO --------------------------+
+    constante chumbada substituindo resposta do guest                 <- mascarou
+    GetPrefs promovido a causa sem chamada medida                      <- erro nosso
+  LOOKUP/DADOS ---------------------+
+    wParam=10 devolvia ponteiro nulo                                   <- medido
+    tt_prefs.db era aberto imediatamente antes                         <- correlacao
+    aee_stribegins devolvia FALSE para todas as chaves                 <- medido
+  IMPLEMENTACAO --------------------+
+    helper 0x1a4 tinha nome mas apontava para stub                     <- corrigido
+    widgets ainda compartilham um unico objeto                         <- aberto/P0
+  INSTRUMENTACAO -------------------+
+    stub neutro deixava o guest seguir sem erro de host
+    nova execucao removeu erro 6, mas ainda nao provou pixels/slot 16
+  CONTRATO -------------------------+
+    AEEStdLib.h: prefixo em r0, string em r1, retorno boolean
+    GetPrefs/SetPrefs ausentes do trace: hipotese falsificada
+```
+
+### O que ainda permanece aberto
+
+A ligacao `aee_stribegins falso -> lookup wParam=10 nulo` tem forte evidencia
+mecanica e o erro sumiu depois da correcao, mas uma unica execucao nao fecha toda
+a cadeia SQL. O proximo oraculo e registrar as consultas e linhas devolvidas pelo
+handler de `wParam=10`. Separadamente, a tela branca continua ligada a infraestrutura de widget. O
+singleton entre nove classes e o bitmap compartilhado foram corrigidos; ainda
+faltam ownership completo de fonte/modelo, selecao da arvore/tela atual e
+readback do pbuffer GL. O callback slot 16 continuou ausente na execucao medida.
+
+
+Execucao passiva unica depois das factories (25 s, sem entrada) mostrou
+`CreateInstance` distintos para `0x01028e47`, `0x01028e19` e `0x01028e3f`, e o
+primeiro `SetHandler` ocorreu em `this=0x86000300`, nao mais no singleton
+`0x8006d000`. Ainda houve zero `SetDrawHandler`: identidade foi consertada, mas o
+menu completo/OwnerDraw nao esta provado.
+
+### Efeito colateral que vale registrar
+
+O mesmo padrao explica por que este projeto teve, por sessoes seguidas, numeros
+de compatibilidade que pareciam bons e jogos que nao apareciam: **substituir a
+resposta do guest por uma constante correta faz o boot andar, e o boot andar nao
+e prova de que o caminho e o certo.** Aqui a troca da constante pela entrega real
+transformou um "boot parcial" silencioso num erro honesto com causa localizada.
+
+---
+
 ## Lições Aprendidas na Auditoria de Código
 
 1. **Auto-Citação e Falsa Certeza**: Vários trechos de código continham comentários como "confirmado por disassembly" que,
    ao serem cruzados com o SDK oficial (`AEEStdLib.h`, `AEEIBitmap.h`), revelaram-se suposições incorretas (ex.: `0xdc` ser
    gzip em vez de `memcmp`, ou `ECLASSNOTSUPPORT` ser 20 em vez de 3).
-2. **Reentrância Assíncrona no BREW**: O modelo de componentes da Qualcomm proíbe estritamente que notificações de eventos
-   (áudio, streams, sinais de controle) reentrem no código do guest durante a execução de um trap HLE. O adiamento para o
-   próximo ciclo de `Tick` eliminou congelamentos instantâneos de vídeo após cliques de botão.
+2. **Reentrância Assíncrona no BREW**: callbacks guest disparados de dentro de um trap HLE precisam usar
+   `CallArmFunctionPreservingContext`; notificações assíncronas devem ser adiadas. Chamar `CallArmFunction` cru sobrescreve
+   PC/LR/registradores da chamada externa. O mesmo vale para comparadores de sort e fontes de unzip.
 3. **Isolamento de Estado de Persistência**: Salvar `.userdata` e abrir bancos SQLite dentro do diretório `/media/.../ROMs/`
    contaminava dumps históricos e falhava em mídias somente-leitura. O redirecionamento para caminhos padrão XDG resolve
-   a portabilidade.
+   a portabilidade. O caminho legado agora e somente origem de importacao; toda escrita futura permanece no XDG.
 
+### Resultado desta rodada de auditoria
+
+Auditoria paralela cobriu ABI SDK, memoria/lifetime, parsers, filesystem, SQL,
+midia, EGL/GL e widgets. Achados corrigidos e validados por testes unitarios:
+
+| Severidade | Falha | Estado |
+|---|---|---|
+| P0 | `LoadResDataEx` tratava retorno como `AEEResult` e ignorava capacidade do buffer | corrigido contra `AEEIShell.h` |
+| P0 | vtable `IBitmap` de 64 bytes era reservada com 24 e sobrescrevia o proprio IDIB | corrigido |
+| P0 | `IFile::Write` fazia wrap de `position+nWant` e escrevia fora do `std::vector` host | corrigido com aritmetica 64-bit/quota |
+| P0 | BAR aceitava wrap da subtabela e `Extract` aceitava `BarEntry` publico fora do arquivo | corrigido |
+| P0 | metadata GL invalida produzia vetores menores que o backend lia | validacao de componentes/tipos/stride/count adicionada |
+| P0 | uploads GL, midia e gzip aceitavam tamanhos de varios GiB | quotas, produtos checados e falhas de alocacao contidas |
+| P0 | chamada guest aninhada no unzip/sort destruia contexto da chamada externa | usa preservacao integral |
+| P1 | `IThread::Release` podia liberar duas vezes e ignorava `AddRef` | refcount/lifetime reais |
+| P1 | callbacks de stream sobreviviam a `Cancel`/`Release` | ownership e cancelamento implementados |
+| P1 | notificacao de midia podia atingir objeto liberado/reutilizado | objeto+geracao validados antes do callback |
+| P1 | `.userdata`, savestate e SQLite podiam continuar gravando ao lado da ROM | legado virou import-only; destino sempre XDG |
+| P1 | `eglCreatePbufferSurface` e `eglGetColorBufferQUALCOMM` eram stubs | atributos/tamanho/RGB565 implementados |
+| P1 | nove classes widget recebiam o mesmo objeto singleton | factories entregam identidade por instancia |
+| P1 | slot 13 devolvia o mesmo bitmap vazio | superficies RGB565 independentes e arenas limitadas |
+| P1 | OwnerDraw dependia de timer e engolia toda excecao | passe independente, limitado a 60 Hz e log confiavel |
+
+Validacao apos as correcoes de core: **623 testes**, **621 passaram**, **2 foram
+pulados** por dependerem do corpus externo (`FufsCorpus` e `SarCorpus`). Nenhuma
+bateria de jogos foi usada.
+
+### Pendencias honestas encontradas pela mesma auditoria
+
+- `IDisplay::SetDestination` ainda guarda o bitmap, mas DrawText/DrawRect/BitBlt
+  ainda escrevem principalmente no framebuffer de tela; composicao offscreen nao
+  esta fechada.
+- Widgets ainda precisam ownership completo de fonte/modelo, destruicao recursiva,
+  tela raiz atual e pintura tipada de texto/imagem.
+- A ABI de `IDisplay::DrawText` diverge de `AECHAR=uint16` do SDK por causa de uma
+  observacao narrow em um titulo; precisa virar quirk reproduzivel, nao regra global.
+- Mirror/control server ainda le `Memory` de outra thread sem snapshot/lock e pode
+  bloquear shutdown em cliente ocioso.
+- Desserializadores de Mixer e log de texturas ainda precisam das mesmas quotas ja
+  aplicadas a Memory/File/Media.
+- `IFileMgr` agora possui todos os 21 slots e falha explicitamente nos oito ainda
+  nao implementados; ResolvePath/GetFreeSpaceEx continuam funcionais pendentes.
+- EGL pbuffer expoe memoria RGB565 correta, mas backend GL host ainda nao faz
+  readback automatico para esse buffer depois de cada draw.
 
 ## Ferramentas de Evidência e Limites da Análise
 
