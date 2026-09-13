@@ -3987,7 +3987,29 @@ int main(int argc, char** argv) {
     // For non-ABD titles (e.g. Zuma's Revenge, FIFA 09, Ridge Racer, Pac-Mania, Peggle),
     // AEEIID_GLES10 (0x0103d8dd) and AEEIID_GLES11 (0x0103d8ea) return
     // the real OpenGL ES 1.1 interface object (gles11_obj).
-    if (!is_abd_title && (req_cls == 0x0103d8dd || req_cls == 0x0103d8ea)) {
+    //
+    // CHAVE ZEEB_ABD_GLES_QI=1, e por que ela existe.
+    //
+    // AEEIID_GLES10 (0x0103d8dd) e AEEIID_GLES11 (0x0103d8ea) sao IIDs de
+    // INTERFACE, nao classes -- confirmado de forma independente nos dois
+    // emuladores de referencia: zeebx/src/machine.rs declara exatamente esses
+    // dois nomes com esses dois valores, e zeemu/brew/BrewEGL.cpp devolve o
+    // objeto GLES para os dois. Aqui eles ja devolvem o gles11_obj real para
+    // todo titulo EXCETO o abd.
+    //
+    // A guarda `!is_abd_title` NAO foi posta porque o abd regrediu. O commit
+    // b863d4f diz o contrario, com essas palavras: "...permitindo que
+    // Pac-Mania/Peggle e outros recebam IGLES11 real pelo QEGL" e "Validado:
+    // Pac-Mania 307200 pixels/9769 cores; ABD MANTIDO 307200 pixels/36 cores
+    // em JIT block". Ou seja: o abd ficou como estava, por precaucao, e nunca
+    // foi medida a hipotese de ele receber o GLES real.
+    //
+    // E ha motivo concreto para testar: o abd gira ~367 mil vezes por 34 s em
+    // quatro slots de um scaffold generico que responde 0 em tudo, incluindo
+    // o slot 33 ('consume-cmdlist'). Um objeto GLES REAL tem contrato, em vez
+    // de zeros. Ver o artigo, secao do abd, para o laco medido.
+    const bool abd_gles_qi = std::getenv("ZEEB_ABD_GLES_QI") != nullptr;
+    if ((!is_abd_title || abd_gles_qi) && (req_cls == 0x0103d8dd || req_cls == 0x0103d8ea)) {
       if (out_ptr_qi != 0) {
         cpu.GetMemory().Write32(out_ptr_qi, gles11_obj);
       }
