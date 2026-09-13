@@ -53,13 +53,25 @@ inline constexpr int32_t kAxisMax = 255;
 
 // UID de cada eixo, na palavra correspondente do AEEHIDPositionInfo.
 //
-// ATENCAO AO X. O hid_devices.original.cfg do console lista
-// `AXIS:X:0x0106C40C`, mas esse valor e o UID de um BOTAO -- e o mesmo que este
-// arquivo ja usa como kUidButtonNorth logo abaixo. Um eixo e um botao com o
+// O X VALE 0x0106C4D0, E AGORA ISSO E FONTE PRIMARIA, NAO INFERENCIA.
+//
+// O arquivo de configuracao do proprio console,
+// research/sources/zeemu/rootfs/sys/hid_devices.cfg, traz QUATRO entradas de
+// controle (Sony DualShock 4 CUH-ZCT2x e ZCT1x, Logitech Dual Action, Logitech
+// RumblePad2), de dois fabricantes diferentes, e TODAS AS QUATRO declaram a
+// mesma coisa:
+//
+//     AXIS:X:0x0106c4d0
+//     AXIS:Y:0x0106c4d1
+//     AXIS:Z:0x0106c4ce
+//     AXIS:RZ:0x0106c4cf
+//
+// Antes desta base usava 0x0106C40C no X, que e UID de BOTAO -- o mesmo valor
+// que este arquivo usa como kUidButtonNorth logo abaixo. Eixo e botao com o
 // mesmo UID nao podem coexistir: o jogo varre a tabela do GetAxesInfo
 // procurando UID de eixo, nao acha nenhum para o X e nunca guarda o campo dele.
-// O arquivo do console tem a troca espelhada (o BUTTON:3 dele vale 0x0106C4D0,
-// que e UID de eixo), entao o valor de eixo do X e 0x0106C4D0.
+// Esse argumento de colisao foi o que motivou a correcao; o arquivo do console
+// depois a confirmou, quatro vezes.
 inline constexpr int32_t kUidAxisX = 0x0106C4D0;
 inline constexpr int32_t kUidAxisY = 0x0106C4D1;
 inline constexpr int32_t kUidAxisZ = 0x0106C4CE;

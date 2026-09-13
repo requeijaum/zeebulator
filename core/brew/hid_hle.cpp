@@ -42,6 +42,30 @@ constexpr int32_t kUidDpadRight = 0x0106C401;
 constexpr int32_t kUidStartHome = 0x0106C402;
 constexpr int32_t kUidShoulderL = 0x0106C406;
 constexpr int32_t kUidShoulderR = 0x0106C408;
+// --- Os quatro botoes de face, e uma DUVIDA que fica registrada ------------
+//
+// O hid_devices.cfg do console (research/sources/zeemu/rootfs/sys/) atribui os
+// quatro UIDs em ordem crescente aos indices 0..3 do controle, identico nas
+// quatro entradas que ele tem (DualShock 4 ZCT2x e ZCT1x, Logitech Dual Action,
+// RumblePad2):
+//
+//     BUTTON:0:0x0106c40a   BUTTON:2:0x0106c40c
+//     BUTTON:1:0x0106c40b   BUTTON:3:0x0106c40d
+//
+// O SUL esta confirmado em 0x0106C40B por duas fontes independentes: o indice 1
+// do arquivo, e a medicao que o Kaio fez no zeebx com jogos reais ("com b1 no
+// 0x0106c40a, o sul chegava como 2"). Este projeto ja usava esse valor.
+//
+// OESTE/LESTE/NORTE NAO ESTAO MEDIDOS, e por isso NAO foram mexidos. Pela ordem
+// bruta de botao HID que Sony e Logitech compartilham (indice 0 = face
+// superior-esquerda, 1 = inferior, 2 = direita, 3 = superior), os UIDs 0x40c e
+// 0x40d cairiam em LESTE e NORTE -- o inverso do que esta escrito aqui. Isso e
+// deducao a partir da ordem de um controle de PC, nao medicao no aparelho, e
+// nesta base deducao nao troca valor: o proprio Kaio escreve que nao mediu b3 e
+// b4. Alem disso, a entrada do controle do Zeebo (VID:0x1EAA:PID:0x0135), que e
+// onde ele encontra a troca espelhada, NAO EXISTE na nossa copia do arquivo --
+// so ha Sony e Logitech. Fica anotado para ser resolvido com um titulo que
+// mostre na tela qual botao recebeu.
 constexpr int32_t kUidButtonWest = 0x0106C40A;
 constexpr int32_t kUidButtonSouth = 0x0106C40B;
 constexpr int32_t kUidButtonNorth = 0x0106C40C;

@@ -72,5 +72,76 @@ std::vector<uint32_t> ExtractMifClassIds(const uint8_t* data, size_t size);
 std::vector<MifString> ExtractMifStringPrefixes(const uint8_t* data, size_t size,
                                                size_t min_len = 3);
 
+// Uma secao do MIF: o arquivo e um indice de registros + uma lista de secoes.
+struct MifSection {
+  uint32_t offset;
+  uint32_t size;
+};
+
+// Recorta as secoes do MIF pela tabela de offsets do cabecalho.
+//
+// CABECALHO MEDIDO (62 dos 63 .mif do corpus debug_nand; o 63o, 11839.mif, nao
+// tem o magico -- esta cifrado, e recusado aqui):
+//
+//   0x00  u16  magico 0x0011
+//   0x02  u16  1
+//   0x04  u16  1
+//   0x06  u16  numero de entradas do indice
+//   0x08  u32  offset do indice
+//   0x0c  u32  tamanho do indice em bytes  (== entradas * 8)
+//   0x10  u32  offset da tabela de secoes
+//   0x14  u32  numero de secoes            (a tabela tem N+1 offsets)
+//   0x18  u32  offset da primeira secao
+//   0x1c  u32  tamanho total das secoes
+//
+// Como isto foi confirmado, e nao suposto: em todos os 62 arquivos com magico
+// valido o campo 0x0c bate exatamente com `u16(0x06) * 8`, o campo 0x18 bate
+// com o primeiro offset da tabela de secoes, e `u32(0x18) + u32(0x1c)` bate com
+// o tamanho do arquivo. Quatro invariantes independentes, 62/62.
+std::vector<MifSection> ExtractMifSections(const uint8_t* data, size_t size);
+
+// ClassIDs dos APPLETS que o modulo expoe (secoes de 20 bytes cuja 2a e 4a
+// palavra sao zero -- a mesma forma que o zeebx usa e que aqui foi
+// reconfirmada: 62 dos 63 .mif do corpus produzem exatamente um applet, e o
+// ClassID sai igual ao ja conhecido por outra fonte, p.ex. 274259 -> 0x01081970
+// (Action Hero 3D) e 274755 -> 0x01070798 (a Z-Wheel/TECTOY)).
+std::vector<uint32_t> ExtractMifAppletClassIds(const uint8_t* data, size_t size);
+
+// ClassIDs que este MIF fornece como MODULO DE EXTENSAO -- vazio para um MIF de
+// applet.
+//
+// MEDICAO (corpus debug_nand inteiro, 63 arquivos):
+//
+//  1. Ha um registro de 8 bytes {u32 ClassID, u32 flags=0} em varios .mif. Ele
+//     e uma secao inteira, nunca apontada pelo indice.
+//  2. Esse registro NAO distingue sozinho fornecedor de cliente: o a3d.mif
+//     (274259, um jogo) tem {0x010292c3, 0} e o 12875.mif tem {0x010292c3, 0}
+//     tambem. O primeiro PEDE a classe em execucao (medido: ISHELL_CreateInstance
+//     (0x010292c3) e o dbgprintf "IMICRO3D failed creation" logo depois); o
+//     segundo e a pasta que traz o imicro3d.mod que a implementa.
+//  3. O que separa os dois casos e o registro de applet: 12875.mif e o UNICO
+//     .mif do corpus SEM registro de applet (62 tem exatamente um; ele tem
+//     zero). E exatamente o que o BREW espera de um MIF de extensao -- um modulo
+//     que so exporta classes, sem nada para lancar no menu.
+//
+// Daí a regra implementada: sem applet => os registros de 8 bytes sao as classes
+// FORNECIDAS; com applet => sao dependencias (classes pedidas), e esta funcao
+// devolve vazio.
+//
+// LIMITE HONESTO: o corpus tem UMA extensao so (12875/imicro3d), entao a regra
+// tem um positivo e 62 negativos. Ela nao foi validada contra um segundo
+// fornecedor porque nao existe nenhum aqui -- as outras dependencias que
+// aparecem no corpus (0x0103081d, 0x0101e4e1, 0x01077cf4) nao tem .mif
+// correspondente na NAND, ou seja, sao classes da propria firmware. Por isso o
+// carregador de extensao (core/brew/extension_module.h) nao confia so nesta
+// regra: ele AINDA verifica, chamando o IModule::CreateInstance do .mod de
+// verdade, se o modulo aceita a classe.
+//
+// Filtro dos falsos positivos: uma string UTF-16 de 8 bytes tambem forma uma
+// secao de 8 bytes (p.ex. "1.0" grava ff fe 31 00 2e 00 30 00, que lido como
+// registro daria ClassID 0x0031feff). Exigir flags==0 e ClassID em faixa
+// plausivel descarta todas elas -- medido: 8 secoes assim no corpus, todas
+// recusadas, nenhum ClassID real perdido.
+std::vector<uint32_t> ExtractMifExtensionClassIds(const uint8_t* data, size_t size);
 
 }  // namespace zeebulator
