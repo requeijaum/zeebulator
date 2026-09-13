@@ -474,6 +474,24 @@ não foi refutada; o que não se sustenta é a evidência específica de "laço 
 Diferença provável: o repro daquele documento usa `ZEEB_MAX_STEPS=3000000`, e um
 orçamento apertado aborta numa fase diferente da callback.
 
+**O nó preso é reproduzível — e continua idêntico cinco semanas depois.** O doc de
+01/09 deixou o nó `0x80320a9c` como âncora. Lido hoje pelo canal de controle:
+
+```text
++0x00: 803009fc    +0x04: 80320cb4    +0x08: 00000012
++0x0c: 0000002f    +0x10: 0000000e    +0x14: 80320ab4
+```
+
+É **byte a byte** o que aquele documento registrou (`[r0]=803009fc [r0+4]=80320cb4
+[r0+8]=00000012 [r0+c]=0000002f [r0+10]=0000000e [r0+14]=80320ab4`). Três campos de
+ponteiro e três contadores; `+0x08` = 18 é o número de filhos. A estrutura é
+estável, então o defeito está em **quem a populou**, não em variação de execução.
+
+**Dado novo:** no instante da leitura o jogo está em **tick 601 com
+`running: true`** — ele **não congela**. Continua rodando e chamando o HLE; o que
+ele não faz é desenhar. Isso separa "travou" de "parou de produzir quadro", que são
+sintomas diferentes e estavam sendo tratados como um só.
+
 **O scaffold não é a causa — e isso foi testado, não suposto.** Os slots quentes
 pertencem ao objeto devolvido pelo `QueryInterface` do QEGL para os IIDs
 `0x0103d8dd` e `0x0103d8ea`. Os dois emuladores de referência os identificam:
