@@ -768,6 +768,16 @@ constexpr uint32_t kHidUidDPadLeft = 0x0106c3ff;
 constexpr uint32_t kHidUidDPadDown = 0x0106c400;
 constexpr uint32_t kHidUidDPadRight = 0x0106c401;
 constexpr uint32_t kHidUidBack = 0x0106c403;  // confirmed real: the title-progression button
+// O HOME do Z-Pad. Ele EXISTE no aparelho -- esta na lista kHidButtonUids logo
+// abaixo, no indice 11 -- e o Zeebo Developer Guide, secao 6.1, o descreve:
+// "1 home button -- when pressed for more than 3 seconds, will redirect the user
+// to a confirmation screen". O que faltava nao era o UID: era um NOME para
+// alcanca-lo pelo canal de controle e pelo teclado.
+//
+// Medido no Double Dragon: ele desenha "APERTE O BOTAO HOME" e fica esperando.
+// Sem nome, o canal respondia "bad button" e nao havia como atender o pedido do
+// proprio jogo.
+constexpr uint32_t kHidUidStartHome = 0x0106c402;
 constexpr uint32_t kHidUidLeftShoulderUpper = 0x0106c406;
 constexpr uint32_t kHidUidRightShoulderUpper = 0x0106c408;
 constexpr uint32_t kHidUidButton1 = 0x0106c40a;
@@ -3253,9 +3263,66 @@ int main(int argc, char** argv) {
     }
     core.SetRegister(zeebulator::kR0, 0);
   };
-  uint32_t font_obj = zeebulator::BuildInterfaceObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x8007B000, /*object=*/0x8007C000, font_methods);
-  shell_hle.RegisterInstance(/*AEECLSID_ROLLER_FONT=*/0x0102f67c, font_obj);
+  //
+  // A FAMILIA INTEIRA de fontes padrao do Brew MP, de fonte primaria.
+  //
+  // `platform/system/inc/AEEFontsStandard.BID` lista as onze e da a metrica de
+  // cada uma. O que estava registrado aqui como "AEECLSID_ROLLER_FONT" e, no
+  // arquivo da Qualcomm, `AEECLSID_FONT_STANDARD18B` -- uma fonte padrao do
+  // Brew MP, nao uma classe da roda. E o Double Dragon pede QUATRO delas
+  // (STANDARD11, 15, 18 e 36) e so recebia a 18B: as outras tres iam para
+  // ECLASSNOTSUPPORT.
+  //
+  //   STANDARD11  0x0102f679  Ascent 13  Descent 3
+  //   STANDARD11B 0x0102f67a  Ascent 13  Descent 3   (negrito)
+  //   STANDARD15  0x01030852  Ascent 15  Descent 3     <- aparecia como ID misterioso
+  //   STANDARD15B 0x01030853  Ascent 15  Descent 3   (negrito)
+  //   STANDARD18  0x0102f67b  Ascent 17  Descent 4
+  //   STANDARD18B 0x0102f67c  Ascent 17  Descent 4   (negrito)
+  //   STANDARD23  0x0102f67d  Ascent 21  Descent 5
+  //   STANDARD23B 0x0102f67e  Ascent 21  Descent 5   (negrito)
+  //   STANDARD26  0x0102f67f  Ascent 23  Descent 6
+  //   STANDARD26B 0x0102f680  Ascent 23  Descent 6   (negrito)
+  //   STANDARD36  0x0102f681  Ascent 38  Descent 10
+  //
+  // Cada classe ganha objeto proprio com a METRICA dela, porque a altura de
+  // linha muda por fonte e um titulo que mede texto precisa do numero certo. A
+  // largura continua 640, que e a da tela: nao temos as metricas de glifo por
+  // caractere, e chutar uma largura menor seria pior que dizer a largura da
+  // tela (ver o comentario do GetTextExtent logo acima).
+  uint32_t font_obj = 0;
+  {
+    // 0x8007B000..: um vtable por classe, para as metricas nao serem
+    // compartilhadas entre fontes de alturas diferentes.
+    const struct { uint32_t cls; int ascent; int descent; } kFontes[] = {
+        {0x0102f679u, 13, 3},  {0x0102f67au, 13, 3},  {0x01030852u, 15, 3},
+        {0x01030853u, 15, 3},  {0x0102f67bu, 17, 4},  {0x0102f67cu, 17, 4},
+        {0x0102f67du, 21, 5},  {0x0102f67eu, 21, 5},  {0x0102f67fu, 23, 6},
+        {0x0102f680u, 23, 6},  {0x0102f681u, 38, 10},
+    };
+    uint32_t vt = 0x8007B000;
+    uint32_t ob = 0x8007C000;
+    for (const auto& f : kFontes) {
+      std::vector<zeebulator::HleRuntime::HleFunction> fm(
+          16, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+      const int altura = f.ascent + f.descent;
+      fm[4] = [&cpu, altura](zeebulator::IArmCore& core) {
+        uint32_t out = core.GetRegister(zeebulator::kR1);
+        if (out != 0) {
+          cpu.GetMemory().Write16(out, 640);
+          cpu.GetMemory().Write16(out + 2, static_cast<uint16_t>(altura));
+        }
+        core.SetRegister(zeebulator::kR0, 0);
+      };
+      const uint32_t o = zeebulator::BuildInterfaceObject(cpu.GetMemory(), hle, vt, ob, fm);
+      shell_hle.RegisterInstance(f.cls, o);
+      // A 18B (0x0102f67c) e a que o Typeface devolve em CriarFonte, e a que o
+      // codigo anterior chamava de fonte do roller -- mantida como a principal.
+      if (f.cls == 0x0102f67cu) font_obj = o;
+      vt += 0x1000;
+      ob += 0x1000;
+    }
+  }
 
   // Typeface TrueType (vtable 0x80079000 / object 0x8007A000):
   // Slot 4: CriarFonte(ITypeface*, const char *face, int size, int style, IFont **ppFont)
@@ -6042,6 +6109,18 @@ int main(int argc, char** argv) {
     if (n == "button4") return kHidUidButton4;
     if (n == "lshoulder") return kHidUidLeftShoulderUpper;
     if (n == "rshoulder") return kHidUidRightShoulderUpper;
+    // HOME e START faltavam, e a falta tinha consequencia REAL: o Double Dragon
+    // desenha "APERTE O BOTAO HOME" na tela e fica esperando. Sem nome para o
+    // botao, o canal de controle respondia "bad button" e nao havia como
+    // atender o pedido do proprio jogo -- nem por teclado, porque o
+    // SdlKeyToAvk tambem nao mapeia nada para HOME.
+    //
+    // No Z-Pad do aparelho o HOME existe: o Zeebo Developer Guide, secao 6.1,
+    // descreve "1 home button -- when pressed for more than 3 seconds, will
+    // redirect the user to a confirmation screen". Este projeto ja tem o UID
+    // (kHidUidStartHome, 0x0106C402, lido da entrada do controle no
+    // hid_devices.original.cfg); o que faltava era alcanca-lo.
+    if (n == "home" || n == "start") return kHidUidStartHome;
     return 0;
   };
   bool control_wants_quit = false;
