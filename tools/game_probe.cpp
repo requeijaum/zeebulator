@@ -2284,6 +2284,38 @@ int main(int argc, char** argv) {
 
   std::vector<zeebulator::HleRuntime::HleFunction> device_bitmap_methods(
       20, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // Slots 0/1: AddRef/Release REAIS do bitmap do dispositivo.
+  //
+  // Existem para MEDIR, nao por enfeite. O SDK da Qualcomm prova, no proprio
+  // codigo dele (utgifviewer.c, UTest_Enter), que quem chama GetDestination e
+  // GetDeviceBitmap RECEBE uma referencia e a solta:
+  //
+  //     pib = IDISPLAY_GetDestination(me->piDisplay);
+  //     IBITMAP_GetInfo(pib, &biDevice, sizeof(biDevice));
+  //     IBITMAP_Release(pib);              // sem AddRef nenhum no meio
+  //
+  // Se as nossas duas funcoes devolvem o ponteiro sem AddRef, cada chamada
+  // dessas tira uma referencia que ninguem pos. Com o contador aqui, isso deixa
+  // de ser argumento e vira numero: basta ver se ele fica NEGATIVO.
+  //
+  // ZEEB_LOG_BMPREF=1 imprime cada movimento. O objeto nao e destruido em zero
+  // -- o endereco dele e fixo (0x8000F000), nao vem de lista de livres -- entao
+  // o contador e instrumento, e nao politica de vida.
+  auto device_bitmap_refs = std::make_shared<int32_t>(1);
+  const bool log_bmpref = std::getenv("ZEEB_LOG_BMPREF") != nullptr;
+  device_bitmap_methods[0] = [device_bitmap_refs, log_bmpref](zeebulator::IArmCore& core) {
+    const int32_t n = ++(*device_bitmap_refs);
+    if (log_bmpref) std::fprintf(stderr, "[bmpref] AddRef  -> %d\n", n);
+    core.SetRegister(zeebulator::kR0, static_cast<uint32_t>(n));
+  };
+  device_bitmap_methods[1] = [device_bitmap_refs, log_bmpref](zeebulator::IArmCore& core) {
+    const int32_t n = --(*device_bitmap_refs);
+    if (log_bmpref) {
+      std::fprintf(stderr, "[bmpref] Release -> %d%s\n", n,
+                   n < 0 ? "   <<< NEGATIVO: solta referencia que ninguem pos" : "");
+    }
+    core.SetRegister(zeebulator::kR0, static_cast<uint32_t>(n < 0 ? 0 : n));
+  };
   // Slot 2: QueryInterface(IBitmap*, AEECLSID cls, void **ppo)
   device_bitmap_methods[2] = [&cpu, unknown_0x01001045_obj](zeebulator::IArmCore& core) {
     uint32_t requested_cls = core.GetRegister(zeebulator::kR1);

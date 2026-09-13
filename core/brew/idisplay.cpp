@@ -294,6 +294,9 @@ void IDisplayHle::GetDeviceBitmap(IArmCore& core) {
   // a real (if generic) interface object, not a null/unset pointer.
   uint32_t pp_bitmap = core.GetRegister(kR1);
   core.GetMemory().Write32(pp_bitmap, device_bitmap_ptr_);
+  // Mesma posse do GetDestination: o chamador recebe uma referencia e a solta.
+  // Ver AddRefReturnedBitmap para a prova no codigo do SDK e a medicao.
+  AddRefReturnedBitmap(core, device_bitmap_ptr_);
   core.SetRegister(kR0, 0);  // AEE_SUCCESS
 }
 
@@ -310,10 +313,53 @@ void IDisplayHle::SetDestination(IArmCore& core) {
   core.SetRegister(kR0, 0);  // AEE_SUCCESS
 }
 
+void IDisplayHle::AddRefReturnedBitmap(IArmCore& core, uint32_t bitmap_ptr) {
+  // GetDestination e GetDeviceBitmap entregam uma referencia QUE O CHAMADOR
+  // POSSUI. Isto nao e inferencia: esta no codigo do proprio SDK da Qualcomm,
+  // em platform/media/imagedecoders/src/utgifviewer/src/utgifviewer.c,
+  // UTest_Enter -- as duas funcoes, uma em seguida da outra, e um Release para
+  // cada, sem AddRef nenhum no meio:
+  //
+  //     pib = IDISPLAY_GetDestination(me->piDisplay);
+  //     (void)IBITMAP_GetInfo(pib, &biDevice, sizeof(biDevice));
+  //     IBITMAP_Release(pib);
+  //
+  //     (void)IDisplay_GetDeviceBitmap(GETDISPLAY(me), &pib);
+  //     (void)IBitmap_GetInfo(pib, &biDevice, sizeof(biDevice));
+  //     IBITMAP_Release(pib);
+  //
+  // Devolver sem AddRef faz cada chamada dessas TIRAR uma referencia que
+  // ninguem pos. MEDIDO aqui, na Z-Wheel, com um contador real instalado no
+  // bitmap do dispositivo (ZEEB_LOG_BMPREF): 82 movimentos em 24 s, TODOS
+  // Release, nenhum AddRef, contador terminando em -81. Num emulador que
+  // destrua o objeto em zero, o bitmap da tela morre na segunda chamada.
+  //
+  // O AddRef e feito chamando o slot 0 DO PROPRIO OBJETO, e nao mexendo num
+  // contador nosso, porque o destino nem sempre e o bitmap do dispositivo: o
+  // SetDestination aceita IBitmap implementado pelo applet, e nesse caso quem
+  // sabe contar e o applet. Vale a regra de reentrancia do projeto -- callback
+  // para o convidado dentro de trap de HLE usa
+  // CallArmFunctionPreservingContext.
+  // Chave de bisseccao: ZEEB_NO_BITMAP_ADDREF=1 volta ao comportamento antigo
+  // (devolver sem AddRef). Existe para que o efeito visual desta correcao seja
+  // medido em A/B com o MESMO binario, e nao comparado contra captura velha de
+  // outro commit e de outro metodo -- nesta base ja ficou provado que captura
+  // so de janela mente por titulo.
+  static const bool sem_addref = std::getenv("ZEEB_NO_BITMAP_ADDREF") != nullptr;
+  if (sem_addref) return;
+  if (bitmap_ptr == 0 || hle_ == nullptr) return;
+  const uint32_t vtable = core.GetMemory().Read32(bitmap_ptr);
+  if (vtable == 0) return;
+  const uint32_t addref = core.GetMemory().Read32(vtable);  // slot 0 = AddRef
+  if (addref == 0) return;
+  hle_->CallArmFunctionPreservingContext(addref, bitmap_ptr);
+}
+
 void IDisplayHle::GetDestination(IArmCore& core) {
   // IBitmap* GetDestination(IDisplay *pIDisplay)
   // Returns the current destination bitmap; falls back to device bitmap.
   uint32_t dst = destination_ptr_ ? destination_ptr_ : device_bitmap_ptr_;
+  AddRefReturnedBitmap(core, dst);
   core.SetRegister(kR0, dst);
 }
 

@@ -233,6 +233,9 @@ class IDisplayHle {
   void BitBlt(IArmCore& core);
   void SetDestination(IArmCore& core);
   void GetDestination(IArmCore& core);
+  // Chama o AddRef do proprio objeto entregue. Ver o .cpp para a prova
+  // no codigo do SDK e a medicao que a confirma na Z-Wheel.
+  void AddRefReturnedBitmap(IArmCore& core, uint32_t bitmap_ptr);
   void IsEnabled(IArmCore& core);
   void GetDeviceBitmap(IArmCore& core);
   void CreateDIBitmap(IArmCore& core);

@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include "core/brew/interface_object.h"
 #include "core/brew/hle_runtime.h"
 #include "core/brew/idisplay.h"
 #include "core/brew/ishell.h"
@@ -1019,4 +1020,77 @@ TEST(IDisplayHle, ObjectAddressPointsAtVtable) {
   EXPECT_EQ(obj, kObjectAddr);
   EXPECT_EQ(cpu.GetMemory().Read32(kObjectAddr), kVtableAddr)
       << "object header's first word must point at the vtable";
+}
+
+// --- Posse do bitmap devolvido por GetDestination/GetDeviceBitmap ------------
+//
+// O codigo do proprio SDK da Qualcomm (utgifviewer.c, UTest_Enter) chama as
+// duas funcoes e da IBITMAP_Release em cada resultado, sem AddRef nenhum no
+// meio. Logo quem chama RECEBE uma referencia. Devolver sem AddRef faz cada
+// chamada tirar uma referencia que ninguem pos -- medido na Z-Wheel com um
+// contador real no bitmap do dispositivo: 82 movimentos, todos Release,
+// contador terminando em -81.
+//
+// Estes testes seguram a correcao no lugar. Eles contam quantas vezes o slot 0
+// (AddRef) do objeto devolvido e realmente chamado.
+namespace {
+
+// Monta um IBitmap falso cujo AddRef incrementa um contador visivel ao teste.
+struct BitmapEspiao {
+  static constexpr uint32_t kVtable = 0x80050000;
+  static constexpr uint32_t kObject = 0x80051000;
+  int addrefs = 0;
+
+  void Instalar(zeebulator::Memory& memory, zeebulator::HleRuntime& hle) {
+    std::vector<zeebulator::HleRuntime::HleFunction> slots(
+        20, [](zeebulator::IArmCore& c) { c.SetRegister(zeebulator::kR0, 0); });
+    slots[0] = [this](zeebulator::IArmCore& c) {
+      ++addrefs;
+      c.SetRegister(zeebulator::kR0, static_cast<uint32_t>(addrefs));
+    };
+    zeebulator::BuildInterfaceObject(memory, hle, kVtable, kObject, slots);
+  }
+};
+
+}  // namespace
+
+TEST(IDisplayHle, GetDestinationAddRefsTheBitmapItHandsBack) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x10000);
+  TestBackend backend;
+  IDisplayHle display(backend, 8, 4);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, 0x80002000, 0x80003000);
+
+  BitmapEspiao espiao;
+  espiao.Instalar(cpu.GetMemory(), hle);
+  display.SetDeviceBitmapInstance(BitmapEspiao::kObject);
+
+  const uint32_t slot_get_destination =
+      cpu.GetMemory().Read32(0x80002000 + 15 * 4);
+  hle.CallArmFunction(slot_get_destination, display_obj);
+
+  EXPECT_EQ(espiao.addrefs, 1)
+      << "GetDestination devolveu o bitmap sem AddRef: quem chamar vai dar "
+         "Release numa referencia que ninguem pos";
+}
+
+TEST(IDisplayHle, GetDeviceBitmapAddRefsTheBitmapItHandsBack) {
+  ArmInterpreter cpu;
+  HleRuntime hle(cpu, 0xF0000000, 0x10000);
+  TestBackend backend;
+  IDisplayHle display(backend, 8, 4);
+  uint32_t display_obj = display.Build(cpu.GetMemory(), hle, 0x80002000, 0x80003000);
+
+  BitmapEspiao espiao;
+  espiao.Instalar(cpu.GetMemory(), hle);
+  display.SetDeviceBitmapInstance(BitmapEspiao::kObject);
+
+  // Slot 16 = GetDeviceBitmap, logo depois do GetDestination (15).
+  const uint32_t slot_get_device_bitmap =
+      cpu.GetMemory().Read32(0x80002000 + 16 * 4);
+  constexpr uint32_t kOut = 0x00090000;
+  hle.CallArmFunction(slot_get_device_bitmap, display_obj, kOut);
+
+  EXPECT_EQ(cpu.GetMemory().Read32(kOut), BitmapEspiao::kObject);
+  EXPECT_EQ(espiao.addrefs, 1) << "GetDeviceBitmap devolveu o bitmap sem AddRef";
 }
