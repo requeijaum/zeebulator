@@ -388,6 +388,86 @@ Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
 - **`torkandkral`**: 452 → 2 nos dois métodos. Não renderiza. Regressão mais
   profunda, ainda sem causa isolada.
 
+### `abd`: o travamento da animação, com o laço localizado
+
+Fecha o diagnóstico deixado em aberto acima ("duas regressões"): a de `abd` **não
+era regressão**, e o que existe de real é um travamento com mecanismo medido.
+
+**Onde param.** A animação da intro vai de 37 → **7.910** cores, cai para **2** e
+congela em **1.957**. No log, dois eventos:
+
+```text
+warning: exceeded 64000000 steps without returning -- aborting this call
+timer callback did not complete trustworthily (wandered=0 exceeded=1)
+```
+
+Logo antes deles, o próprio convidado imprime `build menu 7-2`,
+`Sources\VM_menugame.c:772` e `build menu end` — ou seja, **o jogo termina de
+construir o menu e só então estoura**.
+
+**Onde ele gira** (`ZEEB_SPIN_PROFILE=1`):
+
+```text
+pc=0x00105dc8 off=0x00005dc8 hits=1114
+pc=0x0011535c..0x00115384      hits=1110   (sequência de PCs)
+pc=0x00115aa0                  hits=1110
+pc=0x001156d4                  hits=1110   (último BL antes do giro)
+loop PC span: 0x00105510-0xf0001bf0, distinct=226
+```
+
+O topo da faixa é um **endereço de trap** (`0xf0001bf0`), então o laço atravessa o
+HLE. Nomeando os traps (`ZEEB_LOG_BREW=1`) e contando por 34 s:
+
+| índice | slot | rótulo | chamadas |
+|---|---|---|---|
+| 1788 | 107 | `DrawGeometry` | **367.133** |
+| 1735 | 54 | `wall-cycle-slot54` | 367.132 |
+| 1714 | 33 | `SelectTexture/consume-cmdlist` | 366.848 |
+| 1781 | 100 | `wall-cycle-slot100` | 366.834 |
+
+Quatro slots em lockstep, ~367 mil vezes cada em 34 s — cerca de **10.800
+chamadas por segundo**. É este laço que estoura o orçamento.
+
+**O laço é uma lista circular.** O slot 33 recebe um cursor em `r2`. Sequência
+medida (`ZEEB_WALL_DUMP=1`):
+
+```text
+call#5:  0x80323f84
+call#6:  0x80364430
+call#7:  0x80310a7c
+call#17: 0x80323f84   <- repete
+call#18: 0x80364430   <- repete
+call#19: 0x80310a7c   <- repete
+```
+
+**Três nós, repetindo para sempre.** A varredura do descritor (`cursor - 0x30`)
+acha o link de sucessor em `desc+0x00` e `desc+0x2c`, ambos apontando para
+`0x80310a7c`.
+
+**O que isso significa.** O scaffold responde 0 em tudo e **nunca consome nem
+avança o cursor** — o slot se chama `consume-cmdlist` e não consome nada. A
+pergunta em aberto é se o aparelho real marca o fim da lista de um jeito que não
+estamos honrando, ou se o consumo é que faz o jogo sair. **Não foi mexido**: mudar
+o retorno deste slot no escuro é exatamente o tipo de palpite que esta base
+proíbe, e o laço é circular, então devolver o sucessor não o encerraria sozinho.
+
+**Aumentar o orçamento não resolve.** Medido com `ZEEB_MAX_STEPS=1000000000`:
+zera as mensagens de estouro e deixa a tela em **2 cores de vez** (de t=28 até
+t=52). Ou seja, o orçamento muda o sintoma sem consertar a causa.
+
+**A fonte está correta.** No primeiro quadro (`LOADING...`) as 7 letras L-O-A-D-I-N-G
+foram lidas glifo a glifo, sem substituto:
+
+| letra | forma medida (arte ASCII dos pixels) |
+|---|---|
+| `L` | barra vertical à esquerda + base horizontal |
+| `O` | laço fechado |
+| `A` | laço com barra horizontal no meio |
+| `D` | barra vertical à esquerda + laço à direita |
+| `I` | barra vertical + barras em cima e embaixo |
+| `N` | barra vertical + diagonal |
+| `G` | laço em cima + curva embaixo à esquerda |
+
 ### A causa dominante dos mortos é nossa, não dos jogos
 
 **Dos 15 mortos acumulados nas passagens, 11 eram ClsId errado** — o próprio despacho
