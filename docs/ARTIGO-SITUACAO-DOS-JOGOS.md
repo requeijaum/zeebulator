@@ -13,6 +13,52 @@ arquivo; onde nao houver evidencia, o texto diz que nao ha.
 
 ## Metodo
 
+- **O CONTADOR DE "WANDER" NÃO É COMPARÁVEL ENTRE INTERPRETADOR E JIT.** Descoberto
+  ao auditar a própria medição A/B desta sessão, e é um defeito de instrumento — o
+  quinto desta base. A checagem de "o PC saiu do módulo" fica no **topo** do laço de
+  execução, ou seja **uma vez por iteração**:
+
+  ```cpp
+  for (; cpu.GetRegister(kPC) != trap_base; ++steps) {
+    ... checagem de wander ...
+    if (jit_block_mode) { retired = cpu.Run(...); steps += retired - 1; }  // ate 4096
+    else                { cpu.Step(); }                                    // 1
+  }
+  ```
+
+  No interpretador cada iteração é **uma instrução**; no JIT por bloco, até **4096**.
+  Uma excursão curta para fora do módulo pode começar e terminar **dentro do mesmo
+  bloco** e nunca ser observada.
+
+  Consequência direta: a tabela A/B abaixo mostra o wander caindo a zero no JIT em
+  5 de 10 títulos, e **isso não prova que a excursão parou** — prova que o
+  instrumento amostrou menos. A comparação de *ticks* e *draws* continua válida
+  (vêm dos contadores de desenho, não do laço de execução); a de *wander*, não.
+
+  Isso também enfraquece o argumento contra o doc de 01/09 na seção do abd: a
+  divergência sobre "laço sem trap" pode ser diferença de amostragem, não de
+  comportamento. O que sustenta o que está escrito lá é o **tick congelado** (58 por
+  120 s no interpretador), que é evidência independente e não depende disso.
+
+  Tabela A/B medida (10 títulos, 22 s cada, serial, mesmo binário):
+
+  | título | interpretador (tick/draws/wander) | JIT |
+  |---|---|---|
+  | chessbots | 139 / 957 / 1 | 138 / 957 / 0 |
+  | cnk2 | 622 / 183 / 0 | 974 / 326 / 0 |
+  | a3d | 501 / 1519 / 1084 | 792 / 2434 / 0 |
+  | quake | 108 / 216 / 2 | 108 / 216 / 0 |
+  | nfs | 396 / 1157 / 0 | 396 / 1157 / 0 |
+  | zenonia | 58 / 175 / 1 | 232 / 523 / 0 |
+  | zeebotennis | 102 / 82 / 0 | 102 / 82 / 0 |
+  | zeebovolley | 0 / 0 / 0 | 0 / 0 / 0 |
+  | abd | 375 / 0 / 0 | 375 / 0 / 0 |
+  | funsoccer | 0 / 0 / 3 | 0 / 0 / 0 |
+
+  Leitura válida da tabela: **ticks e draws** mostram ganho real em `cnk2`
+  (+57%/+78%), `a3d` (+58%/+60%) e `zenonia` (58 → 232, de travado para andando), e
+  **nenhuma diferença** em `nfs`, `zeebotennis` e `abd`. A coluna de wander não
+  sustenta conclusão.
 - **RESSALVA IMPORTANTE (medida em 2026-09-13): o censo deste documento foi
   medido no INTERPRETADOR.** O `ZEEB_CPU=jit` era opt-in e o harness nao o pedia.
   Medido no zenonia: com JIT sao 486-725 ticks em 34-50 s e zero wander; sem JIT,
