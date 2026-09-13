@@ -5534,7 +5534,9 @@ int main(int argc, char** argv) {
   if (const char* tr = std::getenv("ZEEB_TRACE")) {
     uint32_t lo = 0, hi = 0;
     uint64_t limit = 100000;
-    std::string path = "zeeb_trace.log";
+    // Mesmo motivo do ZEEB_WWATCH abaixo: caminho relativo cai na pasta do
+    // titulo, na midia do usuario. Ver o comentario la para a medicao.
+    std::string path = "/tmp/zeeb_trace.log";
     // Format: lo-hi[,limit][,path]  (lo/hi hex or dec via strtoul base 0)
     const char* p = tr;
     lo = static_cast<uint32_t>(std::strtoul(p, const_cast<char**>(&p), 0));
@@ -5556,7 +5558,16 @@ int main(int argc, char** argv) {
   if (const char* ww = std::getenv("ZEEB_WWATCH")) {
     uint32_t addr = 0;
     uint32_t len = 4;
-    std::string path = "zeeb_wwatch.log";
+    // Caminho ABSOLUTO por padrao. Antes era relativo ("zeeb_wwatch.log"), e
+    // um caminho relativo cai no diretorio de trabalho -- que nas execucoes de
+    // jogo e a PROPRIA PASTA DO TITULO, na midia do usuario. Medido em
+    // 2026-09-13: uma sessao de depuracao do abd escreveu
+    // `debug_nand/mod/279369/zeeb_wwatch.log` sem que ninguem pedisse. A regra
+    // desta base e nao escrever na midia do titulo, e um default nao pode
+    // burlar a regra so porque e "so um log". /tmp e o lugar de descarte
+    // enquanto /tmp nao estiver cheio; quem quiser outro caminho passa o
+    // terceiro campo (ZEEB_WWATCH=addr[,len][,path]).
+    std::string path = "/tmp/zeeb_wwatch.log";
     const char* p = ww;
     addr = static_cast<uint32_t>(std::strtoul(p, const_cast<char**>(&p), 0));
     if (*p == ',') { len = static_cast<uint32_t>(std::strtoul(p + 1, const_cast<char**>(&p), 0)); }
