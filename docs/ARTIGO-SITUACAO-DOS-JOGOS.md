@@ -237,6 +237,42 @@ saíram daí: o log de argv e ambiente, e `[gui] RECUSADO: ...` no stderr.
 emulador. Registro porque o padrão se repete: quando uma medição contradiz a
 expectativa, o instrumento é o primeiro suspeito.
 
+### Desempenho: a conversão do readback era o gargalo, e não a leitura do quadro
+
+A pendência no roadmap dizia "suspeitos: `glReadPixels` por quadro (640×330 RGBA
+= 845 KB) e 211.200 `Memory::Write16`". Instrumentei os dois **separadamente**
+antes de mexer em qualquer um (`ZEEB_PROF_READBACK=1`):
+
+```text
+[prof] 90 leituras: glReadPixels=31286 us  conversao=187227 us  (86% na conversao)
+```
+
+O `glReadPixels` ficava com 14%. O custo não era ler o quadro do host: era gravar
+211.200 halfwords na memória do convidado, e não pelo cálculo de cor — que é
+trivial — mas por um `unordered_map` e **duas chamadas de hook por pixel**.
+
+`Memory::WriteBlock16` faz **um** lookup por trecho contíguo, gravando direto no
+buffer da página. A memória do convidado é esparsa por página de 4 KiB, então um
+bloco atravessa quantas páginas quiser. No laço quente, a conversão passa a ser
+feita por linha e a linha inteira vai numa gravação: **330 gravações por quadro
+em vez de 211.200**. A fórmula de conversão não foi tocada, de propósito: não era
+o gargalo, e mexer nela mudaria cor sem ganho.
+
+| | antes | depois |
+|---|---|---|
+| FPS médio | 16,31 | **33,38** |
+| FPS mínimo | 4,7 | 31,0 |
+| custo da conversão | 86% | 17–21% |
+| total por leitura | ~2123 µs | ~1331 µs |
+
+**Correção, não "parece igual"**: a captura de tela é idêntica antes e depois —
+275 cores, com o top-3 nas mesmas contagens (105840, 48196, 45241 contra 45227; a
+diferença de 14 px é o contador de FPS desenhando outro número).
+
+Os hooks continuam sendo chamados, uma vez por trecho e com o comprimento: a
+checagem de watchpoint testa **sobreposição de faixa**, então uma chamada com o
+trecho inteiro acerta os mesmos watchpoints e reduz o spam do log.
+
 ### O que o `zeebx` deu de útil mesmo sem transferir
 
 Em nenhum dos casos o trabalho foi perdido, porque o valor dele está em apontar
