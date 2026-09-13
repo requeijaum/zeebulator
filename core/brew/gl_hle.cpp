@@ -510,6 +510,49 @@ bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surfac
   // chave a hipotese nao pode ser testada A/B.
   if (std::getenv("ZEEB_NO_COLORBUF_READBACK") != nullptr) return false;
   if (surface.color_buffer == 0 || surface.width <= 0 || surface.height <= 0) return false;
+  // Nao reconverter quando nada mudou no host.
+  //
+  // O conteudo do color buffer so depende do que o GL do host desenhou. Se
+  // nenhum comando que mexe no framebuffer rodou desde a ultima leitura, o
+  // resultado seria identico -- e o custo (glReadPixels + 211.200 pixels de
+  // conversao, antes de WriteBlock16) nao se paga.
+  //
+  // A medida de atividade usa os contadores que JA existiam (DrawStats), em vez
+  // de um sinal novo: draw_arrays, clear, tex_image e swap. swap entra porque
+  // uma troca de buffers muda o que esta no destino.
+  //
+  // Chave de bisseccao ZEEB_NO_READBACK_SKIP=1 desliga o pulo, para que o ganho
+  // seja medido em A/B com o mesmo binario.
+  const DrawStats& stats = DrawStats::Instance();
+  const uint64_t atividade = stats.gl_draw_arrays + stats.gl_clear + stats.gl_tex_image +
+                             stats.gl_swap;
+  static bool skip_habilitado = std::getenv("ZEEB_NO_READBACK_SKIP") == nullptr;
+  static uint64_t ultima_atividade = ~0ull;
+  static uint64_t leituras_puladas = 0;
+  static uint64_t leituras_feitas = 0;
+  static const bool log_cada = std::getenv("ZEEB_LOG_READBACK_CADA") != nullptr;
+  if (skip_habilitado && atividade == ultima_atividade) {
+    ++leituras_puladas;
+    if (log_cada) {
+      std::fprintf(stderr, "[rb] PULA   atividade=%llu (puladas=%llu feitas=%llu)\n",
+                   (unsigned long long)atividade, (unsigned long long)leituras_puladas,
+                   (unsigned long long)leituras_feitas);
+    }
+    if (std::getenv("ZEEB_PROF_READBACK") != nullptr && (leituras_puladas % 200) == 0) {
+      std::fprintf(stderr, "[prof] readback pulado %llu vezes, feito %llu (%.0f%% pulado)\n",
+                   (unsigned long long)leituras_puladas, (unsigned long long)leituras_feitas,
+                   100.0 * double(leituras_puladas) /
+                       double(leituras_puladas + leituras_feitas + 1));
+    }
+    return true;  // o buffer do guest ja esta com o conteudo correto
+  }
+  ultima_atividade = atividade;
+  ++leituras_feitas;
+  if (log_cada) {
+    std::fprintf(stderr, "[rb] LE    atividade=%llu (puladas=%llu feitas=%llu)\n",
+                 (unsigned long long)atividade, (unsigned long long)leituras_puladas,
+                 (unsigned long long)leituras_feitas);
+  }
   // O guest desenha na regiao de viewport que ele mesmo pediu. Se ainda nao
   // houve glViewport, assumimos a origem do FBO com o tamanho da superficie.
   // O alvo offscreen tem EXATAMENTE o tamanho da superficie, entao lemos o
