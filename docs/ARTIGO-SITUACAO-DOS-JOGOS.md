@@ -186,8 +186,17 @@ telefone injetada, não uma build de Zeebo — ele passou a ser reproduzível:
 cls=0x0102bbfc -> EXTENSAO OK (obj=0x803009e0)
 ```
 
-Ele recebe o objeto e passa a executar 10 ticks com código da extensão; o
-controle sem extensão não executa nenhum. **A tela continua branca** nos dois
+Verificado por medição própria, e não pelo relatório de quem implementou:
+
+| | com extensão | sem extensão |
+|---|---|---|
+| a classe resolve | `EXTENSAO OK` (`obj=0x803009e0`) | `ECLASSNOTSUPPORT` |
+| última linha de `[draw]` | **`tick=106`** | **`tick=0`** |
+
+Sem a extensão o jogo **não passa do tick zero**. A direção confirma o que o
+relatório dizia; o número não — aquele relatório falava em 10 ticks, e a medição
+própria dá 106 na mesma janela de 26 s. Os dois números vêm de métodos
+diferentes, e por isso o artigo cita o nosso. **A tela continua branca** nos dois
 casos. Falta a segunda classe que ele pede, `0x0100a004`, que nenhum `.mif` do
 corpus fornece — provavelmente classe de firmware, não de extensão. Não foi
 inventado *stub* para ela.
