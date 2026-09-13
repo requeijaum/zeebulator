@@ -3050,8 +3050,30 @@ int main(int argc, char** argv) {
 
   // 3) 0x01006c02: OEM_LCTSystemCtl (controle do sistema/luzes). tectoymain.c:1759.
   //    Slot 6 chamado em laco; 0 significa 'sucesso/siga'.
-  uint32_t sysctl_obj = zeebulator::BuildGenericStubObject(
-      cpu.GetMemory(), hle, /*vtable=*/0x80077000, /*object=*/0x80078000, /*slot_count=*/10);
+  //
+  // ZEEB_LOG_SYSCTL=1 mede QUAL slot e chamado, com que valor e quando. O stub
+  // generico responde 0 em tudo, e isso pode nao bastar: se o jogo GRAVA um modo
+  // num slot e depois LE de volta por outro, zero na leitura nao e "sucesso", e
+  // sim "o modo voltou a 0". Sem medir nao da para saber se isso acontece aqui.
+  const bool log_sysctl = std::getenv("ZEEB_LOG_SYSCTL") != nullptr;
+  std::vector<zeebulator::HleRuntime::HleFunction> sysctl_methods(
+      10, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  if (log_sysctl) {
+    for (uint32_t slot = 0; slot < sysctl_methods.size(); ++slot) {
+      sysctl_methods[slot] = [slot](zeebulator::IArmCore& core) {
+        static uint64_t chamadas[10] = {0};
+        if (slot < 10 && chamadas[slot]++ < 8) {
+          std::fprintf(stderr,
+                       "[sysctl] slot %u chamado: r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
+                       slot, core.GetRegister(zeebulator::kR1), core.GetRegister(zeebulator::kR2),
+                       core.GetRegister(zeebulator::kR3), core.GetRegister(zeebulator::kLR));
+        }
+        core.SetRegister(zeebulator::kR0, 0);
+      };
+    }
+  }
+  uint32_t sysctl_obj = zeebulator::BuildInterfaceObject(
+      cpu.GetMemory(), hle, /*vtable=*/0x80077000, /*object=*/0x80078000, sysctl_methods);
   shell_hle.RegisterInstance(0x01006c02, sysctl_obj);
 
   // 4) Fonte e Typeface TrueType da Z-Wheel (AEECLSID_TYPEFACE = 0x01035156, AEECLSID_ROLLER_FONT = 0x0102f67c)
