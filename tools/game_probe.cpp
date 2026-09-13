@@ -3048,6 +3048,55 @@ int main(int argc, char** argv) {
       cpu.GetMemory(), hle, /*vtable=*/0x80075000, /*object=*/0x80076000, cm_methods);
   shell_hle.RegisterInstance(0x01011810, cm_obj);
 
+  // 0x01000000 = AEECLSID_DOWNLOAD, confirmado pelo SDK
+  // (platform/system/inc/AEEClassIDs.h: AEECLSID_DOWNLOAD = AEECLSID_PRIV =
+  // QVERSION = 0x01000000). A Z-Wheel pede essa classe em Tectoy_FixupTime e
+  // ShopAction_Init e hoje recebe ECLASSNOTSUPPORT, o que produz as duas
+  // mensagens "Unable to create instance of IDOWNLOAD" no log do guest.
+  //
+  // A interface IDownload e PRIVILEGIADA (AEEPRIVID_PLDownload), e o SDK que
+  // temos NAO traz o header dela -- so as implementacoes de referencia que a
+  // usam (oatefsfull, oatdownload). Entao a ORDEM DOS SLOTS nao esta em fonte
+  // primaria aqui, e inventa-la seria palpite.
+  //
+  // ZEEB_DOWNLOAD_SCAFFOLD=1 registra um scaffold que LOGa cada slot chamado,
+  // com argumentos e lr. E assim que se descobre o que o jogo realmente usa,
+  // sem adivinhar: mede-se primeiro, implementa-se depois. O comportamento
+  // padrao NAO muda (a classe segue recusada).
+  //
+  // MEDIDO, e por isso a classe PASSA a ser oferecida:
+  //
+  //   A/B na Z-Wheel, mesma linha de comando, 28 s cada, serial
+  //     sem a classe: [draw] tick=125 draws=6715 | 1 reclamacao de IDOWNLOAD | 275 cores
+  //     com a classe: [draw] tick=129 draws=6934 | 0 reclamacoes            | 275 cores
+  //
+  // Nao ha regressao e a tela e identica; o jogo para de tomar o caminho de
+  // erro. Com o scaffold instrumentado, o Z-Wheel CRIA o objeto e **nao chama
+  // nenhum slot dele** -- por isso nao ha comportamento a implementar alem de
+  // existir, que e o que o aparelho real faz.
+  //
+  // Os slots devolvem EUNSUPPORTED (20), e nao SUCCESS: se algum dia um titulo
+  // chamar um deles, ele aprende a verdade em vez de esperar para sempre por uma
+  // resposta que ninguem vai dar. Objeto que existe mas nao mente.
+  {
+    static bool dl_logged = false;
+    std::vector<zeebulator::HleRuntime::HleFunction> dl_methods(24);
+    for (uint32_t slot = 0; slot < dl_methods.size(); ++slot) {
+      dl_methods[slot] = [slot](zeebulator::IArmCore& core) {
+        if (!dl_logged && std::getenv("ZEEB_LOG_DOWNLOAD") != nullptr) {
+          std::fprintf(stderr,
+                       "[download] slot %u chamado (nao implementado): r1=0x%08x r2=0x%08x lr=0x%08x\n",
+                       slot, core.GetRegister(zeebulator::kR1),
+                       core.GetRegister(zeebulator::kR2), core.GetRegister(zeebulator::kLR));
+        }
+        core.SetRegister(zeebulator::kR0, 20);  // EUNSUPPORTED, per AEEError.h (ver a tabela no artigo)
+      };
+    }
+    uint32_t dl_obj = zeebulator::BuildInterfaceObject(
+        cpu.GetMemory(), hle, /*vtable=*/0x8007D000, /*object=*/0x8007E000, dl_methods);
+    shell_hle.RegisterInstance(0x01000000, dl_obj);
+  }
+
   // 3) 0x01006c02: OEM_LCTSystemCtl (controle do sistema/luzes). tectoymain.c:1759.
   //    Slot 6 chamado em laco; 0 significa 'sucesso/siga'.
   //
