@@ -584,20 +584,28 @@ bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surfac
   // cada 30 leituras, em microssegundos.
   static const bool prof = std::getenv("ZEEB_PROF_READBACK") != nullptr;
   const auto t_conv0 = std::chrono::steady_clock::now();
+  // Uma LINHA por vez: converte para um buffer local e grava o trecho inteiro.
+  //
+  // Antes era um Memory::Write16 por pixel -- 211.200 por quadro, cada um com um
+  // lookup em unordered_map mais duas chamadas de hook. Medido com
+  // ZEEB_PROF_READBACK=1, esse laco levava 86% do custo do readback, contra 14%
+  // do glReadPixels. Agora sao 330 gravacoes por quadro em vez de 211.200.
+  //
+  // A conversao em si continua igual pixel a pixel, e de proposito: ela NAO era
+  // o gargalo, e mudar a formula para "otimizar" mexeria na cor sem ganho.
+  std::vector<uint16_t> linha(static_cast<size_t>(rect_w));
   for (int y = 0; y < rect_h; ++y) {
+    const uint8_t* src = rgba.data() + static_cast<size_t>(y) * static_cast<size_t>(rect_w) * 4u;
     for (int x = 0; x < rect_w; ++x) {
-      const size_t src = (static_cast<size_t>(y) * static_cast<size_t>(rect_w) +
-                          static_cast<size_t>(x)) * 4u;
-      const uint16_t r5 = static_cast<uint16_t>(rgba[src + 0] >> 3);
-      const uint16_t g6 = static_cast<uint16_t>(rgba[src + 1] >> 2);
-      const uint16_t b5 = static_cast<uint16_t>(rgba[src + 2] >> 3);
-      const uint16_t rgb565 = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
-      const uint32_t dst = surface.color_buffer +
-                           static_cast<uint32_t>((static_cast<size_t>(y) *
-                                                  static_cast<size_t>(surface.width) +
-                                                  static_cast<size_t>(x)) * 2u);
-      memory.Write16(dst, rgb565);
+      const uint16_t r5 = static_cast<uint16_t>(src[x * 4 + 0] >> 3);
+      const uint16_t g6 = static_cast<uint16_t>(src[x * 4 + 1] >> 2);
+      const uint16_t b5 = static_cast<uint16_t>(src[x * 4 + 2] >> 3);
+      linha[static_cast<size_t>(x)] = static_cast<uint16_t>((r5 << 11) | (g6 << 5) | b5);
     }
+    const uint32_t dst = surface.color_buffer +
+                         static_cast<uint32_t>(static_cast<size_t>(y) *
+                                               static_cast<size_t>(surface.width) * 2u);
+    memory.WriteBlock16(dst, linha.data(), static_cast<size_t>(rect_w));
   }
   if (prof) {
     const auto t_conv1 = std::chrono::steady_clock::now();

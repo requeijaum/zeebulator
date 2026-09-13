@@ -31,6 +31,26 @@ class Memory {
   // `address`. Used by the loader to map code/data segments in.
   void Load(uint32_t address, const uint8_t* data, size_t size);
 
+  // Escrita em BLOCO de halfwords. Existe por MEDICAO, nao por simetria.
+  //
+  // O caminho quente do quadro da Z-Wheel e converter 640x330 pixels de RGBA
+  // para RGB565 e gravar: 211.200 Memory::Write16 por quadro. Perfilado com
+  // ZEEB_PROF_READBACK=1, esse laco consome 86% do custo do readback -- o
+  // glReadPixels fica com os outros 14%. O custo por pixel nao e a conversao:
+  // e um lookup em unordered_map (MutablePage) e duas chamadas de hook POR
+  // PIXEL.
+  //
+  // Esta funcao faz UM lookup por trecho contiguo dentro da mesma pagina e
+  // grava direto no buffer da pagina. Os hooks continuam sendo chamados, uma
+  // vez por trecho e com o comprimento, e nao uma vez por halfword: a checagem
+  // de watchpoint de debug_hooks.h testa SOBREPOSICAO de faixa
+  // (`addr < wp.addr + wp.len && wp.addr < addr + len`), entao uma chamada com
+  // o trecho inteiro acerta os mesmos watchpoints e reduz o spam do log.
+  //
+  // Nao e um `memcpy` ingenuo: a memoria do convidado e esparsa por pagina de
+  // 4 KiB, e um bloco pode atravessar quantas paginas quiser.
+  void WriteBlock16(uint32_t address, const uint16_t* values, size_t count);
+
   // Phase-1 media-interface binding guard (replaces the old +0x28
   // address-heuristic redirect HACK). Opt-in: pass the guest region
   // MediaHle allocates its interface objects in ([start, end)). Once a

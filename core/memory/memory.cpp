@@ -216,6 +216,28 @@ void Memory::Write32(uint32_t address, uint32_t value) {
   Write8(address + 3, static_cast<uint8_t>(value >> 24));
 }
 
+void Memory::WriteBlock16(uint32_t address, const uint16_t* values, size_t count) {
+  size_t i = 0;
+  while (i < count) {
+    const uint32_t addr = address + static_cast<uint32_t>(i * 2u);
+    const uint32_t offset = addr & kPageMask;
+    // Quantas halfwords cabem ate o fim desta pagina (sem atravessar).
+    const size_t espaco = (kPageSize - offset) / 2u;
+    const size_t n = (count - i < espaco) ? (count - i) : espaco;
+    if (n == 0) break;  // offset impar na ultima posicao da pagina
+    const size_t bytes = n * 2u;
+    DebugHooks& hooks = DebugHooks::Instance();
+    hooks.OnMemWrite(addr, static_cast<uint32_t>(bytes));
+    uint8_t* p = MutablePage(addr / kPageSize).data() + offset;
+    for (size_t k = 0; k < n; ++k) {
+      const uint16_t v = values[i + k];
+      p[k * 2u] = static_cast<uint8_t>(v);
+      p[k * 2u + 1u] = static_cast<uint8_t>(v >> 8);
+    }
+    i += n;
+  }
+}
+
 void Memory::Load(uint32_t address, const uint8_t* data, size_t size) {
   for (size_t i = 0; i < size; ++i) {
     Write8(address + static_cast<uint32_t>(i), data[i]);

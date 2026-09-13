@@ -165,3 +165,52 @@ TEST(Memory, DeserializeRejectsImpossiblePageCountBeforeReserve) {
   in.seekg(0);
   EXPECT_FALSE(memory.Deserialize(in));
 }
+
+// --- Escrita em bloco de halfwords -------------------------------------------
+//
+// Existe porque o laco mais quente do quadro (converter RGBA->RGB565 num alvo
+// de 640x330) fazia 211.200 Write16 por quadro, cada um com um lookup de pagina
+// e duas chamadas de hook. O substituto tem que dar EXATAMENTE o mesmo
+// resultado, inclusive atravessando pagina.
+TEST(Memory, WriteBlock16LeavesTheSameBytesAsWrite16Would) {
+  Memory a;
+  Memory b;
+  // Um bloco que atravessa pelo menos duas paginas de 4 KiB, comecando num
+  // offset que NAO alinha com a pagina: e o caso real (640 halfwords = 1280
+  // bytes por linha, e 4096 nao e multiplo de 1280).
+  constexpr uint32_t kBase = 0x3001F00;   // 256 bytes antes do fim da pagina
+  constexpr size_t kCount = 900;
+  std::vector<uint16_t> valores(kCount);
+  for (size_t i = 0; i < kCount; ++i) {
+    valores[i] = static_cast<uint16_t>(0x1234u + i * 7u);
+  }
+  for (size_t i = 0; i < kCount; ++i) b.Write16(kBase + static_cast<uint32_t>(i * 2), valores[i]);
+  a.WriteBlock16(kBase, valores.data(), kCount);
+  for (size_t i = 0; i < kCount; ++i) {
+    EXPECT_EQ(a.Read16(kBase + static_cast<uint32_t>(i * 2)), valores[i]) << "halfword " << i;
+    EXPECT_EQ(a.Read16(kBase + static_cast<uint32_t>(i * 2)),
+              b.Read16(kBase + static_cast<uint32_t>(i * 2))) << "divergiu de Write16 no " << i;
+  }
+}
+
+TEST(Memory, WriteBlock16DoesNotTouchMemoryOutsideTheBlock) {
+  Memory m;
+  constexpr uint32_t kBase = 0x00010000;
+  m.Write16(kBase - 2, 0xBEEF);
+  m.Write16(kBase + 8, 0xF00D);
+  const uint16_t valores[3] = {1, 2, 3};
+  m.WriteBlock16(kBase, valores, 3);
+  EXPECT_EQ(m.Read16(kBase - 2), 0xBEEF) << "escreveu antes do bloco";
+  EXPECT_EQ(m.Read16(kBase + 8), 0xF00D) << "escreveu depois do bloco";
+  EXPECT_EQ(m.Read16(kBase + 0), 1);
+  EXPECT_EQ(m.Read16(kBase + 4), 3);
+}
+
+TEST(Memory, WriteBlock16HandlesZeroAndSingleElement) {
+  Memory m;
+  const uint16_t um = 0xABCD;
+  m.WriteBlock16(0x00020000, &um, 0);          // nao pode escrever nada
+  EXPECT_EQ(m.Read16(0x00020000), 0);
+  m.WriteBlock16(0x00020000, &um, 1);
+  EXPECT_EQ(m.Read16(0x00020000), 0xABCD);
+}
