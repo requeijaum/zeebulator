@@ -6642,10 +6642,26 @@ int main(int argc, char** argv) {
     // triggered so far ever sets it. Kept as a real, evidence-grounded
     // building block for whoever traces that next -- not yet sufficient
     // on its own.
+    // De ONDE vem o callback de notify.
+    //
+    // O scaffold de 0x01005511 (acima) e uma das origens. A outra, e a que
+    // salva o zenonia, e o notify_fn que o jogo registrou no PROPRIO objeto de
+    // midia pelo slot 3 (IMedia::RegisterNotify): a classe 0x01005511 tem uma
+    // fabrica registrada para o zenonia, e CreateInstanceImpl consulta
+    // factories_ antes de instances_, entao o scaffold fica inalcancavel.
+    //
+    // Medido: sem esta segunda origem o zenonia nao passa da intro (a injecao
+    // nunca dispara, o callback que re-arma o timer se perde num wander, e
+    // ~380-550 ticks). Com ela, a injecao dispara, o wander some, e sao 928
+    // ticks. Nao ha conflito de identidade entre as duas: e o MESMO slot 3.
+    uint32_t notify_fn = *captured_download_callback;
+    uint32_t notify_user = *captured_download_context;
+    if (notify_fn == 0) {
+      media_hle.LastNotify(&notify_fn, &notify_user);
+    }
     if (std::getenv("ZEEB_NO_DOWNLOAD_INJECT") == nullptr &&
         !callback_continuation_active && !injected_simulated_download_complete &&
-        *captured_download_callback != 0 &&
-        tick_count >= 30) {
+        notify_fn != 0 && tick_count >= 30) {
       injected_simulated_download_complete = true;
       constexpr uint32_t kSimulatedEventStructAddr = 0x80066000;
       cpu.GetMemory().Write32(kSimulatedEventStructAddr + 8, 4);
@@ -6659,10 +6675,10 @@ int main(int argc, char** argv) {
       cpu.GetMemory().Write32(kSimulatedEventStructAddr + 16, inject_val);
       std::printf("  [input] simulating a download-complete notification: invoking callback "
                   "0x%08x\n",
-                  *captured_download_callback);
+                  notify_fn);
       try {
-        CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, *captured_download_callback,
-                               *captured_download_context, kSimulatedEventStructAddr, 0, 0,
+        CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, notify_fn,
+                               notify_user, kSimulatedEventStructAddr, 0, 0,
                                /*trace=*/false, /*hle_trace=*/false, &display, &backend);
       } catch (const std::exception& e) {
         std::printf("  [input] download-complete callback threw: %s\n", e.what());

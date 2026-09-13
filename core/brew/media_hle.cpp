@@ -233,6 +233,24 @@ uint32_t MediaHle::AllocateMediaObject() {
 
 uint32_t MediaHle::CreateMediaObject() { return AllocateMediaObject(); }
 
+bool MediaHle::LastNotify(uint32_t* out_fn, uint32_t* out_user) const {
+  bool found = false;
+  uint32_t best_generation = 0;
+  for (const auto& [addr, media] : media_by_object_) {
+    if (media.notify_fn == 0) continue;
+    // O mais recente em termos de criacao, que e o objeto que o jogo esta
+    // usando agora. Ordem de mapa nao serve: as chaves sao enderecos, e
+    // enderecos sao reciclados.
+    if (!found || media.generation > best_generation) {
+      found = true;
+      best_generation = media.generation;
+      if (out_fn != nullptr) *out_fn = media.notify_fn;
+      if (out_user != nullptr) *out_user = media.notify_user;
+    }
+  }
+  return found;
+}
+
 void MediaHle::AddRefImpl(IArmCore& core) {
   // Contagem de referencias honesta: o objeto nasce com 1 em
   // AllocateMediaObject, e cada AddRef soma. Devolve a contagem nova, que e

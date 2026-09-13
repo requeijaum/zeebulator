@@ -118,6 +118,25 @@ class MediaHle {
   // class creates.
   void Build(uint32_t vtable_address);
 
+  // Ultimo (fn, user) registrado por RegisterNotify (slot 3 do IMedia) em
+  // QUALQUER objeto de midia vivo. Devolve false se nenhum objeto vivo tem
+  // notify registrado.
+  //
+  // Existe por uma MEDICAO, nao por conveniencia. A injecao de "download 100%
+  // completo" do probe chamava o callback capturado por um objeto SCAFFOLD
+  // separado na mesma classe 0x01005511, e o registro de RegisterFactory para
+  // essa classe (feito para o zenonia tocar PCM) tornava o scaffold
+  // inalcancavel -- CreateInstanceImpl consulta factories_ antes de
+  // instances_. Resultado medido: a injecao parou de disparar, o zenonia
+  // perdeu o callback que re-arma o timer, e nao passa da intro (wander 1,
+  // ~380-550 ticks). Com a fabrica desligada: injecao 1, wander 0, 928 ticks.
+  //
+  // Nao ha conflito real de identidade: o slot 3 e o MESMO nas duas leituras --
+  // RegisterNotify do IMedia. O scaffold capturava esse slot 3 num objeto
+  // paralelo. Entao o caminho certo e este: quem quiser o callback de notify
+  // pergunta ao objeto de midia que o jogo realmente recebeu.
+  bool LastNotify(uint32_t* out_fn, uint32_t* out_user) const;
+
   // Creates a new IMedia object. Mirrors what a real app reaches via
   // ISHELL_CreateInstance(cls, ...) -- this project's established
   // pattern (see IShell/IFile) is for the harness to construct interface
