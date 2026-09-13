@@ -5514,10 +5514,19 @@ int main(int argc, char** argv) {
     stage = "HandleEvent(EVT_APP_START)";
     constexpr uint32_t kEvtAppStart = 0;  // real value, verified against AEEEvent.h
     std::printf("Calling HandleEvent(EVT_APP_START)...\n");
+    // ZEEB_TRACE_HE=1 traca so DENTRO do EVT_APP_START, irmao do ZEEB_TRACE_CI.
+    //
+    // Existe porque "HandleEvent(EVT_APP_START) returned 0" e um diagnostico
+    // mudo: no BREW, falso no start significa que o applet RECUSOU iniciar, e o
+    // motivo esta em algum desvio dentro do handler. Medido no prey3d: o
+    // ponteiro do handler nem e estatico -- 0x00101700 e um thunk
+    // (`ldr ip,[r0,#0x18]; bx ip`), entao desmontar o .mod nao alcanca o
+    // codigo que decide. So tracando em execucao.
+    const bool trace_he = std::getenv("ZEEB_TRACE_HE") != nullptr;
     // boolean HandleEvent(IApplet *po, AEEEvent evt, uint16 wParam, uint32 dwParam)
     auto handle_result = CallArmFunctionChecked(cpu, kTrapBase, kBase, mod_size, handle_event_fn,
                                                  applet_ptr, kEvtAppStart, 0, kAppStartAddr,
-                                                 /*trace=*/false, /*hle_trace=*/false, &display, &backend);
+                                                 /*trace=*/trace_he, /*hle_trace=*/trace_he, &display, &backend);
     if (handle_result.wandered_outside_module || handle_result.exceeded_step_budget) {
       std::printf("HandleEvent(EVT_APP_START) did not complete trustworthily -- stopping.\n");
       return 1;

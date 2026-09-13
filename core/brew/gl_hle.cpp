@@ -599,12 +599,24 @@ void GlHle::EglGetProcAddress(IArmCore& core) {
     if (c == 0) break;
     name.push_back(static_cast<char>(c));
   }
+  // ZEEB_LOG_PROCADDR=1 imprime CADA nome pedido e se ele foi resolvido.
+  //
+  // Devolver 0 para nome desconhecido e o comportamento correto do EGL, mas
+  // tambem e um stub silencioso: o jogo descobre sozinho que a funcao nao
+  // existe, escolhe outro caminho (ou nenhum), e nos ficamos sem saber o que
+  // ele queria. Uma tabela de nomes dentro do .mod NAO prova chamada -- o
+  // prey3d.mod carrega 105 nomes gl*, entre eles tres variantes de
+  // glBindBuffer (ARB/OES/QUALCOMM), e carregar nao e pedir. Este log e o que
+  // separa as duas coisas.
+  static const bool log_pa = std::getenv("ZEEB_LOG_PROCADDR") != nullptr;
   auto it = proc_addresses_.find(name);
   if (it != proc_addresses_.end()) {
+    if (log_pa) std::fprintf(stderr, "[procaddr] OK    %s\n", name.c_str());
     core.SetRegister(kR0, it->second);
     return;
   }
   // If not explicitly registered, return 0 (standard EGL behavior).
+  if (log_pa) std::fprintf(stderr, "[procaddr] FALTA %s\n", name.c_str());
   core.SetRegister(kR0, 0);
 }
 
