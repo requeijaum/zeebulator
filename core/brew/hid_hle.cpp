@@ -187,6 +187,45 @@ uint32_t HidHle::Build(uint32_t hid_vtable_address, uint32_t hid_object_address,
   device_methods[2] = unsupported_qi;
   device_methods[8] = [this](IArmCore& core) { RegisterForButtonEventImpl(core); };
   device_methods[9] = [this](IArmCore& core) { GetNextButtonEventImpl(core); };
+
+  // Slots 10..13: a familia de posicao analogica. Deixaram de ser stub porque
+  // um stub aqui NAO e neutro: o jogo le os quatro eixos e subtrai 128, entao
+  // zero vira -128 e o manche aparece encostado no batente. Ver as constantes
+  // em hid_hle.h para a medicao que fixa o centro em 128.
+  auto fill_words = [this](IArmCore& core, int32_t axis_value) {
+    const uint32_t out = core.GetRegister(kR1);
+    if (out != 0) {
+      // A palavra 0 e o bRelativeAxes, nao um eixo: vai sempre zero (absoluto).
+      memory_.Write32(out, 0);
+      // As palavras de eixo que este controle nao usa vao no CENTRO, nao em
+      // zero: um jogo que leia uma delas encontra um eixo parado, e nao um
+      // encostado no batente.
+      for (uint32_t i = 1; i < kPositionInfoWords; ++i) {
+        memory_.Write32(out + i * 4, static_cast<uint32_t>(axis_value));
+      }
+    }
+    core.SetRegister(kR0, 0);
+  };
+  // Slot 10: GetPositionState -- posicao atual. Em repouso, o centro.
+  device_methods[10] = [fill_words](IArmCore& core) { fill_words(core, kAxisCenter); };
+  // Slot 11: GetMinPositionInfo -- o minimo da faixa do aparelho.
+  device_methods[11] = [fill_words](IArmCore& core) { fill_words(core, kAxisMin); };
+  // Slot 12: GetMaxPositionInfo -- o maximo da faixa do aparelho.
+  device_methods[12] = [fill_words](IArmCore& core) { fill_words(core, kAxisMax); };
+  // Slot 13: GetAxesInfo -- nao devolve valores, devolve o UID do EIXO que
+  // ocupa cada palavra. E assim que o jogo descobre onde esta cada direcao; um
+  // UID errado nao da erro nenhum, o jogo simplesmente nao acha o eixo.
+  device_methods[13] = [this](IArmCore& core) {
+    const uint32_t out = core.GetRegister(kR1);
+    if (out != 0) {
+      for (uint32_t i = 0; i < kPositionInfoWords; ++i) memory_.Write32(out + i * 4, 0);
+      memory_.Write32(out + kAxisWordX * 4, static_cast<uint32_t>(kUidAxisX));
+      memory_.Write32(out + kAxisWordY * 4, static_cast<uint32_t>(kUidAxisY));
+      memory_.Write32(out + kAxisWordZ * 4, static_cast<uint32_t>(kUidAxisZ));
+      memory_.Write32(out + kAxisWordRZ * 4, static_cast<uint32_t>(kUidAxisRZ));
+    }
+    core.SetRegister(kR0, 0);
+  };
   BuildInterfaceObject(memory_, hle_, device_vtable_address, device_object_address,
                         device_methods);
 

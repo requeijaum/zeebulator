@@ -23,7 +23,14 @@ constexpr uint32_t kScratch = 0x00090000;
 // Real vtable slot indices, matching core/brew/hid_hle.cpp's own
 // verified real ordering.
 enum HidSlot { kHidCreateDevice = 3, kHidGetConnectedDevices = 7 };
-enum DeviceSlot { kDeviceRegisterForButtonEvent = 8, kDeviceGetNextButtonEvent = 9 };
+enum DeviceSlot {
+  kDeviceRegisterForButtonEvent = 8,
+  kDeviceGetNextButtonEvent = 9,
+  kDeviceGetPositionState = 10,
+  kDeviceGetMinPositionInfo = 11,
+  kDeviceGetMaxPositionInfo = 12,
+  kDeviceGetAxesInfo = 13,
+};
 
 struct Fixture {
   ArmInterpreter cpu;
@@ -154,4 +161,62 @@ TEST(HidHle, HoldingAButtonAcrossUpdateStateCallsDoesNotReQueue) {
       f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetNextButtonEvent), kDeviceObject, kScratch);
   EXPECT_EQ(result, 1u) << "only one edge, so only one event, regardless of how many "
                            "UpdateState calls saw it held";
+}
+
+// --- Eixos analogicos --------------------------------------------------------
+//
+// Estes testes existem porque um stub "neutro" aqui NAO e neutro. O jogo le o
+// eixo e subtrai 128 (verificado em funsoccer.mod, 0x001ed504:
+// `mvn r0,#0x7f` + `sxtah`), entao reportar zero entrega -128 -- o manche
+// encostado no batente, com o controle parado.
+
+namespace {
+constexpr uint32_t kOutBuffer = 0x00090400;
+}  // namespace
+
+TEST(HidHle, RestingPositionIsTheCenterNotZero) {
+  Fixture f;
+  f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetPositionState), kDeviceObject, kOutBuffer);
+  // Palavra 0 e bRelativeAxes, nao eixo.
+  EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer), 0u);
+  for (uint32_t i = 1; i < zeebulator::kPositionInfoWords; ++i) {
+    EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer + i * 4),
+              static_cast<uint32_t>(zeebulator::kAxisCenter))
+        << "palavra " << i << " deveria estar no centro (128), nao no batente";
+  }
+}
+
+TEST(HidHle, RangeIsAByteNotSixteenBitsSigned) {
+  Fixture f;
+  f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetMinPositionInfo), kDeviceObject, kOutBuffer);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer + 4), 0u);
+  f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetMaxPositionInfo), kDeviceObject, kOutBuffer);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer + 4), 255u);
+}
+
+TEST(HidHle, AxisUidsDoNotCollideWithButtonUids) {
+  Fixture f;
+  f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetAxesInfo), kDeviceObject, kOutBuffer);
+  const uint32_t x = f.cpu.GetMemory().Read32(kOutBuffer + zeebulator::kAxisWordX * 4);
+  const uint32_t y = f.cpu.GetMemory().Read32(kOutBuffer + zeebulator::kAxisWordY * 4);
+  const uint32_t z = f.cpu.GetMemory().Read32(kOutBuffer + zeebulator::kAxisWordZ * 4);
+  const uint32_t rz = f.cpu.GetMemory().Read32(kOutBuffer + zeebulator::kAxisWordRZ * 4);
+  EXPECT_EQ(x, static_cast<uint32_t>(zeebulator::kUidAxisX));
+  EXPECT_EQ(y, static_cast<uint32_t>(zeebulator::kUidAxisY));
+  EXPECT_EQ(z, static_cast<uint32_t>(zeebulator::kUidAxisZ));
+  EXPECT_EQ(rz, static_cast<uint32_t>(zeebulator::kUidAxisRZ));
+  // O ponto do teste: o X NAO pode ser 0x0106C40C, que e UID de botao neste
+  // mesmo arquivo. Eixo e botao com o mesmo UID nao podem coexistir -- o jogo
+  // varre a tabela procurando UID de eixo e nunca acha o X.
+  EXPECT_NE(x, 0x0106C40Cu);
+}
+
+TEST(HidHle, AxesInfoLeavesUnusedWordsAtZeroBecauseTheyAreUidsNotValues) {
+  Fixture f;
+  f.hle.CallArmFunction(f.DeviceSlotAddr(kDeviceGetAxesInfo), kDeviceObject, kOutBuffer);
+  // Nas palavras sem eixo o campo e "nenhum UID", que e zero -- diferente de
+  // GetPositionState, onde a palavra sem uso vai no centro. Sao tabelas
+  // diferentes: uma carrega identidade, a outra carrega valor.
+  EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer + 4 * 4), 0u);
+  EXPECT_EQ(f.cpu.GetMemory().Read32(kOutBuffer + 5 * 4), 0u);
 }

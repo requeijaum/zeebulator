@@ -40,6 +40,7 @@
 #include "core/brew/thread_hle.h"
 #include "core/brew/heap_hle.h"
 #include "core/brew/hash_hle.h"
+#include "core/brew/hid_hle.h"
 #include "core/brew/mem_astream_hle.h"
 #include "core/brew/unzip_stream_hle.h"
 #include "core/brew/mod_runtime.h"
@@ -3563,41 +3564,48 @@ int main(int argc, char** argv) {
     if (dropped_addr != 0) core.GetMemory().Write32(dropped_addr, 0);
     core.SetRegister(zeebulator::kR0, 0);  // AEE_SUCCESS
   };
-  // Slot 10: GetPositionState(IHIDDevice*, AEEHIDPositionInfo *pPositionInfo)
-  hid_device_methods[10] = [](zeebulator::IArmCore& core) {
-    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+  // Slots 10..13: familia de posicao analogica.
+  //
+  // Os numeros NAO ficam aqui: vem de core/brew/hid_hle.h, que e a versao com
+  // teste. Antes desta mudanca o probe tinha a sua propria copia e ela estava
+  // errada em tres pontos ao mesmo tempo -- repouso em 0 (que o jogo le como
+  // -128, manche no batente), faixa de 16 bits com sinal, e o UID do eixo X
+  // valendo 0x0106C40C, que e UID de BOTAO. Duas copias de um numero medido sao
+  // duas chances de ele divergir.
+  auto preenche_posicao = [](zeebulator::IArmCore& core, int32_t valor_eixo) {
+    const uint32_t pinfo = core.GetRegister(zeebulator::kR1);
     if (pinfo != 0) {
-      for (uint32_t i = 0; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 0);
+      core.GetMemory().Write32(pinfo, 0);  // palavra 0 = bRelativeAxes
+      for (uint32_t i = 1; i < zeebulator::kPositionInfoWords; ++i) {
+        core.GetMemory().Write32(pinfo + i * 4, static_cast<uint32_t>(valor_eixo));
+      }
     }
     core.SetRegister(zeebulator::kR0, 0);
   };
-  // Slot 11: GetMinPositionInfo(IHIDDevice*, AEEHIDPositionInfo *pMinInfo)
-  hid_device_methods[11] = [](zeebulator::IArmCore& core) {
-    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
-    if (pinfo != 0) {
-      core.GetMemory().Write32(pinfo, 0);  // bRelativeAxes = false
-      for (uint32_t i = 1; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, static_cast<uint32_t>(-32768));
-    }
-    core.SetRegister(zeebulator::kR0, 0);
+  hid_device_methods[10] = [preenche_posicao](zeebulator::IArmCore& core) {
+    preenche_posicao(core, zeebulator::kAxisCenter);
   };
-  // Slot 12: GetMaxPositionInfo(IHIDDevice*, AEEHIDPositionInfo *pMaxInfo)
-  hid_device_methods[12] = [](zeebulator::IArmCore& core) {
-    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
-    if (pinfo != 0) {
-      core.GetMemory().Write32(pinfo, 0);  // bRelativeAxes = false
-      for (uint32_t i = 1; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 32767);
-    }
-    core.SetRegister(zeebulator::kR0, 0);
+  hid_device_methods[11] = [preenche_posicao](zeebulator::IArmCore& core) {
+    preenche_posicao(core, zeebulator::kAxisMin);
   };
-  // Slot 13: GetAxesInfo(IHIDDevice*, AEEHIDPositionInfo *pAxesInfo)
+  hid_device_methods[12] = [preenche_posicao](zeebulator::IArmCore& core) {
+    preenche_posicao(core, zeebulator::kAxisMax);
+  };
+  // Slot 13: GetAxesInfo devolve UID de eixo por palavra, nao valor.
   hid_device_methods[13] = [](zeebulator::IArmCore& core) {
-    uint32_t pinfo = core.GetRegister(zeebulator::kR1);
+    const uint32_t pinfo = core.GetRegister(zeebulator::kR1);
     if (pinfo != 0) {
-      for (uint32_t i = 0; i < 25; ++i) core.GetMemory().Write32(pinfo + i * 4, 0);
-      core.GetMemory().Write32(pinfo + 1 * 4, 0x0106c40c);  // X
-      core.GetMemory().Write32(pinfo + 2 * 4, 0x0106c4d1);  // Y
-      core.GetMemory().Write32(pinfo + 3 * 4, 0x0106c4ce);  // Z
-      core.GetMemory().Write32(pinfo + 6 * 4, 0x0106c4cf);  // RZ
+      for (uint32_t i = 0; i < zeebulator::kPositionInfoWords; ++i) {
+        core.GetMemory().Write32(pinfo + i * 4, 0);
+      }
+      core.GetMemory().Write32(pinfo + zeebulator::kAxisWordX * 4,
+                               static_cast<uint32_t>(zeebulator::kUidAxisX));
+      core.GetMemory().Write32(pinfo + zeebulator::kAxisWordY * 4,
+                               static_cast<uint32_t>(zeebulator::kUidAxisY));
+      core.GetMemory().Write32(pinfo + zeebulator::kAxisWordZ * 4,
+                               static_cast<uint32_t>(zeebulator::kUidAxisZ));
+      core.GetMemory().Write32(pinfo + zeebulator::kAxisWordRZ * 4,
+                               static_cast<uint32_t>(zeebulator::kUidAxisRZ));
     }
     core.SetRegister(zeebulator::kR0, 0);
   };

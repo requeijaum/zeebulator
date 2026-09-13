@@ -31,6 +31,47 @@ namespace zeebulator {
 // project's established convention for a real, present-but-unconfirmed
 // slot (see IDisplayHle/IShellHle) rather than guessing an unverified
 // calling convention.
+// --- Eixos analogicos do controle do Zeebo -----------------------------------
+//
+// A faixa de cada eixo e um BYTE SEM SINAL, 0..255, com o REPOUSO EM 128. Isso
+// nao e escolha de projeto: esta escrito no proprio jogo. Verificado neste
+// corpus, em funsoccer.mod (Zeebo F.C. Super League) em 0x001ed504:
+//
+//     mvn   r0, #0x7f        ; r0 = -128
+//     sxtah r4, r0, r4       ; valor = (int16)eixo - 128
+//     sxtah r3, r0, r3
+//     strh  r4, [r2]         ; quatro eixos, convertidos e gravados em halfword
+//
+// O jogo subtrai 128 para achar o centro, logo o centro do aparelho e 128.
+//
+// POR QUE ISSO IMPORTA: reportar ZERO em repouso -- que era o que faziamos --
+// entrega -128 nos quatro eixos, ou seja, o manche ENCOSTADO no batente. Todo
+// jogo dessa camada anda sozinho para um canto com o controle parado.
+inline constexpr int32_t kAxisMin = 0;
+inline constexpr int32_t kAxisCenter = 128;
+inline constexpr int32_t kAxisMax = 255;
+
+// UID de cada eixo, na palavra correspondente do AEEHIDPositionInfo.
+//
+// ATENCAO AO X. O hid_devices.original.cfg do console lista
+// `AXIS:X:0x0106C40C`, mas esse valor e o UID de um BOTAO -- e o mesmo que este
+// arquivo ja usa como kUidButtonNorth logo abaixo. Um eixo e um botao com o
+// mesmo UID nao podem coexistir: o jogo varre a tabela do GetAxesInfo
+// procurando UID de eixo, nao acha nenhum para o X e nunca guarda o campo dele.
+// O arquivo do console tem a troca espelhada (o BUTTON:3 dele vale 0x0106C4D0,
+// que e UID de eixo), entao o valor de eixo do X e 0x0106C4D0.
+inline constexpr int32_t kUidAxisX = 0x0106C4D0;
+inline constexpr int32_t kUidAxisY = 0x0106C4D1;
+inline constexpr int32_t kUidAxisZ = 0x0106C4CE;
+inline constexpr int32_t kUidAxisRZ = 0x0106C4CF;
+
+// AEEHIDPositionInfo: 25 palavras. A palavra 0 NAO e eixo -- e o bRelativeAxes.
+inline constexpr uint32_t kPositionInfoWords = 25;
+inline constexpr uint32_t kAxisWordX = 1;
+inline constexpr uint32_t kAxisWordY = 2;
+inline constexpr uint32_t kAxisWordZ = 3;
+inline constexpr uint32_t kAxisWordRZ = 6;
+
 class HidHle {
  public:
   HidHle(Memory& memory, HleRuntime& hle);
