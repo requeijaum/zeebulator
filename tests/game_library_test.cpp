@@ -180,7 +180,7 @@ TEST(GameLibrary, ManifestWinsOverMif) {
   nand.AddMod("274214", "cnk2");
   nand.AddMif("274214", {"Crash Nitro Kart 2"}, {0x01081984u});
   ScanOptions o = OptionsFor(nand);
-  o.manifest_clsids["274214"] = 0x01081985u;  // valor explicito do usuario
+  o.manifest_clsids["274214"].clsid = 0x01081985u;  // valor explicito do usuario
   const ScanResult r = ScanNand(o);
   ASSERT_EQ(r.entries.size(), 1u);
   EXPECT_EQ(r.entries[0].clsid, 0x01081985u);
@@ -303,11 +303,91 @@ TEST(GameLibrary, ManifestParsesHandEditedJson) {
            "    \"277455\": 3207913505\n"
            "  }\n}\n";
   }
-  const std::map<std::string, uint32_t> m = LoadManifest(p.string());
+  const std::map<std::string, GameConfig> m = LoadManifest(p.string());
   std::error_code ec; fs::remove(p, ec);
   ASSERT_EQ(m.size(), 2u);
-  EXPECT_EQ(m.at("274214"), 0x01081984u);
-  EXPECT_EQ(m.at("277455"), 3207913505u);
+  EXPECT_EQ(m.at("274214").clsid, 0x01081984u);
+  EXPECT_EQ(m.at("277455").clsid, 3207913505u);
+}
+
+// --- Configuracao por jogo ---------------------------------------------------
+//
+// Estes testes existem por causa de uma MEDICAO: subindo o cnk2 exatamente como
+// a GUI subia, sem passar orcamento de passos, o emulador aborta com
+// "exceeded 64000000 steps without returning" e o titulo e dado como morto. Com
+// o orcamento que ele precisa (186486543), ele roda. A GUI nao tinha de onde
+// tirar esse numero -- agora tem.
+
+TEST(GameLibrary, ManifestAcceptsPerGameStepBudget) {
+  const fs::path p = fs::temp_directory_path() / "zeeb_gc1.json";
+  { std::ofstream out(p); out << R"({"games": {"274214": {"clsid": 17308036, "max_steps": 186486543}}})"; }
+  const std::map<std::string, GameConfig> m = LoadManifest(p.string());
+  std::error_code ec; fs::remove(p, ec);
+  ASSERT_EQ(m.count("274214"), 1u);
+  EXPECT_EQ(m.at("274214").clsid, 17308036u);
+  EXPECT_EQ(m.at("274214").max_steps, 186486543u);
+}
+
+TEST(GameLibrary, ManifestAcceptsFreeFormEnvFlags) {
+  const fs::path p = fs::temp_directory_path() / "zeeb_gc2.json";
+  { std::ofstream out(p);
+    out << R"({"games": {"274259": {"clsid": 17308016, "env": {"ZEEB_GL_SOFT": "1", "ZEEB_2D_ONLY": "1"}}}})"; }
+  const std::map<std::string, GameConfig> m = LoadManifest(p.string());
+  std::error_code ec; fs::remove(p, ec);
+  ASSERT_EQ(m.count("274259"), 1u);
+  EXPECT_EQ(m.at("274259").env.at("ZEEB_GL_SOFT"), "1");
+  EXPECT_EQ(m.at("274259").env.at("ZEEB_2D_ONLY"), "1");
+}
+
+// A forma antiga (clsid puro) continua valendo: o arquivo e editado a mao, e
+// quebrar quem ja tem um manifesto escrito seria hostil.
+TEST(GameLibrary, ManifestStillAcceptsThePlainClsidForm) {
+  const fs::path p = fs::temp_directory_path() / "zeeb_gc3.json";
+  { std::ofstream out(p); out << R"({"games": {"274214": 17308036}})"; }
+  const std::map<std::string, GameConfig> m = LoadManifest(p.string());
+  std::error_code ec; fs::remove(p, ec);
+  ASSERT_EQ(m.count("274214"), 1u);
+  EXPECT_EQ(m.at("274214").clsid, 17308036u);
+  EXPECT_EQ(m.at("274214").max_steps, 0u);
+  EXPECT_TRUE(m.at("274214").env.empty());
+}
+
+// O manifesto do usuario corrige o clsid sem apagar o orcamento medido que veio
+// da camada de base. Sem isto, escrever `{"games":{"274214":17308036}}` no
+// arquivo do usuario apagaria o max_steps do arquivo embarcado.
+TEST(GameLibrary, UserManifestOverridesOnlyWhatItStates) {
+  std::map<std::string, GameConfig> base;
+  base["274214"].clsid = 1u;
+  base["274214"].max_steps = 186486543u;
+  std::map<std::string, GameConfig> user;
+  user["274214"].clsid = 2u;   // sem max_steps
+  const std::map<std::string, GameConfig> m = MergeManifests(base, user);
+  EXPECT_EQ(m.at("274214").clsid, 2u);
+  EXPECT_EQ(m.at("274214").max_steps, 186486543u) << "o orcamento medido foi apagado";
+}
+
+// O ponto do lancamento e que o orcamento chegue ao emulador. Sem isto ele e
+// um numero bonito num arquivo que ninguem le.
+TEST(GameLibrary, LaunchSpecCarriesTheStepBudgetToTheEmulator) {
+  GameEntry e;
+  e.mod_path = "/x/cnk2.mod";
+  e.clsid = 17308036u;
+  e.launchable = true;
+  e.max_steps = 186486543u;
+  const LaunchSpec spec = BuildLaunchSpec(e, "/bin/emu");
+  ASSERT_EQ(spec.argv.size(), 5u);
+  EXPECT_EQ(spec.env.count("ZEEB_MAX_STEPS"), 1u);
+  EXPECT_EQ(spec.env.at("ZEEB_MAX_STEPS"), "186486543");
+}
+
+TEST(GameLibrary, LaunchSpecLeavesTheBudgetUnsetWhenTheTitleDoesNotNeedOne) {
+  GameEntry e;
+  e.mod_path = "/x/t.mod";
+  e.clsid = 1u;
+  e.launchable = true;
+  const LaunchSpec spec = BuildLaunchSpec(e, "/bin/emu");
+  EXPECT_EQ(spec.env.count("ZEEB_MAX_STEPS"), 0u)
+      << "sem max_steps medido, nao se inventa orcamento";
 }
 
 TEST(GameLibrary, MissingManifestIsEmptyAndIsNotAnError) {

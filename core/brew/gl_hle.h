@@ -270,6 +270,12 @@ class GlHle {
   // copia lixo/zeros. Silenciosamente nao faz nada quando o backend nao tem
   // GL real (ReadPixelsRgba devolve false) -- nunca inventa conteudo.
   bool SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surface);
+  // Acumuladores do perfil de readback (ZEEB_PROF_READBACK=1). Separam o custo
+  // do glReadPixels do custo da conversao RGBA->RGB565, para que a otimizacao
+  // ataque a metade que realmente pesa.
+  uint64_t prof_read_us_ = 0;
+  uint64_t prof_conv_us_ = 0;
+  uint64_t prof_calls_ = 0;
   std::map<uint32_t, EglSurfaceState> egl_surfaces_;
   uint32_t next_egl_surface_ = 2;       // 1 e a janela
   uint32_t current_draw_surface_ = 0;

@@ -216,19 +216,82 @@ std::vector<uint32_t> FindClsidCandidatesInMod(const std::vector<uint8_t>& mod,
   return found;
 }
 
-std::map<std::string, uint32_t> LoadManifest(const std::string& path) {
-  std::map<std::string, uint32_t> out;
+namespace {
+
+// Parser do manifesto, tolerante de proposito: o arquivo e editado a mao pelo
+// dono do projeto, e recusar por causa de espaco ou quebra de linha seria
+// hostil. Aceita DUAS formas por jogo, e a antiga continua valendo:
+//
+//   "274214": 17308036
+//   "274259": { "clsid": 17308016, "max_steps": 186486543,
+//               "env": { "ZEEB_GL_SOFT": "1" } }
+//
+// A forma longa existe para o que a GUI precisa passar por jogo: orcamento de
+// passos (que sem isto faz o cnk2 ser dado como morto) e flags ZEEB_* em geral.
+std::string Unquote(const std::string& s) {
+  std::string r = s;
+  r.erase(std::remove_if(r.begin(), r.end(),
+                         [](unsigned char ch) { return std::isspace(ch) != 0; }),
+          r.end());
+  if (r.size() >= 2 && r.front() == '"' && r.back() == '"') r = r.substr(1, r.size() - 2);
+  return r;
+}
+
+// Le um valor escalar a partir de `pos`, parando em virgula ou fecha-chaves.
+std::string ScalarAt(const std::string& body, size_t pos, size_t* out_end) {
+  const size_t vstart = body.find_first_not_of(" \t\r\n", pos);
+  if (vstart == std::string::npos) { *out_end = pos; return ""; }
+  size_t vend = body.find_first_of(",}\n", vstart);
+  if (vend == std::string::npos) vend = body.size();
+  *out_end = vend;
+  return Unquote(body.substr(vstart, vend - vstart));
+}
+
+// Le um objeto { "chave": "valor", ... } a partir da chave que o antecede.
+std::map<std::string, std::string> ObjectOfScalars(const std::string& text, size_t from) {
+  std::map<std::string, std::string> out;
+  const size_t open = text.find('{', from);
+  if (open == std::string::npos) return out;
+  int depth = 0;
+  size_t close = open;
+  for (; close < text.size(); ++close) {
+    if (text[close] == '{') ++depth;
+    else if (text[close] == '}' && --depth == 0) break;
+  }
+  const std::string inner = text.substr(open + 1, close - open - 1);
+  size_t p = 0;
+  while ((p = inner.find('"', p)) != std::string::npos) {
+    const size_t ke = inner.find('"', p + 1);
+    if (ke == std::string::npos) break;
+    const std::string key = inner.substr(p + 1, ke - p - 1);
+    const size_t colon = inner.find(':', ke);
+    if (colon == std::string::npos) break;
+    size_t next = colon;
+    const std::string val = ScalarAt(inner, colon + 1, &next);
+    if (!key.empty() && !val.empty()) out[key] = val;
+    p = next;
+  }
+  return out;
+}
+
+}  // namespace
+
+std::map<std::string, GameConfig> LoadManifest(const std::string& path) {
+  std::map<std::string, GameConfig> out;
   const std::vector<uint8_t> bytes = ReadFile(path);
   if (bytes.empty()) return out;
-  std::string text(bytes.begin(), bytes.end());
-  // Parser minimo e deliberadamente tolerante: o arquivo e editado a mao pelo
-  // usuario, e recusar por causa de espaco ou quebra de linha seria hostil.
-  size_t pos = text.find("\"games\"");
+  const std::string text(bytes.begin(), bytes.end());
+  const size_t pos = text.find("\"games\"");
   if (pos == std::string::npos) return out;
-  pos = text.find('{', pos);
-  if (pos == std::string::npos) return out;
-  size_t end = text.find('}', pos);
-  const std::string body = text.substr(pos + 1, (end == std::string::npos ? text.size() : end) - pos - 1);
+  const size_t open = text.find('{', pos);
+  if (open == std::string::npos) return out;
+  int depth = 0;
+  size_t close = open;
+  for (; close < text.size(); ++close) {
+    if (text[close] == '{') ++depth;
+    else if (text[close] == '}' && --depth == 0) break;
+  }
+  const std::string body = text.substr(open + 1, close - open - 1);
   size_t p = 0;
   while ((p = body.find('"', p)) != std::string::npos) {
     const size_t key_end = body.find('"', p + 1);
@@ -238,26 +301,50 @@ std::map<std::string, uint32_t> LoadManifest(const std::string& path) {
     if (colon == std::string::npos) break;
     size_t vstart = body.find_first_not_of(" \t\r\n", colon + 1);
     if (vstart == std::string::npos) break;
-    size_t vend = body.find_first_of(",}\n", vstart);
-    if (vend == std::string::npos) vend = body.size();
-    std::string raw = body.substr(vstart, vend - vstart);
-    raw.erase(std::remove_if(raw.begin(), raw.end(),
-                             [](unsigned char c) { return std::isspace(c) != 0; }),
-              raw.end());
-    if (!raw.empty() && raw.front() == '"' && raw.back() == '"') raw = raw.substr(1, raw.size() - 2);
-    if (!raw.empty()) {
-      const uint32_t value = static_cast<uint32_t>(std::strtoul(raw.c_str(), nullptr, 0));
-      if (value != 0) out[key] = value;
+    GameConfig cfg;
+    if (body[vstart] == '{') {
+      // Forma longa. `clsid` e obrigatorio; o resto e opcional.
+      const size_t clsid_key = body.find("\"clsid\"", vstart);
+      const size_t obj_end = body.find('}', vstart);
+      if (clsid_key != std::string::npos && (obj_end == std::string::npos || clsid_key < obj_end)) {
+        const size_t c = body.find(':', clsid_key);
+        size_t next = c;
+        cfg.clsid = static_cast<uint32_t>(std::strtoull(ScalarAt(body, c + 1, &next).c_str(), nullptr, 0));
+      }
+      const size_t ms_key = body.find("\"max_steps\"", vstart);
+      if (ms_key != std::string::npos && (obj_end == std::string::npos || ms_key < obj_end)) {
+        const size_t c = body.find(':', ms_key);
+        size_t next = c;
+        cfg.max_steps = std::strtoull(ScalarAt(body, c + 1, &next).c_str(), nullptr, 0);
+      }
+      const size_t env_key = body.find("\"env\"", vstart);
+      if (env_key != std::string::npos && (obj_end == std::string::npos || env_key < obj_end)) {
+        cfg.env = ObjectOfScalars(body, env_key);
+      }
+      p = (obj_end == std::string::npos) ? body.size() : obj_end;
+    } else {
+      size_t next = colon;
+      cfg.clsid = static_cast<uint32_t>(std::strtoul(ScalarAt(body, colon + 1, &next).c_str(), nullptr, 0));
+      p = next;
     }
-    p = vend;
+    if (cfg.clsid != 0 || cfg.max_steps != 0 || !cfg.env.empty()) out[key] = cfg;
   }
   return out;
 }
 
-std::map<std::string, uint32_t> MergeManifests(const std::map<std::string, uint32_t>& base,
-                                               const std::map<std::string, uint32_t>& user) {
-  std::map<std::string, uint32_t> out = base;
-  for (const auto& kv : user) out[kv.first] = kv.second;  // o usuario manda
+std::map<std::string, GameConfig> MergeManifests(const std::map<std::string, GameConfig>& base,
+                                                 const std::map<std::string, GameConfig>& user) {
+  std::map<std::string, GameConfig> out = base;
+  for (const auto& kv : user) {
+    // O usuario manda, mas so nos campos que ele realmente escreveu: um
+    // manifesto de usuario que so corrige o clsid nao pode apagar o max_steps
+    // medido que veio da camada de base.
+    GameConfig merged = out[kv.first];
+    if (kv.second.clsid != 0) merged.clsid = kv.second.clsid;
+    if (kv.second.max_steps != 0) merged.max_steps = kv.second.max_steps;
+    for (const auto& e : kv.second.env) merged.env[e.first] = e.second;
+    out[kv.first] = merged;
+  }
   return out;
 }
 
@@ -349,8 +436,14 @@ ScanResult ScanNand(const ScanOptions& options) {
 
     // ClsId: manifesto > .mif > .mod > desconhecido (ordem do requisito RF-3).
     const auto it = options.manifest_clsids.find(folder);
-    if (it != options.manifest_clsids.end() && it->second != 0) {
-      e.clsid = it->second;
+    // max_steps e env valem MESMO quando o clsid veio do .mif: o que a GUI
+    // precisa passar por jogo nao depende de onde o clsid foi descoberto.
+    if (it != options.manifest_clsids.end()) {
+      e.max_steps = it->second.max_steps;
+      e.env = it->second.env;
+    }
+    if (it != options.manifest_clsids.end() && it->second.clsid != 0) {
+      e.clsid = it->second.clsid;
       e.clsid_source = ClsidSource::kManifest;
     } else if (!e.clsid_candidates.empty()) {
       e.clsid = e.clsid_candidates.front();
@@ -388,21 +481,33 @@ ScanResult ScanNand(const ScanOptions& options) {
 
 std::vector<std::string> BuildLaunchArgs(const GameEntry& entry,
                                          const std::string& emulator_binary) {
-  std::vector<std::string> args;
-  if (!entry.launchable || entry.clsid == 0 || entry.mod_path.empty()) return args;
-  if (emulator_binary.empty()) return args;
-  args.push_back(emulator_binary);
-  args.push_back(entry.mod_path);
+  return BuildLaunchSpec(entry, emulator_binary).argv;
+}
+
+LaunchSpec BuildLaunchSpec(const GameEntry& entry, const std::string& emulator_binary) {
+  LaunchSpec spec;
+  if (!entry.launchable || entry.clsid == 0 || entry.mod_path.empty()) return spec;
+  if (emulator_binary.empty()) return spec;
+  spec.argv.push_back(emulator_binary);
+  spec.argv.push_back(entry.mod_path);
   // Os dois slots de ggz sao posicionais no frontend: passar "-" quando nao ha.
-  args.push_back(entry.data_ggz.empty() ? "-" : entry.data_ggz);
-  args.push_back(entry.sound_ggz.empty() ? "-" : entry.sound_ggz);
-  args.push_back(std::to_string(entry.clsid));
+  spec.argv.push_back(entry.data_ggz.empty() ? "-" : entry.data_ggz);
+  spec.argv.push_back(entry.sound_ggz.empty() ? "-" : entry.sound_ggz);
+  spec.argv.push_back(std::to_string(entry.clsid));
   // --bar e opcional e nomeado: so entra quando o titulo tem arquivo .bar.
   if (!entry.bar.empty()) {
-    args.push_back("--bar");
-    args.push_back(entry.bar);
+    spec.argv.push_back("--bar");
+    spec.argv.push_back(entry.bar);
   }
-  return args;
+  // Orcamento de passos por jogo. MEDIDO: sem isto o cnk2 aborta com
+  // "exceeded 64000000 steps without returning" e e dado como morto.
+  if (entry.max_steps != 0) {
+    spec.env["ZEEB_MAX_STEPS"] = std::to_string(entry.max_steps);
+  }
+  // Flags livres do manifesto. O que vier escrito aqui vence, para o dono do
+  // projeto poder ajustar sem recompilar.
+  for (const auto& kv : entry.env) spec.env[kv.first] = kv.second;
+  return spec;
 }
 
 std::string DefaultUiConfigPath(const char* xdg_data_home, const char* home) {

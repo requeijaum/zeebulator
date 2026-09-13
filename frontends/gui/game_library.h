@@ -59,6 +59,11 @@ struct GameEntry {
   ClsidSource clsid_source = ClsidSource::kUnknown;
   bool launchable = false;      // so quando clsid != 0
   std::string status_reason;    // texto para a UI; vazio quando launchable
+  // Configuracao por jogo vinda do manifesto (ver GameConfig). Sem isto a GUI
+  // sobe todo titulo com o mesmo orcamento de passos, e titulos como o cnk2 sao
+  // dados como mortos -- medido: "exceeded 64000000 steps without returning".
+  uint64_t max_steps = 0;       // 0 = padrao do emulador
+  std::map<std::string, std::string> env;
 };
 
 struct ScanResult {
@@ -70,11 +75,38 @@ struct ScanResult {
   size_t folders_with_mod = 0;
 };
 
+// Configuracao POR JOGO vinda do manifesto.
+//
+// Existe por MEDICAO, nao por simetria. Medido no cnk2 (mod/274214), subindo o
+// jogo exatamente como a GUI subia -- sem passar orcamento de passos:
+//
+//     exceeded 64000000 steps without returning -- aborting this call
+//     CreateInstance did not produce a trustworthy applet pointer -- stopping.
+//
+// Ou seja: o jogo era dado como MORTO. Com o orcamento que ele realmente
+// precisa (186486543, medido com ZEEB_LOG_STEPS), ele roda normalmente. O
+// emulador ja honra ZEEB_MAX_STEPS; o que faltava era a GUI ter de onde tirar
+// o numero -- e por isso o dono do projeto relatou que "subir pela GUI nao deu
+// muito certo".
+//
+// `env` e o mecanismo geral: qualquer flag ZEEB_* que um titulo precise entra
+// aqui, sem a GUI ter que conhecer cada uma. O que nao pode acontecer e a GUI
+// subir todo jogo com o mesmo ambiente e o mesmo orcamento.
+struct GameConfig {
+  uint32_t clsid = 0;
+  // 0 = deixa o emulador usar o proprio padrao. Quando > 0, a GUI exporta
+  // ZEEB_MAX_STEPS.
+  uint64_t max_steps = 0;
+  std::map<std::string, std::string> env;
+};
+
+// --- Descoberta ---------------------------------------------------------------
+
 struct ScanOptions {
   std::string nand_root;
   // ClsIds ja resolvidos, por pasta. Vem do manifesto do usuario e tem
   // precedencia sobre tudo -- e a unica fonte que o usuario pode corrigir a mao.
-  std::map<std::string, uint32_t> manifest_clsids;
+  std::map<std::string, GameConfig> manifest_clsids;
 };
 
 // Varre <nand_root>/mod e devolve uma entrada por pasta que contenha .mod.
@@ -86,15 +118,15 @@ ScanResult ScanNand(const ScanOptions& options);
 // Formato deliberadamente simples e legivel a mao:
 //   { "games": { "274214": "0x1081984", "277455": 3207913505 } }
 // Devolve mapa vazio quando o arquivo nao existe (nao e erro).
-std::map<std::string, uint32_t> LoadManifest(const std::string& path);
+std::map<std::string, GameConfig> LoadManifest(const std::string& path);
 
 // Manifesto efetivo: a camada BASE (default_games.json, embarcado) mais a do
 // usuario, que sobrescreve. Existe porque ha ClsIds que nem o .mif nem o .mod
 // resolvem direito: medido, o .mif do tectoy (274755) declara DUAS classes e a
 // do applet e a SEGUNDA (0x01070798), com 0x01077CF4 antes dela -- sem esta
 // camada a GUI tentaria a errada no titulo mais importante do corpus.
-std::map<std::string, uint32_t> MergeManifests(const std::map<std::string, uint32_t>& base,
-                                               const std::map<std::string, uint32_t>& user);
+std::map<std::string, GameConfig> MergeManifests(const std::map<std::string, GameConfig>& base,
+                                                 const std::map<std::string, GameConfig>& user);
 
 // Argumentos para iniciar um titulo no frontend de emulacao. Devolve vetor vazio
 // quando a entrada nao e iniciavel -- melhor recusar do que montar uma linha que
@@ -105,6 +137,16 @@ std::map<std::string, uint32_t> MergeManifests(const std::map<std::string, uint3
 // ggz) e assim ela tem teste.
 std::vector<std::string> BuildLaunchArgs(const GameEntry& entry,
                                          const std::string& emulator_binary);
+
+// argv + ambiente de um lancamento. Antes so existia o argv, e por isso nao
+// havia como a GUI passar nada que fosse por variavel de ambiente -- que e
+// justamente como o emulador recebe orcamento de passos e as chaves de
+// bisseccao. Ver GameConfig para a medicao que motivou isto.
+struct LaunchSpec {
+  std::vector<std::string> argv;
+  std::map<std::string, std::string> env;
+};
+LaunchSpec BuildLaunchSpec(const GameEntry& entry, const std::string& emulator_binary);
 
 // Preferencias da interface. Persistidas em ~/.local/share/zeebulator/ui.json.
 // NUNCA no diretorio NAND: aquele e midia do jogo (requisito RF-8).

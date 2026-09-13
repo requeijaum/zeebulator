@@ -1,5 +1,7 @@
 #include "frontends/gui/emulator_session.h"
 
+#include <map>
+
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -51,16 +53,20 @@ bool EmulatorSession::Start(const GameEntry& entry, const std::string& emulator_
     last_error_ = "titulo nao iniciavel: " + entry.status_reason;
     return false;
   }
-  const std::vector<std::string> argv = BuildLaunchArgs(entry, emulator_binary);
+  // BuildLaunchSpec, e nao BuildLaunchArgs: o ambiente por jogo (orcamento de
+  // passos, flags ZEEB_*) faz parte do lancamento. Ver GameConfig.
+  const LaunchSpec spec = BuildLaunchSpec(entry, emulator_binary);
+  const std::vector<std::string>& argv = spec.argv;
   if (argv.empty()) {
     last_error_ = "nao consegui montar a linha de comando deste titulo";
     return false;
   }
-  return StartCommand(argv, entry.name);
+  return StartCommand(argv, entry.name, spec.env);
 }
 
 bool EmulatorSession::StartCommand(const std::vector<std::string>& argv,
-                                   const std::string& title) {
+                                   const std::string& title,
+                                   const std::map<std::string, std::string>& env) {
   if (argv.empty() || argv[0].empty()) {
     last_error_ = "linha de comando vazia";
     return false;
@@ -80,6 +86,12 @@ bool EmulatorSession::StartCommand(const std::vector<std::string>& argv,
     raw.reserve(argv.size() + 1);
     for (const std::string& a : argv) raw.push_back(const_cast<char*>(a.c_str()));
     raw.push_back(nullptr);
+    // Ambiente por jogo, no filho. setenv ANTES do exec, e nao execve com um
+    // environ montado a mao: assim o filho herda o ambiente do usuario (DISPLAY,
+    // XDG_*, ZEEB_DATA_DIR) e so acrescenta o que e especifico do titulo.
+    for (const auto& kv : env) {
+      if (!kv.first.empty()) setenv(kv.first.c_str(), kv.second.c_str(), /*overwrite=*/1);
+    }
     execv(raw[0], raw.data());
     std::fprintf(stderr, "nao consegui executar '%s': %s\n", raw[0], std::strerror(errno));
     _exit(127);

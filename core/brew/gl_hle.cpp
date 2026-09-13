@@ -1,5 +1,7 @@
 #include "core/brew/gl_hle.h"
 
+#include <chrono>
+
 #include "core/control/debug_sink.h"
 
 #include <array>
@@ -520,7 +522,13 @@ bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surfac
   const int rect_w = surface.width;
   const int rect_h = surface.height;
   std::vector<uint8_t> rgba;
-  if (!backend_.ReadPixelsRgba(rect_x, rect_y, rect_w, rect_h, rgba)) return false;
+  const auto t_read0 = std::chrono::steady_clock::now();
+  const bool read_ok = backend_.ReadPixelsRgba(rect_x, rect_y, rect_w, rect_h, rgba);
+  if (std::getenv("ZEEB_PROF_READBACK") != nullptr) {
+    prof_read_us_ += std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - t_read0).count();
+  }
+  if (!read_ok) return false;
   if (rgba.size() < static_cast<size_t>(rect_w) * static_cast<size_t>(rect_h) * 4u) return false;
   ++DrawStats::Instance().gl_color_buffer_readback;
   // Diagnostico de ordem de canais: grava o RGBA CRU vindo do host, antes de
@@ -567,6 +575,15 @@ bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surfac
                    (unsigned long long)DrawStats::Instance().gl_tex_image);
     }
   }
+  // MEDICAO DO CUSTO, antes de otimizar qualquer coisa.
+  //
+  // Este e o laco mais quente do quadro: 640x330 = 211.200 iteracoes, cada uma
+  // com um Memory::Write16 que atravessa o mapa de paginas. A outra metade do
+  // custo e o glReadPixels de 845 KB (640x330 RGBA). Sem separar os dois, uma
+  // "otimizacao" e chute. ZEEB_PROF_READBACK=1 imprime o acumulado dos dois a
+  // cada 30 leituras, em microssegundos.
+  static const bool prof = std::getenv("ZEEB_PROF_READBACK") != nullptr;
+  const auto t_conv0 = std::chrono::steady_clock::now();
   for (int y = 0; y < rect_h; ++y) {
     for (int x = 0; x < rect_w; ++x) {
       const size_t src = (static_cast<size_t>(y) * static_cast<size_t>(rect_w) +
@@ -580,6 +597,20 @@ bool GlHle::SyncSurfaceColorBuffer(Memory& memory, const EglSurfaceState& surfac
                                                   static_cast<size_t>(surface.width) +
                                                   static_cast<size_t>(x)) * 2u);
       memory.Write16(dst, rgb565);
+    }
+  }
+  if (prof) {
+    const auto t_conv1 = std::chrono::steady_clock::now();
+    prof_conv_us_ += std::chrono::duration_cast<std::chrono::microseconds>(
+                         t_conv1 - t_conv0).count();
+    if ((++prof_calls_ % 30) == 0) {
+      std::fprintf(stderr,
+                   "[prof] %llu leituras: glReadPixels=%llu us  conversao=%llu us  "
+                   "(%.0f%% na conversao)\n",
+                   (unsigned long long)prof_calls_, (unsigned long long)prof_read_us_,
+                   (unsigned long long)prof_conv_us_,
+                   100.0 * double(prof_conv_us_) /
+                       double(prof_read_us_ + prof_conv_us_ + 1));
     }
   }
   return true;

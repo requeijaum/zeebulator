@@ -12,6 +12,13 @@
     "278738": "0x0108FF16",
     "278965": "0x01095146",
     "280214": "0x0109DA8E",
-    "280647": "0x0108FF17"
-  }
+    "280647": "0x0108FF17",
+    "274214": {
+      "max_steps": 186486543
+    },
+    "274803": {
+      "max_steps": 483295456
+    }
+  },
+  "_orcamento_de_passos": "Medido: sem ZEEB_MAX_STEPS o cnk2 (274214) aborta com 'exceeded 64000000 steps without returning' e e dado como morto. So entra aqui orcamento MEDIDO -- titulo sem medida nao recebe numero inventado."
 }

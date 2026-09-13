@@ -46,7 +46,7 @@ struct AppState {
   std::string config_path;
   zeebulator::gui::ScanResult library;
   std::string filter;
-  std::map<std::string, uint32_t> user_manifest;
+  std::map<std::string, zeebulator::gui::GameConfig> user_manifest;
   int selected = -1;
   std::string nand_input;      // campo editavel da aba Configuracoes
   std::string status_message;  // ultima acao; a UI nunca fica muda
@@ -81,10 +81,33 @@ void LaunchSelected(AppState& st) {
     return;
   }
   const zeebulator::gui::GameEntry& entry = st.library.entries[static_cast<size_t>(st.selected)];
+  // Log do lancamento. Existe porque "subir pela GUI nao deu certo" nao e um
+  // sintoma diagnosticavel: sem saber QUAL linha de comando e QUAL ambiente a
+  // GUI montou, nao ha como comparar com a execucao manual, que e como o
+  // projeto vinha rodando os titulos ate agora.
+  {
+    const zeebulator::gui::LaunchSpec spec =
+        zeebulator::gui::BuildLaunchSpec(entry, kDefaultEmulator);
+    std::fprintf(stderr, "[gui] lancando %s (pasta %s, clsid 0x%08x)\n", entry.name.c_str(),
+                 entry.folder.c_str(), entry.clsid);
+    std::fprintf(stderr, "[gui]   argv:");
+    for (const std::string& a : spec.argv) std::fprintf(stderr, " %s", a.c_str());
+    std::fprintf(stderr, "\n[gui]   env:");
+    if (spec.env.empty()) std::fprintf(stderr, " (vazio)");
+    for (const auto& kv : spec.env) {
+      std::fprintf(stderr, " %s=%s", kv.first.c_str(), kv.second.c_str());
+    }
+    std::fprintf(stderr, "\n");
+  }
   if (st.session.Start(entry, kDefaultEmulator)) {
     st.status_message = "iniciado: " + entry.name;
   } else {
     st.status_message = st.session.last_error();
+    // A recusa tambem vai para o stderr. Estava so na barra de status, e isso
+    // ja me custou uma medicao errada nesta sessao: o log mostrava a linha de
+    // "lancando" (impressa ANTES do Start) junto do aviso de orcamento do
+    // processo ANTERIOR, e parecia que o titulo novo tinha subido e falhado.
+    std::fprintf(stderr, "[gui] RECUSADO: %s\n", st.session.last_error().c_str());
   }
 }
 

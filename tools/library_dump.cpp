@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
   zeebulator::gui::ScanOptions options;
   options.nand_root = argv[1];
   std::string filter;
-  std::map<std::string, uint32_t> user_manifest;
+  std::map<std::string, zeebulator::gui::GameConfig> user_manifest;
   bool use_default = true;
   for (int i = 2; i < argc; ++i) {
     if (std::strcmp(argv[i], "--manifest") == 0 && i + 1 < argc) {
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
   }
 
   // Camada base embarcada (default_games.json) + a do usuario por cima.
-  std::map<std::string, uint32_t> base_manifest;
+  std::map<std::string, zeebulator::gui::GameConfig> base_manifest;
   if (use_default) {
     base_manifest = zeebulator::gui::LoadManifest(std::string(GUI_DEFAULT_MANIFEST));
   }

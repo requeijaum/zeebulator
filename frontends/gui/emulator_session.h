@@ -34,7 +34,12 @@ class EmulatorSession {
 
   // Mesma coisa, com a linha de comando pronta. Existe para poder testar o ciclo
   // de vida com um processo de verdade (/bin/sleep) sem depender do emulador.
-  bool StartCommand(const std::vector<std::string>& argv, const std::string& title);
+  // `env` e aplicado no processo filho antes do exec. Existe porque o
+  // emulador recebe orcamento de passos e chaves de bisseccao por variavel de
+  // ambiente, e sem isto a GUI sobe todo jogo com o mesmo ambiente -- o que faz
+  // titulos como o cnk2 serem dados como mortos (ver GameConfig).
+  bool StartCommand(const std::vector<std::string>& argv, const std::string& title,
+                    const std::map<std::string, std::string>& env = {});
 
   // Colhe o filho se ele terminou. Precisa ser chamado periodicamente pela UI;
   // sem isso o processo vira zumbi.

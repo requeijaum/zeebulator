@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <string>
+#include <cstdio>
+#include <fstream>
 #include <thread>
 #include <vector>
 
@@ -139,4 +141,48 @@ TEST(EmulatorSession, EmptyCommandIsRefusedWithAReason) {
   EXPECT_FALSE(s.StartCommand({}, "nada"));
   EXPECT_FALSE(s.last_error().empty());
   EXPECT_EQ(s.state(), SessionState::kIdle);
+}
+
+// --- Ambiente por jogo chega mesmo ao processo filho -------------------------
+//
+// O teste nao olha a intencao do codigo, olha o EFEITO: sobe um filho de
+// verdade (via /bin/sh) que ESCREVE no arquivo o que ve no proprio ambiente, e
+// le o arquivo. Existe porque a GUI passou a precisar mandar orcamento de
+// passos por titulo -- sem isto o cnk2 e dado como morto com "exceeded
+// 64000000 steps without returning" -- e uma flag que nao chega ao filho e
+// indistinguivel de uma flag que ninguem escreveu.
+TEST(EmulatorSession, EnvReachesTheChildProcess) {
+  const std::string out = "/tmp/zeeb_env_probe.txt";
+  std::remove(out.c_str());
+  EmulatorSession s;
+  ASSERT_TRUE(s.StartCommand({"/bin/sh", "-c",
+                              std::string("printf '%s' \"$ZEEB_MAX_STEPS\" > ") + out},
+                             "probe", {{"ZEEB_MAX_STEPS", "186486543"}}));
+  for (int i = 0; i < 200 && !std::ifstream(out).good(); ++i) WaitABit(10);
+  WaitABit(50);
+  std::ifstream in(out);
+  std::string valor;
+  in >> valor;
+  std::remove(out.c_str());
+  EXPECT_EQ(valor, "186486543") << "o ambiente por jogo nao chegou ao filho";
+}
+
+// O filho NAO pode perder o ambiente do usuario: DISPLAY, XDG_* e ZEEB_DATA_DIR
+// vem do processo pai e sao o que faz o emulador achar video e estado.
+TEST(EmulatorSession, ChildKeepsTheInheritedEnvironment) {
+  setenv("ZEEB_TESTE_PAI", "herdado", 1);
+  const std::string out = "/tmp/zeeb_env_herdado.txt";
+  std::remove(out.c_str());
+  EmulatorSession s;
+  ASSERT_TRUE(s.StartCommand({"/bin/sh", "-c",
+                              std::string("printf '%s' \"$ZEEB_TESTE_PAI\" > ") + out},
+                             "probe"));
+  for (int i = 0; i < 200 && !std::ifstream(out).good(); ++i) WaitABit(10);
+  WaitABit(50);
+  std::ifstream in(out);
+  std::string valor;
+  in >> valor;
+  std::remove(out.c_str());
+  unsetenv("ZEEB_TESTE_PAI");
+  EXPECT_EQ(valor, "herdado") << "o filho perdeu o ambiente herdado do pai";
 }
