@@ -3097,6 +3097,76 @@ int main(int argc, char** argv) {
     shell_hle.RegisterInstance(0x01000000, dl_obj);
   }
 
+  // 0x01005000 = AEECLSID_WEB (AEEIWeb.h). TRES titulos do corpus o pedem e hoje
+  // recebem ECLASSNOTSUPPORT; em pelo menos um (`mod/278738`) o pedido e seguido
+  // de imediato por um wander (pc=0x00000000 sai do modulo), ou seja o guest
+  // desreferencia o resultado nulo.
+  //
+  // A vtable vem de FONTE PRIMARIA, do header do SDK, nao de inferencia:
+  //   INHERIT_IWeb(iname): INHERIT_IxOpts(iname); GetResponse; GetResponseV
+  //   INHERIT_IxOpts(iname): INHERIT_IQI(iname); AddOpt; RemoveOpt; GetOpt
+  // Logo:
+  //   0 AddRef  1 Release  2 QueryInterface
+  //   3 AddOpt(xOpt*)  4 RemoveOpt(nOptId,nIndex)  5 GetOpt(nOptId,nIndex,xOpt*)
+  //   6 GetResponse(IWebResp **, AEECallback *, const char *url, ...)
+  //   7 GetResponseV(IWebResp **, AEECallback *, const char *url, xOpt *)
+  //
+  // POLITICA OFFLINE, e ela e honesta: nao ha rede aqui. GetResponse NAO pode
+  // devolver sucesso, e o header diz que o retorno dele e `void` -- a resposta
+  // chega por `*ppiwresp` e/ou pelo callback. Entao escrevemos 0 em *ppiwresp
+  // (nenhuma resposta) e NAO disparamos o callback: disparar seria afirmar que a
+  // requisicao terminou, e ela nao terminou. O log e o que mede se o jogo espera
+  // para sempre ou segue sem a resposta -- se esperar, o passo seguinte e
+  // entregar a falha pelo callback, e nao inventar uma resposta.
+  {
+    auto web_log = std::make_shared<std::map<uint32_t, uint64_t>>();
+    std::vector<zeebulator::HleRuntime::HleFunction> web_methods(8);
+    for (uint32_t slot = 0; slot < web_methods.size(); ++slot) {
+      web_methods[slot] = [slot, web_log](zeebulator::IArmCore& core) {
+        const uint64_t n = ++(*web_log)[slot];
+        if (n <= 4 && std::getenv("ZEEB_LOG_WEB") != nullptr) {
+          std::fprintf(stderr,
+                       "[web] slot %u (n=%llu): r1=0x%08x r2=0x%08x r3=0x%08x lr=0x%08x\n",
+                       slot, (unsigned long long)n, core.GetRegister(zeebulator::kR1),
+                       core.GetRegister(zeebulator::kR2), core.GetRegister(zeebulator::kR3),
+                       core.GetRegister(zeebulator::kLR));
+        }
+        if (slot == 0 || slot == 1) {
+          core.SetRegister(zeebulator::kR0, 1);  // objeto imortal: nao ha destruicao real
+          return;
+        }
+        if (slot == 2) {  // QueryInterface
+          const uint32_t iid = core.GetRegister(zeebulator::kR1);
+          const uint32_t ppo = core.GetRegister(zeebulator::kR2);
+          if (iid == 0x01005000u || iid == 0x01000001u) {
+            if (ppo != 0) core.GetMemory().Write32(ppo, core.GetRegister(zeebulator::kR0));
+            core.SetRegister(zeebulator::kR0, 0);
+          } else {
+            core.SetRegister(zeebulator::kR0, 3);  // ECLASSNOTSUPPORT
+          }
+          return;
+        }
+        if (slot == 4 || slot == 5 || slot == 6 || slot == 7) {
+          const uint32_t saida = core.GetRegister(zeebulator::kR1);
+          if (slot == 6 || slot == 7) {
+            // *ppiwresp = 0: nenhuma resposta, e o callback NAO e chamado.
+            if (saida != 0) core.GetMemory().Write32(saida, 0);
+          } else if (slot == 5 && saida != 0) {
+            core.GetMemory().Write32(saida, 0);
+          }
+        }
+        // AddOpt/RemoveOpt/GetOpt devolvem SUCCESS (0): sao configuracao de
+        // opcoes, nao rede, e recusa-las faria o guest parar por um motivo que
+        // nao e o que estamos modelando. GetResponse/GetResponseV tem retorno
+        // void no header, entao r0 nao importa para elas.
+        core.SetRegister(zeebulator::kR0, 0);
+      };
+    }
+    uint32_t web_obj = zeebulator::BuildInterfaceObject(
+        cpu.GetMemory(), hle, /*vtable=*/0x8007F000, /*object=*/0x80080000, web_methods);
+    shell_hle.RegisterInstance(0x01005000, web_obj);
+  }
+
   // 3) 0x01006c02: OEM_LCTSystemCtl (controle do sistema/luzes). tectoymain.c:1759.
   //    Slot 6 chamado em laco; 0 significa 'sucesso/siga'.
   //
@@ -3124,6 +3194,50 @@ int main(int argc, char** argv) {
   uint32_t sysctl_obj = zeebulator::BuildInterfaceObject(
       cpu.GetMemory(), hle, /*vtable=*/0x80077000, /*object=*/0x80078000, sysctl_methods);
   shell_hle.RegisterInstance(0x01006c02, sysctl_obj);
+
+  // 0x01006c01 = AEECLSID_LCT_SIMCARDCTL. O Z-Wheel pede e hoje recebe
+  // ECLASSNOTSUPPORT; o guest imprime "Unable to create instance of
+  // AEECLSID_LCT_SIMCARDCTL" em laco.
+  //
+  // O zeebx mediu que OFERECER a classe PIORA: com CreateInstance falhando o
+  // guest vai ao estado 0x27 e AVANCA para o formulario do z-pad; com a classe
+  // oferecida e o slot 3 devolvendo 0 ele vai ao 0x28 e nao faz nada; e com o
+  // slot 3 devolvendo nao-zero aparece "SIM Error dialog".
+  //
+  // Isso e PISTA, nao prova -- e o dono do projeto pediu para testar aqui. A
+  // vtable deles tem quatro slots (`AddRef, Release, QueryInterface,
+  // PedirVerificacao`), e e a mesma familia do SystemCtl que ja tratamos.
+  //
+  // Chaves, para medir os tres desfechos no NOSSO emulador:
+  //   ZEEB_SIMCARD_STUB=1        registra a classe, slot 3 devolve 0
+  //   ZEEB_SIMCARD_STUB=nonzero  registra a classe, slot 3 devolve 1
+  //   (sem chave)                comportamento atual: recusa
+  if (const char* sc = std::getenv("ZEEB_SIMCARD_STUB")) {
+    const bool nonzero = std::string(sc) == "nonzero";
+    auto sc_log = std::make_shared<std::map<uint32_t, uint64_t>>();
+    std::vector<zeebulator::HleRuntime::HleFunction> sc_methods(4);
+    for (uint32_t slot = 0; slot < sc_methods.size(); ++slot) {
+      sc_methods[slot] = [slot, sc_log, nonzero](zeebulator::IArmCore& core) {
+        ++(*sc_log)[slot];
+        std::fprintf(stderr,
+                     "[simcard] slot %u chamado: r1=0x%08x r2=0x%08x lr=0x%08x -> devolve %s\n",
+                     slot, core.GetRegister(zeebulator::kR1), core.GetRegister(zeebulator::kR2),
+                     core.GetRegister(zeebulator::kLR), (slot == 3 && nonzero) ? "nao-zero" : "0");
+        if (slot == 3) {
+          // Guarda o par (callback, user) e NAO chama: nao ha cartao para
+          // verificar, e chamar seria afirmar que ha.
+          core.SetRegister(zeebulator::kR0, nonzero ? 1 : 0);
+          return;
+        }
+        core.SetRegister(zeebulator::kR0, slot == 1 ? 1 : 0);
+      };
+    }
+    uint32_t sc_obj = zeebulator::BuildInterfaceObject(
+        cpu.GetMemory(), hle, /*vtable=*/0x80081000, /*object=*/0x80082000, sc_methods);
+    shell_hle.RegisterInstance(0x01006c01, sc_obj);
+    std::fprintf(stderr, "[simcard] classe oferecida, slot 3 devolve %s (ZEEB_SIMCARD_STUB)\n",
+                 nonzero ? "nao-zero" : "zero");
+  }
 
   // 4) Fonte e Typeface TrueType da Z-Wheel (AEECLSID_TYPEFACE = 0x01035156, AEECLSID_ROLLER_FONT = 0x0102f67c)
   // Objeto de Fonte concreto (vtable 0x8007B000 / object 0x8007C000):
