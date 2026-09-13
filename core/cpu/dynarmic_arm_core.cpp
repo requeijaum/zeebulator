@@ -301,7 +301,12 @@ void DynarmicArmCore::Reset() {
   jit_->Reset();
   jit_->ClearCache();
   jit_->Regs().fill(0);
-  jit_->SetCpsr(0);
+  // Mesmo modo inicial do ArmInterpreter: USUARIO (0x10), nao zero. Os dois
+  // precisam concordar bit a bit -- o teste
+  // DynarmicArmCore.MatchesInterpreterLockstep pegou esta divergencia no mesmo
+  // commit em que o interpretador mudou. Ver ArmInterpreter::Reset para a
+  // medicao em chessbots.mod que fixa o modo.
+  jit_->SetCpsr(0x10);
   callbacks_->code_pages.clear();
 }
 

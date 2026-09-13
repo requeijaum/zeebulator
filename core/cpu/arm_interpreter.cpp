@@ -106,7 +106,34 @@ ArmInterpreter::ArmInterpreter() { Reset(); }
 
 void ArmInterpreter::Reset() {
   regs_.fill(0);
-  cpsr_ = 0;
+  // O campo de modo do CPSR nasce em MODO USUARIO (0b10000), e nao em zero.
+  //
+  // Zero nao e um modo ARM: os modos definidos sao User 0x10, FIQ 0x11, IRQ
+  // 0x12, Supervisor 0x13, Abort 0x17, Undefined 0x1B e System 0x1F. Um
+  // convidado que leia o CPSR e decida pelo modo estava lendo um valor que o
+  // processador nunca produz.
+  //
+  // Usuario e o modo em que o console roda um applet BREW, e o proprio corpus
+  // diz isso. Medido em chessbots.mod (o titulo do container SWVARC, motor da
+  // Superscape), em 0x0019a870:
+  //
+  //     mrs  r0, cpsr
+  //     tst  r0, #0xf          ; bits baixos do modo
+  //     bxeq lr                ; modo usuario -> sai em seguranca
+  //     mrc  p15, #0, r1, c2, c0, #0   ; senao: le o TTBR0 e caminha na MMU
+  //
+  // O modulo so caminha na tabela de paginas se achar que esta em modo
+  // privilegiado. Sem MMU, o TTBR0 vale zero e ele passeia por endereco
+  // invalido. O `tst #0xf` e o proprio modulo dizendo o modo que espera.
+  //
+  // HONESTIDADE SOBRE O ALCANCE: zero e 0x10 dao o MESMO resultado nesse teste
+  // (0x10 & 0xf == 0), entao esta mudanca NAO conserta nenhum sintoma
+  // observado. Ela existe para que o valor deixe de ser impossivel -- um
+  // convidado que teste com `and #0x1f; cmp #0x10`, em vez de `tst #0xf`, veria
+  // a diferenca. Varri os 62 titulos do corpus: chessbots e o UNICO que le o
+  // CPSR e testa os bits de modo, e ele usa a forma que nao distingue os dois.
+  constexpr uint32_t kModeUser = 0x10;
+  cpsr_ = kModeUser;
 }
 
 bool ArmInterpreter::GetFlag(CpsrBit bit) const { return (cpsr_ >> bit) & 1; }
