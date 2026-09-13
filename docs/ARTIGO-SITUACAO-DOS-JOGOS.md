@@ -424,8 +424,17 @@ pc=0x001156d4                  hits=1110   (último BL antes do giro)
 loop PC span: 0x00105510-0xf0001bf0, distinct=226
 ```
 
-O topo da faixa é um **endereço de trap** (`0xf0001bf0`), então o laço atravessa o
-HLE. Nomeando os traps (`ZEEB_LOG_BREW=1`) e contando por 34 s:
+A faixa acima é o **mínimo e o máximo** do histograma de PCs — ela por si só não
+prova que o laço chega ao HLE, porque pode incluir código que não é do laço. A
+prova é outra, e vem do trace: nomeando os traps (`ZEEB_LOG_BREW=1`) e olhando as
+linhas imediatamente anteriores ao estouro do orçamento, os quatro aparecem em
+ciclo fechado, sem variação:
+
+```text
+1735, 1714, 1788, 1781, 1735, 1714, 1788, 1781, 1735, 1714, 1788, 1781, ...
+```
+
+Contagem por 34 s:
 
 | índice | slot | rótulo | chamadas |
 |---|---|---|---|
