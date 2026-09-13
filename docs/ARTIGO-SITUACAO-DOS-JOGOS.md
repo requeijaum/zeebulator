@@ -453,6 +453,27 @@ call#19: 0x80310a7c   <- repete
 acha o link de sucessor em `desc+0x00` e `desc+0x2c`, ambos apontando para
 `0x80310a7c`.
 
+**Isto não é descoberta nova, e o trabalho anterior precisa do crédito.**
+`research/sources/2026-09-01_abd-wall-rootcause.md` já investigou este mesmo muro e
+nomeou a faixa do laço: `abd.mod +0x5ba0..+0x5e88`. Os três PCs quentes medidos hoje
+(`0x00105dc8`, `0x105dcc`, `0x105dd0`) caem **dentro dessa faixa** — confirmação
+independente, cinco semanas depois, com outro instrumento.
+
+**Onde as duas medições discordam.** Aquele documento afirma que a callback presa
+roda 3.000.000 de passos "sem disparar um único trap HLE", e conclui que o defeito
+não é slot faltante. Medido hoje com `ZEEB_LOG_BREW=1`, nas linhas imediatamente
+anteriores ao estouro do orçamento:
+
+```text
+1735, 1714, 1788, 1781, 1735, 1714, 1788, 1781, 1735, 1714, 1788, 1781, ...
+```
+
+Os quatro traps em lockstep, sem variação. **O laço atravessa o HLE.** A conclusão
+de fundo dele — o grafo de cena do convidado está mal-formado — continua plausível e
+não foi refutada; o que não se sustenta é a evidência específica de "laço sem trap".
+Diferença provável: o repro daquele documento usa `ZEEB_MAX_STEPS=3000000`, e um
+orçamento apertado aborta numa fase diferente da callback.
+
 **O que isso significa.** O scaffold responde 0 em tudo e **nunca consome nem
 avança o cursor** — o slot se chama `consume-cmdlist` e não consome nada. A
 pergunta em aberto é se o aparelho real marca o fim da lista de um jeito que não
