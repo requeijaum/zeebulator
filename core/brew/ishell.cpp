@@ -356,10 +356,16 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
       if (c == 0) break;
       name.push_back(static_cast<char>(c));
     }
+    // O valor CRU de r2 tambem vai para o log, sem mascarar. Motivo medido: na
+    // Z-Wheel, seis recursos pedidos (5011, 5023, 5028, 5029, 5050, 5105) NAO
+    // existem em nenhum .brf do titulo, e cada um esta a 1 ou 2 de um id que
+    // existe (5008/5017, 5022, 5027, 5048, 5103). Um padrao assim tem duas
+    // explicacoes possiveis -- pacote mais novo do que a build do jogo, ou id
+    // mal lido -- e so o valor sem mascara separa as duas.
     std::fprintf(stderr,
-                 "[res] LoadResObject file=\"%s\" (0x%08x) id=%u cls=0x%08x -> obj=0x%08x\n",
-                 name.c_str(), res_file, core.GetRegister(kR2), core.GetRegister(kR3),
-                 load_res_object_obj_);
+                 "[res] LoadResObject file=\"%s\" (0x%08x) id=%u (r2 cru=0x%08x) cls=0x%08x -> obj=0x%08x\n",
+                 name.c_str(), res_file, core.GetRegister(kR2) & 0xFFFFu, core.GetRegister(kR2),
+                 core.GetRegister(kR3), load_res_object_obj_);
   }
   if (load_res_object_factory_ != nullptr) {
     const std::string base = ReadCString(memory_, core.GetRegister(kR1));
@@ -371,9 +377,23 @@ void IShellHle::LoadResObjectImpl(IArmCore& core) {
       return;
     }
     if (std::getenv("ZEEB_LOG_RES") != nullptr) {
+      // "nao decodificavel" sozinho e um stub silencioso: nao diz o que o
+      // recurso ERA. Medindo o caso real da Z-Wheel, 6 dos 13 recursos pedidos
+      // caem aqui e nao havia como saber se sao imagem de outro formato, som,
+      // dado ou ponteiro invalido. Agora mostra os primeiros bytes e o tamanho.
+      std::string detalhe = "sem bytes";
+      if (auto bytes = ReadBrewResource(base, id); bytes.has_value()) {
+        char buf[64];
+        std::string hex;
+        for (size_t i = 0; i < bytes->size() && i < 12; ++i) {
+          std::snprintf(buf, sizeof(buf), "%02x", (*bytes)[i]);
+          hex += buf;
+        }
+        detalhe = std::to_string(bytes->size()) + " b, inicio " + hex;
+      }
       std::fprintf(stderr,
-                   "[res] LoadResObject('%s' id=%u) nao decodificavel -> objeto injetado\n",
-                   base.c_str(), id);
+                   "[res] LoadResObject('%s' id=%u) nao decodificavel (%s) -> objeto injetado\n",
+                   base.c_str(), id, detalhe.c_str());
     }
   }
   core.SetRegister(kR0, load_res_object_obj_);
