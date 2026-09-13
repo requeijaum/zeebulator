@@ -5327,7 +5327,21 @@ int main(int argc, char** argv) {
   // Zenonia requests MediaPCM directly (0x01005511). Double Dragon uses the
   // same legacy class ID for its download-notification scaffold, so preserve
   // that path and bind real PCM only for the proven WIPI caller.
-  if (is_zenonia_title) {
+  //
+  // CHAVE DE BISSECCAO ZEEB_NO_PCM_FACTORY=1, e o motivo dela existir.
+  //
+  // Acima (linha ~3921) esta registrado um RegisterInstance para ESTA MESMA
+  // classe 0x01005511: o objeto que captura o callback de download e permite a
+  // injecao de "download 100% completo" mais abaixo. Como CreateInstanceImpl
+  // consulta factories_ ANTES de instances_, a fabrica de PCM registrada aqui
+  // torna aquele objeto INALCANCAVEL para o zenonia.
+  //
+  // Historico medido nos logs desta sessao: a injecao de download-complete
+  // disparou em execucoes REAIS ate 2026-09-11 14:46 local, e a fabrica entrou
+  // as 15:04 do mesmo dia. A partir dai nao ha mais nenhum disparo real.
+  // Correlacao nao e prova -- por isso a chave, em vez de trocar o
+  // comportamento no escuro.
+  if (is_zenonia_title && std::getenv("ZEEB_NO_PCM_FACTORY") == nullptr) {
     shell_hle.RegisterFactory(0x01005511,
                                [&media_hle]() { return media_hle.CreateMediaObject(); });
   }
