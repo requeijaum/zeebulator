@@ -1062,6 +1062,30 @@ transformou um "boot parcial" silencioso num erro honesto com causa localizada.
 
 ---
 
+### Auditoria: onde a instrumentação escreve
+
+Achado por acidente durante a caça ao escritor do nó do `abd`: duas chaves de
+depuração tinham caminho **relativo** por padrão (`zeeb_wwatch.log`,
+`zeeb_trace.log`). Caminho relativo cai no diretório de trabalho, e nas execuções
+de jogo o diretório de trabalho **é a pasta do título** — ou seja, ligar a chave
+escrevia na mídia de ROM sem ninguém pedir. Medido: uma sessão deixou
+`debug_nand/mod/279369/zeeb_wwatch.log`. Corrigido para `/tmp` (commit `29980de`),
+e os arquivos criados foram apagados.
+
+Varredura feita depois para ver se havia mais casos. Todas as outras aberturas de
+escrita com caminho vindo de variável:
+
+| local | origem do caminho | risco |
+|---|---|---|
+| `gl_hle.cpp:585` | `ZEEB_EGL_DUMP` (env, sem default) | nenhum — quem liga escolhe |
+| `gl_hle.cpp:1489,1646` | `ZEEB_TEX_DUMP` (env, sem default) | nenhum |
+| `mixer.cpp:158` | `ZEEB_DUMP_AUDIO` (env; retorna se ausente) | nenhum |
+| `game_probe.cpp:6271` | default `/tmp/zeeb_shot.ppm` | nenhum |
+| `sdl2_unified_backend.cpp:1107` | parâmetro do chamador | nenhum |
+
+**Conclusão: os dois casos eram os únicos.** A varredura é parte do resultado — sem
+ela, "consertamos o que achamos" não distinguiria de "pode haver mais".
+
 ## Lições Aprendidas na Auditoria de Código
 
 1. **Auto-Citação e Falsa Certeza**: Vários trechos de código continham comentários como "confirmado por disassembly" que,
