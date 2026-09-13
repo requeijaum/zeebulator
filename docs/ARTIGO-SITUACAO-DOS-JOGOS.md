@@ -368,10 +368,23 @@ Contra o censo anterior (`testkit/census62.jsonl`): **33 melhoraram, 2 pioraram,
 
 ### Duas regressões, com causas diferentes
 
-- **`abd`**: 7.910 → 1.957 no FBO e 2 na janela. Renderiza, mas o conteúdo não
-  chega à janela, e também perdeu conteúdo no próprio FBO. Bissectado com
-  `ZEEB_NO_RES_IMAGE=1`: o resultado não muda, então **não é** o pipeline de
-  imagem deste ciclo.
+- **`abd`**: registrado como "7.910 → 1.957". **NÃO É REGRESSÃO — é defeito de
+  amostragem desta tabela.** Medido em 2026-09-13, com série temporal e com
+  bisseção nos dois binários (ontem `f87e8bb` e hoje `HEAD`): o MESMO execução
+  passa por 37 → **7.910** → **2** → **1.957** cores, e os dois binários dão a
+  MESMA sequência, nos mesmos instantes, com os mesmos `exceeded=2` e ~1.530
+  ticks. O censo antigo amostrou a janela no pico da animação (7.910); o censo
+  novo amostrou depois (2 na janela, 1.957 no FBO). **Comparar instantâneos de
+  uma sequência como se fossem o mesmo instante foi o erro**, e é o mesmo tipo de
+  defeito de instrumento que já apareceu três vezes nesta base.
+  O que continua verdadeiro e é o problema real: a animação trava. Dois callbacks
+  de timer estouram o orçamento (`exceeded 64000000 steps without returning`) e o
+  jogo congela num quadro estático de 1.957 cores, depois de ficar em 2.
+  Aumentar o orçamento para 1G **não** resolve — zera as mensagens de estouro e
+  deixa a tela em 2 cores de vez. Ou seja: não é "só aumentar o budget".
+  E a fonte, medido letra por letra no primeiro quadro (`LOADING...`): as 7 letras
+  L-O-A-D-I-N-G estão corretas, sem glifo substituto. A suspeita de "fonte virou
+  bolinha" NÃO se confirma nesse instante.
 - **`torkandkral`**: 452 → 2 nos dois métodos. Não renderiza. Regressão mais
   profunda, ainda sem causa isolada.
 
