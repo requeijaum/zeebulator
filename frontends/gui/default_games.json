@@ -4,7 +4,12 @@
   "games": {
     "274755": "0x01070798",
     "274259": "0x01081970",
-    "277455": "0xBF2E2021",
+    "277455": {
+      "env": {
+        "ZEEB_CPU": "jit",
+        "ZEEB_JIT_BLOCK": "1"
+      }
+    },
     "278200": "0x010978A2",
     "276121": "0x0108C0BC",
     "279159": "0x0108FF18",
@@ -20,5 +25,6 @@
       "max_steps": 483295456
     }
   },
-  "_orcamento_de_passos": "Medido: sem ZEEB_MAX_STEPS o cnk2 (274214) aborta com 'exceeded 64000000 steps without returning' e e dado como morto. So entra aqui orcamento MEDIDO -- titulo sem medida nao recebe numero inventado."
+  "_orcamento_de_passos": "Medido: sem ZEEB_MAX_STEPS o cnk2 (274214) aborta com 'exceeded 64000000 steps without returning' e e dado como morto. So entra aqui orcamento MEDIDO -- titulo sem medida nao recebe numero inventado.",
+  "_cpu_e_jit": "Zenonia (277455) precisa do JIT. MEDIDO: com ZEEB_CPU=jit + ZEEB_JIT_BLOCK=1 sao 486-725 ticks em 34-50 s, zero wander, 10 operacoes de midia e 2 PLAY; sem o JIT sao 58 ticks, 1 wander, 5 operacoes de midia e 1 PLAY. O baseline de 11/09 -- o estado em que o jogo era jogavel -- rodava com ZEEB_CPU=jit. O JIT nao e so velocidade: ele muda o entrelacamento dos timers do convidado, e o caminho que trava depende desse entrelacamento. Ver o artigo, secao do zenonia."
 }

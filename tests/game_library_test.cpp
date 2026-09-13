@@ -522,3 +522,38 @@ TEST(GameLibrary, MissingConfigGivesDefaultsNotGarbage) {
   EXPECT_EQ(cfg.scale, 2);
   EXPECT_TRUE(cfg.audio_enabled);
 }
+
+// O zenonia precisa do JIT, e isso e MEDICAO, nao preferencia: com
+// ZEEB_CPU=jit + ZEEB_JIT_BLOCK=1 sao 486-725 ticks e zero wander; sem o JIT,
+// 58 ticks e 1 wander. O teste existe para que o caminho manifesto -> env ->
+// linha de comando nao se rompa em silencio, que foi exatamente o defeito do
+// cnk2 com o orcamento de passos.
+TEST(GameLibrary, ManifestEnvFlagsReachTheLaunchSpec) {
+  const fs::path p = fs::temp_directory_path() / "zeeb_gc_env.json";
+  { std::ofstream out(p);
+    out << R"({"games": {"277455": {"env": {"ZEEB_CPU": "jit", "ZEEB_JIT_BLOCK": "1"}}}})"; }
+  const std::map<std::string, GameConfig> m = LoadManifest(p.string());
+  std::error_code ec; fs::remove(p, ec);
+  ASSERT_EQ(m.count("277455"), 1u);
+  EXPECT_EQ(m.at("277455").env.at("ZEEB_CPU"), "jit");
+
+  GameEntry e;
+  e.mod_path = "/x/zenonia.mod";
+  e.clsid = 0xbf2e2021u;
+  e.launchable = true;
+  e.env = m.at("277455").env;
+  const LaunchSpec spec = BuildLaunchSpec(e, "/bin/emu");
+  ASSERT_EQ(spec.env.count("ZEEB_CPU"), 1u) << "o flag do manifesto nao chegou ao lancamento";
+  EXPECT_EQ(spec.env.at("ZEEB_CPU"), "jit");
+  EXPECT_EQ(spec.env.at("ZEEB_JIT_BLOCK"), "1");
+}
+
+// E o caso real do manifesto embarcado: o zenonia tem que estar la.
+TEST(GameLibrary, ShippedManifestGivesZenoniaTheJit) {
+  const std::map<std::string, GameConfig> m =
+      zeebulator::gui::LoadManifest(std::string(GUI_DEFAULT_MANIFEST));
+  ASSERT_EQ(m.count("277455"), 1u) << "zenonia saiu do manifesto embarcado";
+  EXPECT_EQ(m.at("277455").env.count("ZEEB_CPU"), 1u)
+      << "sem ZEEB_CPU=jit o zenonia roda no interpretador e trava (medido: 58 ticks, 1 wander)";
+  EXPECT_EQ(m.at("277455").env.at("ZEEB_CPU"), "jit");
+}

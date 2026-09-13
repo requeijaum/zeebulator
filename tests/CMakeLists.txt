@@ -80,6 +80,13 @@ target_link_libraries(zeebulator_tests PRIVATE zeebulator_core GTest::gtest_main
                                                 liblzma)
 target_include_directories(zeebulator_tests PRIVATE ${liblzma_SOURCE_DIR}/src/liblzma/api)
 target_compile_definitions(zeebulator_tests PRIVATE FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+# O manifesto embarcado da GUI tambem e dado de teste: um teste le o ARQUIVO real
+# para garantir que titulos que precisam de flag por jogo continuam com ela. Sem
+# esta definicao o teste so poderia checar um arquivo temporario, e o arquivo que
+# o usuario realmente usa ficaria sem cobertura -- foi assim que o cnk2 subia
+# morto pela GUI sem ninguem notar.
+target_compile_definitions(zeebulator_tests PRIVATE
+    GUI_DEFAULT_MANIFEST="${CMAKE_CURRENT_SOURCE_DIR}/../frontends/gui/default_games.json")
 
 include(GoogleTest)
 gtest_discover_tests(zeebulator_tests)
