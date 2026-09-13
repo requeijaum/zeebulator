@@ -30,6 +30,7 @@
 
 #include "core/audio/mixer.h"
 #include "core/audio/soundfont_synth.h"
+#include "core/brew/extension_module.h"
 #include "core/brew/file_hle.h"
 #include "core/brew/gl_hle.h"
 #include "core/brew/soft_gl_backend.h"
@@ -70,6 +71,19 @@
 #include "core/brew/draw_stats.h"
 
 namespace {
+
+// Faixas dos MODULOS DE EXTENSAO BREW carregados em tempo de execucao
+// (core/brew/extension_module.h). Existe so para o detector de "PC saiu do
+// modulo" nao acusar como erro uma chamada legitima ao codigo da extensao --
+// ele so conhece a faixa do .mod principal, passada por argumento.
+std::vector<std::pair<uint32_t, uint32_t>> g_extension_ranges;
+
+bool PcInLoadedExtension(uint32_t pc) {
+  for (const auto& [base, size] : g_extension_ranges) {
+    if (pc >= base && pc < base + size) return true;
+  }
+  return false;
+}
 
 // Phase 9b/9d: per-slot NID labels for the ABD 200-slot rendering-engine
 // scaffold (clsid family 0x0103d8ec, the object the tick-9 wall cycles
@@ -567,7 +581,12 @@ CallResult CallArmFunctionChecked(zeebulator::IArmCore& cpu, uint32_t trap_base,
         }
       }
     }
-    bool in_module = pc >= mod_base && pc < mod_base + mod_size;
+    // "Dentro do modulo" inclui os MODULOS DE EXTENSAO BREW ja carregados: o
+    // codigo do imicro3d roda em 0x02000000, fora do .mod principal, e sem isto
+    // cada ida e volta legitima ao motor 3D virava um aviso de "saiu do modulo"
+    // (medido no Action Hero 3D: 158.252 avisos falsos em uma corrida de 90 s).
+    bool in_module = (pc >= mod_base && pc < mod_base + mod_size) ||
+                     PcInLoadedExtension(pc);
     bool in_trap_range = pc >= trap_base;
     if (in_module) {
       last_in_module_pc = pc;
@@ -3511,8 +3530,33 @@ int main(int argc, char** argv) {
   auto registered_button_signal = std::make_shared<uint32_t>(0);
   auto next_signal_object = std::make_shared<uint32_t>(0x80065100);
   auto next_signal_ctl_object = std::make_shared<uint32_t>(0x80065300);
-  std::vector<zeebulator::HleRuntime::HleFunction> hid_device_methods(
-      40, [](zeebulator::IArmCore& core) { core.SetRegister(zeebulator::kR0, 0); });
+  // O default de CADA slot do IHIDDevice era AEE_SUCCESS silencioso, nos 40.
+  //
+  // Isso e pior que falha honesta, e o Zeebo Developer Guide (secao 6.3) diz por
+  // que. Dois exemplos concretos que caem neste default:
+  //
+  //   - IHIDDevice_RegisterForPositionChange: o jogo registra um ISignal para
+  //     ser avisado quando o eixo muda. Respondendo SUCESSO sem nunca sinalizar,
+  //     o jogo fica esperando para sempre um aviso que nao vem -- e nao tem como
+  //     saber que a culpa e nossa.
+  //   - IHIDDevice_Rumble / GetRumble: o guia diz, com todas as letras, que "the
+  //     current version of Zeebo gamepad does not support rumble", e que nesse
+  //     caso a funcao devolve AEE_EUNSUPPORTED. Devolver sucesso mente sobre o
+  //     aparelho.
+  //
+  // ZEEB_LOG_HID_SLOT=1 imprime todo slot que cai no default, com o numero, para
+  // medir QUAIS stubs os titulos realmente exercitam antes de mexer no
+  // comportamento de qualquer um deles.
+  const bool log_hid_slot = std::getenv("ZEEB_LOG_HID_SLOT") != nullptr;
+  std::vector<zeebulator::HleRuntime::HleFunction> hid_device_methods(40);
+  for (uint32_t slot = 0; slot < hid_device_methods.size(); ++slot) {
+    hid_device_methods[slot] = [slot, log_hid_slot](zeebulator::IArmCore& core) {
+      if (log_hid_slot) {
+        std::fprintf(stderr, "[hid_slot] slot %u caiu no default (sucesso mudo)\n", slot);
+      }
+      core.SetRegister(zeebulator::kR0, 0);
+    };
+  }
   hid_device_methods[3] = [](zeebulator::IArmCore& core) {
     // GetDeviceInfo(IHIDDevice*, AEEHIDDeviceInfo*): gamepad, PID, VID, wired.
     uint32_t out = core.GetRegister(zeebulator::kR1);
@@ -4864,6 +4908,39 @@ int main(int argc, char** argv) {
   // AEEMod_Load/CreateInstance -- see core/brew/mod_runtime.h.
   mod_runtime.SetShellInstance(shell);
   mod_runtime.SetDisplayInstance(display_obj);
+
+  // MODULOS DE EXTENSAO BREW: quando o titulo pede uma classe que a HLE nao
+  // conhece, procurar um .mif de extensao que a forneca e rodar o .mod dela de
+  // verdade (ver core/brew/extension_module.h).
+  //
+  // A busca parte do caminho do proprio .mod e cobre os dois arranjos medidos:
+  // a NAND do console (<raiz>/mod/12875/imicro3d.mod + <raiz>/mif/12875.mif) e o
+  // pacote baixado do Kingdom Hearts ("Kingdon Hearts_/swv21brew.mod" com
+  // "Kingdon Hearts_.mif" ao lado da pasta).
+  //
+  // ZEEB_NO_EXTENSION=1 desliga tudo isto. Existe para medir A/B com o MESMO
+  // binario: e com essa variavel que a coluna "antes" deste trabalho foi
+  // medida de novo depois da mudanca, em vez de comparar com um build velho.
+  zeebulator::BrewExtensionLoader extension_loader(cpu, hle);
+  const bool extensions_enabled = std::getenv("ZEEB_NO_EXTENSION") == nullptr;
+  extension_loader.SetShellPointer(shell);
+  extension_loader.SetStaticBaseTable(/*a mesma tabela do modulo principal=*/0x80280000);
+  if (extensions_enabled) {
+    const size_t n = extension_loader.ScanForModule(argv[1]);
+    if (n != 0) {
+      std::fprintf(stderr, "[extension] %zu classe(s) de extensao no catalogo\n", n);
+    }
+  }
+  if (!extensions_enabled) {
+    std::fprintf(stderr, "[extension] desligado por ZEEB_NO_EXTENSION\n");
+  }
+  if (extensions_enabled) shell_hle.SetExtensionResolver([&extension_loader](uint32_t cls) {
+    const uint32_t obj = extension_loader.CreateInstance(cls);
+    // Manter o detector de wander a par das faixas carregadas (ver
+    // PcInLoadedExtension): a carga so acontece aqui, sob demanda.
+    g_extension_ranges = extension_loader.LoadedRanges();
+    return obj;
+  });
   // The same ambient context struct has a third real field (offset
   // 0x2c) found probing Peggle -- real code there calls through it
   // using ARM RVCT's ROPI relative-vtable convention, unlike every

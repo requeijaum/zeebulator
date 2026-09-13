@@ -72,6 +72,8 @@ add_library(zeebulator_core STATIC
   brew/brew_resource_file.cpp
   brew/ishell.cpp
   brew/ishell.h
+  brew/extension_module.cpp
+  brew/extension_module.h
   brew/idisplay.cpp
   brew/idisplay.h
   brew/bitmap_hle.cpp

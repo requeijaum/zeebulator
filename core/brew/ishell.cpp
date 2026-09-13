@@ -64,6 +64,24 @@ void IShellHle::CreateInstanceImpl(IArmCore& core) {
   }
   auto it = instances_.find(cls_id);
   if (it == instances_.end()) {
+    // Classe desconhecida da HLE: antes de responder ECLASSNOTSUPPORT, tentar o
+    // caminho que o BREW de verdade usa -- carregar o modulo de extensao que
+    // fornece a classe e pedir o objeto a ele (ver SetExtensionResolver).
+    //
+    // Medido no Action Hero 3D: sem isto o jogo recebe ECLASSNOTSUPPORT para
+    // 0x010292c3 e imprime, ele mesmo, "IMICRO3D failed creation".
+    if (extension_resolver_) {
+      const uint32_t ext_obj = extension_resolver_(cls_id);
+      if (ext_obj != 0) {
+        if (log_ci) {
+          std::fprintf(stderr, "[createinstance] cls=%s -> EXTENSAO OK (obj=0x%08x)\n",
+                       DescribeClsid(cls_id).c_str(), ext_obj);
+        }
+        if (ppobj != 0) memory_.Write32(ppobj, ext_obj);
+        core.SetRegister(kR0, 0);  // SUCCESS
+        return;
+      }
+    }
     if (log_ci) std::fprintf(stderr, "[createinstance] cls=%s -> UNKNOWN (ECLASSNOTSUPPORT)\n", DescribeClsid(cls_id).c_str());
     if (ppobj != 0) memory_.Write32(ppobj, 0);
     core.SetRegister(kR0, 3);   // ECLASSNOTSUPPORT (Qualcomm standard: 3, per AEEError.h; 20 is EUNSUPPORTED)

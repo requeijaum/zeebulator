@@ -86,6 +86,83 @@ bool PlausibleClassId(uint32_t v) {
 
 }  // namespace
 
+namespace {
+
+// Cabecalho comum a ExtractMifSections/Applet/Extension.
+struct MifHeader {
+  uint32_t section_table_offset;
+  uint32_t section_count;
+};
+
+bool ReadMifHeader(const uint8_t* data, size_t size, MifHeader* out) {
+  static const uint8_t kMagic[6] = {0x11, 0x00, 0x01, 0x00, 0x01, 0x00};
+  if (data == nullptr || size < 0x20) return false;
+  for (size_t i = 0; i < sizeof(kMagic); ++i) {
+    if (data[i] != kMagic[i]) return false;
+  }
+  const uint32_t table_offset = ReadU32LE(data + 0x10);
+  const uint32_t count = ReadU32LE(data + 0x14);
+  // Mesmo limite ja usado por ExtractMifClassIds: o maior .mif do corpus
+  // (280386) declara 23 secoes; um numero grande aqui e cabecalho corrompido.
+  if (count > 64) return false;
+  const size_t table_bytes = static_cast<size_t>(count + 1) * 4;
+  if (table_offset > size || table_bytes > size - table_offset) return false;
+  out->section_table_offset = table_offset;
+  out->section_count = count;
+  return true;
+}
+
+}  // namespace
+
+std::vector<MifSection> ExtractMifSections(const uint8_t* data, size_t size) {
+  std::vector<MifSection> out;
+  MifHeader h{};
+  if (!ReadMifHeader(data, size, &h)) return out;
+  for (uint32_t i = 0; i < h.section_count; ++i) {
+    const uint32_t start = ReadU32LE(data + h.section_table_offset + i * 4);
+    const uint32_t end = ReadU32LE(data + h.section_table_offset + (i + 1) * 4);
+    // Offsets fora do arquivo ou em ordem decrescente sao lixo, nao secao.
+    if (end < start || end > size) continue;
+    out.push_back(MifSection{start, end - start});
+  }
+  return out;
+}
+
+std::vector<uint32_t> ExtractMifAppletClassIds(const uint8_t* data, size_t size) {
+  std::vector<uint32_t> out;
+  for (const MifSection& s : ExtractMifSections(data, size)) {
+    // 20 bytes, com a 2a e a 4a palavra zeradas. Medido no corpus: as tres
+    // secoes de 20 bytes que NAO sao applet (Prey Evil, Reckless Racing e
+    // Zeebo App) comecam em 0x00xxfeff -- sao texto UTF-16 -- e tem essas
+    // palavras diferentes de zero.
+    if (s.size != 20 || s.offset + 20 > size) continue;
+    if (ReadU32LE(data + s.offset + 4) != 0) continue;
+    if (ReadU32LE(data + s.offset + 12) != 0) continue;
+    const uint32_t cls = ReadU32LE(data + s.offset);
+    if (cls == 0) continue;
+    out.push_back(cls);
+  }
+  return out;
+}
+
+std::vector<uint32_t> ExtractMifExtensionClassIds(const uint8_t* data, size_t size) {
+  std::vector<uint32_t> out;
+  // A regra medida: so um MIF SEM applet fornece classe (ver mif.h).
+  if (!ExtractMifAppletClassIds(data, size).empty()) return out;
+  for (const MifSection& s : ExtractMifSections(data, size)) {
+    if (s.size != 8 || s.offset + 8 > size) continue;
+    const uint32_t cls = ReadU32LE(data + s.offset);
+    const uint32_t flags = ReadU32LE(data + s.offset + 4);
+    if (flags != 0 || !PlausibleClassId(cls)) continue;
+    bool seen = false;
+    for (uint32_t already : out) {
+      if (already == cls) { seen = true; break; }
+    }
+    if (!seen) out.push_back(cls);
+  }
+  return out;
+}
+
 std::vector<uint32_t> ExtractMifClassIds(const uint8_t* data, size_t size) {
   std::vector<uint32_t> out;
   static const uint8_t kMagic[6] = {0x11, 0x00, 0x01, 0x00, 0x01, 0x00};

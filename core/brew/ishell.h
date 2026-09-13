@@ -182,6 +182,20 @@ class IShellHle {
   // Optional ThreadHle hook for cooperative threads
   void SetThreadHle(class ThreadHle* thread_hle) { thread_hle_ = thread_hle; }
 
+  // Ultima tentativa de CreateInstance para uma classe que a HLE nao conhece:
+  // carregar o MODULO DE EXTENSAO BREW que a fornece e pedir o objeto a ele.
+  //
+  // Isto e o mecanismo real do BREW, nao um atalho: um .mif sem applet declara
+  // as classes que o .mod dele fornece, e o shell carrega esse .mod sob demanda
+  // (ver core/brew/extension_module.h para a medicao). O objeto devolvido e
+  // codigo do proprio modulo rodando -- por isso e uma funcao, e nao mais uma
+  // vtable de HLE: nao ha o que implementar deste lado.
+  //
+  // Devolve 0 quando ninguem fornece a classe; ai o CreateInstance segue
+  // respondendo ECLASSNOTSUPPORT, como antes.
+  using ExtensionResolver = std::function<uint32_t(uint32_t cls_id)>;
+  void SetExtensionResolver(ExtensionResolver fn) { extension_resolver_ = std::move(fn); }
+
   // Schedules `callback`/`user_data` exactly the way a real
   // ISHELL_SetTimer(ms, callback, user_data) call would (same re-arm-
   // by-re-registering-the-same-identity semantics as SetTimerImpl),
@@ -270,6 +284,7 @@ class IShellHle {
   std::unordered_map<std::string, uint32_t> interned_mimes_;
   uint32_t next_mime_addr_ = 0x0008d000;
   class ThreadHle* thread_hle_ = nullptr;
+  ExtensionResolver extension_resolver_;
   std::function<uint32_t(uint32_t)> malloc_fn_;
   const class VirtualFilesystem* vfs_ = nullptr;
   // Real ISHELL_LoadResData hands back a cached, reference-counted pointer for

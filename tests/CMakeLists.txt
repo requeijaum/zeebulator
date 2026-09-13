@@ -23,7 +23,9 @@ add_executable(zeebulator_tests
   fufs_test.cpp
   ggz_test.cpp
   mif_classids_test.cpp
+  mif_extension_test.cpp
   mif_test.cpp
+  extension_module_test.cpp
   mod_test.cpp
   obm1_test.cpp
   pkg_test.cpp
