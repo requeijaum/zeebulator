@@ -474,6 +474,37 @@ não foi refutada; o que não se sustenta é a evidência específica de "laço 
 Diferença provável: o repro daquele documento usa `ZEEB_MAX_STEPS=3000000`, e um
 orçamento apertado aborta numa fase diferente da callback.
 
+**O scaffold não é a causa — e isso foi testado, não suposto.** Os slots quentes
+pertencem ao objeto devolvido pelo `QueryInterface` do QEGL para os IIDs
+`0x0103d8dd` e `0x0103d8ea`. Os dois emuladores de referência os identificam:
+
+```text
+zeebx/src/machine.rs:603   AEEIID_GLES10 = 0x0103_d8dd
+zeebx/src/machine.rs:604   AEEIID_GLES11 = 0x0103_d8ea
+zeemu/brew/BrewEGL.cpp:542 devolve gles_object_ptr_ para os dois
+```
+
+São **IIDs de interface** (GLES10/GLES11), não classes. E o nosso código **já
+devolve o objeto GLES11 real** para eles — só que para todo título **exceto o
+abd** (`if (!is_abd_title && ...)`), e o comentário de lá os tratava como "duas
+ClsIds não identificadas".
+
+A guarda não veio de uma regressão: o commit `b863d4f` a introduziu para dar GLES
+real ao Pac-Mania/Peggle e registrou o abd como *mantido* em 36 cores — a hipótese
+de dar GLES real ao abd nunca foi medida. Medido agora, com a chave
+`ZEEB_ABD_GLES_QI=1`:
+
+| tempo | scaffold (atual) | abd com GLES real |
+|---|---|---|
+| 6 s | 37 | **2** |
+| 20 s | **7.910** | 2 |
+| 28 s | 2 | 2 |
+| 40 s | **1.957** | 2 |
+
+Com o GLES real o abd fica em **2 cores do início ao fim**: não desenha nada. A
+guarda está **certa**, e o scaffold **não** é o que causa o laço — se fosse,
+trocá-lo pelo objeto real teria melhorado.
+
 **O que isso significa.** O scaffold responde 0 em tudo e **nunca consome nem
 avança o cursor** — o slot se chama `consume-cmdlist` e não consome nada. A
 pergunta em aberto é se o aparelho real marca o fim da lista de um jeito que não
