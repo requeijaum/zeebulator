@@ -13,6 +13,15 @@ arquivo; onde nao houver evidencia, o texto diz que nao ha.
 
 ## Metodo
 
+- **RESSALVA IMPORTANTE (medida em 2026-09-13): o censo deste documento foi
+  medido no INTERPRETADOR.** O `ZEEB_CPU=jit` era opt-in e o harness nao o pedia.
+  Medido no zenonia: com JIT sao 486-725 ticks em 34-50 s e zero wander; sem JIT,
+  58 ticks e o jogo travado. Medido tambem em amostra de 10 titulos: `a3d` tem
+  **1.084 wanders no interpretador e zero no JIT**; `quake` e `chessbots` perdem o
+  wander; `cnk2` faz 1,57x mais ticks. Ou seja, **sem JIT nao e a mesma
+  configuracao para estes convidados** -- o JIT muda o entrelacamento dos timers
+  do guest, nao so a velocidade. Os numeros de cores deste documento devem ser
+  lidos com essa ressalva ate o censo ser refeito com JIT.
 - Video e audio reais, sem driver offscreen. **Ciclo atual: Wayland**
   (`SDL_VIDEODRIVER=wayland`, `WAYLAND_DISPLAY=wayland-0`); os ciclos
   anteriores desta tabela foram medidos em X11 (`DISPLAY=:0`). Onde a
