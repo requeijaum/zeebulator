@@ -31,6 +31,38 @@ namespace zeebulator {
 // project's established convention for a real, present-but-unconfirmed
 // slot (see IDisplayHle/IShellHle) rather than guessing an unverified
 // calling convention.
+// --- Vtable REAL do IHIDDevice, do header do SDK -----------------------------
+//
+// Transcrita de platform/hardware/inc/AEEIHIDDevice.h (INHERIT_IHIDDevice), com
+// os tres slots de IQI que vem antes. Confirma a numeracao que este arquivo ja
+// usava e nomeia os que faltavam:
+//
+//    0 AddRef                  10 GetPositionState
+//    1 Release                 11 GetMinPositionInfo
+//    2 QueryInterface          12 GetMaxPositionInfo
+//    3 GetDeviceInfo           13 GetAxesInfo
+//    4 GetDeviceStatus         14 RegisterForPositionChange
+//    5 RegisterForStatusChange 15 SetExclusiveLevel
+//    6 GetButtonInfo           16 GetExclusiveLevel
+//    7 GetNumberOfButtons      17 Rumble
+//    8 RegisterForButtonEvent  18 GetRumbleStatus
+//    9 GetNextButtonEvent
+//
+// MEDIDO: rodando Z-Wheel, Zeebo Tennis e Super League com ZEEB_LOG_HID_SLOT=1,
+// o UNICO slot sem implementacao que algum deles chama e o 14, uma vez, e so na
+// Z-Wheel. Os outros stubs nunca sao exercitados por estes titulos.
+//
+// O 14 e justamente RegisterForPositionChange: o jogo entrega um ISignal para
+// ser avisado quando o eixo mudar. Nos respondemos SUCESSO e nunca sinalizamos
+// -- e nao ha o que sinalizar, porque o probe nao tem fonte de eixo analogico
+// ligada. A cadeia do manche esta partida em DOIS pontos, e nenhum deles era o
+// valor do eixo que o commit 71f66aa corrigiu.
+//
+// Sobre o slot 17 (Rumble): o Zeebo Developer Guide, secao 6.3.5, diz que "the
+// current version of Zeebo gamepad does not support rumble" e que nesse caso a
+// funcao devolve AEE_EUNSUPPORTED. Nenhum dos titulos medidos chama, entao fica
+// anotado e nao mexido.
+
 // --- Eixos analogicos do controle do Zeebo -----------------------------------
 //
 // A faixa de cada eixo e um BYTE SEM SINAL, 0..255, com o REPOUSO EM 128. Isso
