@@ -30,6 +30,219 @@ arquivo; onde nao houver evidencia, o texto diz que nao ha.
   Zeebx (Rust), Zeemu (C++) e Zeebo-LLE.
 
 
+## Sessão de equiparação com o zeebx (2026-09-13)
+
+O objetivo desta rodada foi equiparar o Zeebulator ao `zeebx` (branch `pr-2`,
+topo `4f1333b`) **por medição**. Regra que valeu para tudo aqui: nenhuma
+afirmação lida no `zeebx` entrou sem ser re-verificada neste corpus, com a nossa
+instrumentação. O resultado não foi o que a regra sugere — **três das
+transferências não se confirmaram**, cada uma por um motivo diferente, e só
+apareceram porque foram medidas em vez de copiadas.
+
+### Eixos do controle: o valor que o aparelho usa está escrito no jogo
+
+O `zeebx` corrigiu o eixo analógico para um byte `0..255` com repouso em 128.
+Medi no nosso corpus antes de aplicar: `funsoccer.mod` (Super League), em
+`0x001ed504`, faz
+
+```text
+mvn   r0, #0x7f        ; r0 = -128
+sxtah r4, r0, r4       ; valor = (int16)eixo - 128
+strh  r4, [r2]         ; quatro eixos, gravados em halfword
+```
+
+Ou seja, o jogo subtrai 128 para achar o centro. Havia **três defeitos nossos**
+na mesma fronteira: repouso em zero (que o jogo lê como `-128`, o manche
+encostado no batente), faixa declarada como 16 bits com sinal, e o UID do eixo X
+valendo `0x0106C40C` — que é UID de **botão**, o mesmo que o nosso próprio
+código já usava. Eixo e botão com o mesmo UID não coexistem: o jogo varre a
+tabela do `GetAxesInfo` procurando UID de eixo, não acha nenhum para o X, e
+nunca guarda o campo dele.
+
+Confirmação posterior, por fonte primária: o arquivo do próprio console,
+`research/sources/zeemu/rootfs/sys/hid_devices.cfg`, traz quatro entradas de
+controle de dois fabricantes diferentes, e **todas as quatro** declaram
+`AXIS:X:0x0106c4d0`.
+
+### UIDs de botão: o sul está confirmado, o resto não está medido
+
+O `zeebx` corrigiu o pareamento dos botões de face. O valor que ele **mediu**
+para o sul (`0x0106C40B`) é exatamente o que este projeto já usava. Oeste,
+leste e norte seguem sem medição de nenhum dos dois lados — o próprio autor
+escreve isso — e a entrada do controle do Zeebo (`VID:0x1EAA:PID:0x0135`), onde
+ele encontra a troca espelhada, **não existe na nossa cópia do arquivo**. Trocar
+os rótulos seria substituir um palpite por outro. Está anotado no código, onde
+alguém iria mexer.
+
+### Objetos de buffer do OpenGL: a hipótese não transferiu
+
+O `zeebx` implementou objetos de buffer e o Prey Evil passou a rodar lá.
+Aqui o `prey3d.mod` carrega **105 nomes `gl*`**, incluindo três variantes de
+cada função de buffer (`glBindBufferARB/OES/QUALCOMM`, `glBufferData*`,
+`glGenBuffers*`), e o nosso core não tem uma linha sobre o assunto. Parecia caso
+fechado.
+
+Instrumentei o `eglGetProcAddress` antes de implementar nada. **O Prey Evil
+nunca o chama.** Zero pedidos. Os 105 nomes são uma tabela de extensões que o
+engine carrega e não usa. Implementar buffer objects não mudaria nada aqui.
+
+Onde ele realmente para, medido com `ZEEB_TRACE_HE=1`: `HandleEvent(EVT_APP_START)`
+devolve 0 — no BREW, falso no start significa que o applet **recusou iniciar**. A
+última chamada antes da cadeia de falha é o **slot 9 do objeto QEGL**, e o
+chamador lê o resultado de um buffer na pilha (`sp+0x10`) que a nossa
+implementação nunca escreve. Não corrigi: o slot veio de outro título, com forma
+de chamada diferente, e escrever um valor adivinhado ali faz o convidado
+desreferenciar um ponteiro inventado.
+
+### Modo do processador: correto por acidente, agora correto de propósito
+
+O `zeebx` também ajustou o processador para modo usuário. Varri os 62 títulos:
+**um** lê o CPSR e testa os bits de modo — `chessbots`, o título do container
+SWVARC, motor da SuperScape. Em `chessbots.mod 0x0019a870`:
+
+```text
+mrs  r0, cpsr
+tst  r0, #0xf                  ; bits baixos do modo
+bxeq lr                        ; modo usuário -> sai em segurança
+mrc  p15, #0, r1, c2, c0, #0   ; senão: lê o TTBR0 e caminha na MMU
+```
+
+O módulo só caminha na tabela de páginas se achar que está em modo privilegiado.
+Nosso `Reset()` fazia `cpsr_ = 0`, e **zero não é um modo ARM** (User `0x10`,
+FIQ `0x11`, IRQ `0x12`, Supervisor `0x13`, Abort `0x17`, Undefined `0x1B`,
+System `0x1F`).
+
+**Isto não conserta sintoma nenhum**, e está escrito no commit: `0x10 & 0xf == 0`,
+igual a zero, então o `chessbots` já tomava o caminho seguro. Medido antes e
+depois: 1015 cores nos dois casos. A mudança existe para o valor deixar de ser
+impossível — um convidado que teste com `and #0x1f; cmp #0x10` veria a diferença,
+e nenhum dos 62 faz isso hoje.
+
+### `GetDestination` sem `AddRef`: defeito real, consequência nenhuma
+
+O código do próprio SDK da Qualcomm (`utgifviewer.c`, `UTest_Enter`) prova a
+convenção: `pib = IDISPLAY_GetDestination(...)` seguido de `IBITMAP_Release(pib)`,
+sem `AddRef` no meio — **as duas** funções entregam uma referência que o chamador
+possui. Nós devolvíamos o ponteiro puro.
+
+Medido com um contador real instalado no bitmap do dispositivo (`ZEEB_LOG_BMPREF`):
+**82 movimentos, todos `Release`, zero `AddRef`, contador terminando em −81.**
+Depois da correção: 84/84, zero negativos.
+
+**Mas o critério de aceitação não foi atingido**, e isso fica escrito: A/B com o
+mesmo binário (`ZEEB_NO_BITMAP_ADDREF=1`) produz capturas **byte a byte
+idênticas** — mesmo md5. A razão é arquitetural: o modo de falha descrito no
+`zeebx` precisa de um contador que destrua o objeto em zero e de uma lista de
+livres que recicle o endereço. O nosso bitmap de dispositivo é imortal, em
+endereço fixo. O excesso de `Release` era real e não tinha consequência.
+
+### Módulos de extensão: o `a3d` passou a rodar
+
+O `zeebx` carrega módulos de extensão do pacote. Medido aqui: o `a3d`
+(Action Hero 3D, `mod/274259`) pede a classe `0x010292c3` e recebe
+`ECLASSNOTSUPPORT`. O manifesto `mif/12875.mif` do módulo `imicro3d.mod`
+**declara exatamente essa classe**. Dois fatos independentes se encontrando.
+
+O mecanismo do BREW: um `.mif` **sem registro de applet** é de extensão, e o
+registro de 8 bytes dele diz que classe fornece. Quando o `ISHELL_CreateInstance`
+não conhece a classe, o carregador sobe o `.mod` da extensão, chama o
+`AEEMod_Load` dela e depois o `IModule::CreateInstance` — o objeto que volta é
+código do jogo rodando de verdade, não uma interface nossa.
+
+Resultado, com A/B pelo mesmo binário (`ZEEB_NO_EXTENSION=1`):
+
+| | sem extensão | com extensão |
+|---|---|---|
+| janela | 2 cores | 6 cores |
+| FBO | nunca chegou ao tick 30 | 3 cores |
+| subsistemas | nenhum | `FILEMGR` ×93, `MEDIAADPCM` ×22, `THREAD`, `HEAP`, `GRAPHICS`, `MEMASTREAM` |
+| tela | branca | polígono desenhado |
+| som | mudo | música tocando |
+
+O áudio é a confirmação mais forte e veio de fora do emulador: o dono do projeto
+reconheceu a música do jogo de outro ambiente. Nenhuma contagem de pixel prova
+que um codec funciona; ouvir prova.
+
+**Os dois métodos de captura discordam na magnitude** (6 cores na janela contra 3
+no FBO), então isto entra como "progrediu e está desenhando", **não** como "a tela
+do jogo funciona".
+
+### Kingdom Hearts: reproduzível agora, e progrediu sem desenhar
+
+O `swv21brew.mod` (extensão da SuperScape) **não existia na nossa cópia do NAND**.
+Com o pacote completo que o dono do projeto forneceu — uma versão de BREW de
+telefone injetada, não uma build de Zeebo — ele passou a ser reproduzível:
+
+```text
+cls=0x0102bbfc -> EXTENSAO OK (obj=0x803009e0)
+```
+
+Ele recebe o objeto e passa a executar 10 ticks com código da extensão; o
+controle sem extensão não executa nenhum. **A tela continua branca** nos dois
+casos. Falta a segunda classe que ele pede, `0x0100a004`, que nenhum `.mif` do
+corpus fornece — provavelmente classe de firmware, não de extensão. Não foi
+inventado *stub* para ela.
+
+Isto também corrige uma afirmação minha anterior: eu havia escrito que o
+`swv21brew` "não existe". Ele existe; **não estava na nossa mídia**. A diferença
+importa.
+
+### Configuração por jogo na GUI: o `cnk2` subia morto
+
+Medido: subindo o `cnk2` exatamente como a GUI subia, sem orçamento de passos,
+
+```text
+warning: exceeded 64000000 steps without returning -- aborting this call
+CreateInstance did not produce a trustworthy applet pointer -- stopping.
+```
+
+Com o orçamento que ele precisa (186486543, medido com `ZEEB_LOG_STEPS`) ele
+roda. O emulador já honrava `ZEEB_MAX_STEPS`; faltava a GUI ter de onde tirar o
+número. O manifesto agora aceita configuração por jogo, e a forma antiga
+continua valendo:
+
+```json
+"274214": 17308036
+"274259": { "clsid": 17308016, "max_steps": 186486543,
+            "env": { "ZEEB_GL_SOFT": "1" } }
+```
+
+Verificado de ponta a ponta dirigindo a GUI (Xvfb + `xdotool`):
+
+```text
+[gui] lancando Crash Bandicoot Nitro Kart 3D (pasta 274214, clsid 0x01081984)
+[gui]   env: ZEEB_MAX_STEPS=186486543
+[title] Zeebulator - cnk2
+"exceeded 64000000": 0 ocorrências
+337 ticks
+```
+
+Em título sem medida (`activitycenter`) o log mostra `env: (vazio)`: a GUI não
+inventa orçamento. Só `cnk2` e `fifa09` têm medida, e só eles entraram.
+
+**O que não foi resolvido**: a emulação continua rodando **fora** do processo da
+GUI, então abre uma segunda janela em vez de o jogo aparecer dentro dela. Isso é
+a Fase 2 da GUI e não foi tocado.
+
+### Um erro de medição meu, que vale registrar
+
+Ao verificar o `cnk2` pela GUI, vi `exceeded 64000000` logo depois da linha de
+lançamento e concluí que a flag não chegava. Estava errado em dois níveis: a
+linha `[gui] lancando` é impressa **antes** do `Start`, então aparece mesmo
+quando o lançamento é **recusado**; e a recusa só ia para a barra de status, nunca
+para o stderr. O aviso que eu li era do processo **anterior**. Duas correções
+saíram daí: o log de argv e ambiente, e `[gui] RECUSADO: ...` no stderr.
+
+É a quarta vez nesta base em que o defeito estava no instrumento, não no
+emulador. Registro porque o padrão se repete: quando uma medição contradiz a
+expectativa, o instrumento é o primeiro suspeito.
+
+### O que o `zeebx` deu de útil mesmo sem transferir
+
+Em nenhum dos casos o trabalho foi perdido, porque o valor dele está em apontar
+onde olhar. As três lacunas acima viraram, cada uma, um diagnóstico medido
+nosso — e duas viraram correção (eixos e CPSR).
+
 ## Resumo Geral do Catálogo (63 Títulos de Execução + 4 Pastas de Recursos)
 
 A análise combinada de bytecode, assets e telemetria revelou que o catálogo oficial do Zeebo
