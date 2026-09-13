@@ -1126,6 +1126,49 @@ transformou um "boot parcial" silencioso num erro honesto com causa localizada.
 
 ---
 
+### Auditoria do HLE: o que falta, comparado com o zeebx
+
+Levantamento pedido pelo dono do projeto: "o que falta pra esse emulador HLE se
+comparado com o zeebx, e o que os jogos pedem?". Método: extrair as constantes de
+classe do zeebx (`src/*.rs`, 57 constantes nomeadas, 32 usadas em despacho),
+extrair o que nós registramos e atendemos, e comparar.
+
+**A primeira comparação estava errada, e do jeito que ele avisou que estaria.** A
+varredura inicial achou 18 "faltando". Dessas, 11 são IIDs de interface, não
+classes — e o nosso `GlHle::EglQueryInterface` **já trata todos os oito** de
+EGL/GLES (`0x0103d8dd`, `d8ea`, `d8ed`, `d8ee`, `0x010434cc`, `0x010459b1`,
+`0x01051834`, `0x01058546`). Outras três (`HEAP`, `UNZIPSTREAM`, `MD5`) têm HLE
+próprio. A família multimídia inteira é registrada num laço, que a primeira
+varredura não viu. **Sobram quatro lacunas reais:**
+
+| ID | nome | estado |
+|---|---|---|
+| `0x01001029` | IID que o zeebx chama de `ITransform` | 0 referências aqui |
+| `0x01006c01` | `AEECLSID_LCT_SIMCARDCTL` | 0 referências — ver abaixo |
+| `0x01005000` | `AEECLSID_WEB` (`IWeb`) | 0 implementação; só o nome na tabela NID |
+| `0x0102cce1` | `AEECLSID_CIPHER_FACTORY` | 0 implementação; só o nome na tabela NID |
+
+#### `SIMCARDCTL`: implementar seria piorar
+
+O Z-Wheel pede `0x01006c01` e recebe `ECLASSNOTSUPPORT` — medido no nosso log
+(`[createinstance] cls=UNKNOWN (0x01006c01) -> UNKNOWN (ECLASSNOTSUPPORT)`, logo
+depois de um `[hle call]` do shell). O impulso natural é oferecer a classe. O
+zeebx mediu o contrário, e com detalhe:
+
+> - `CreateInstance` **falha** → estado `0x27`; o jogo chama a rotina que **avança
+>   a interface** e chega ao formulário de instruções do z-pad. **É o único dos
+>   três que leva o jogo adiante.**
+> - Slot 3 devolve zero → estado `0x28`; o jogo **não faz nada** com ele. A tela
+>   fica onde está, calada.
+> - Slot 3 devolve não-zero → estado `1`, e o jogo mostra `Showing SIM Error dialog`.
+>
+> *"Oferecer a classe silencia a mensagem e, junto com ela, o avanço: foi assim
+> que a tela de boas-vindas ficou parada."*
+
+O próprio código deles diz *"Hoje não chega aqui — a classe não é oferecida"*.
+**A falha é o caminho que faz o jogo andar.** Nosso comportamento atual está
+certo, e fica escrito para que ninguém o "conserte".
+
 ### Auditoria: onde a instrumentação escreve
 
 Achado por acidente durante a caça ao escritor do nó do `abd`: duas chaves de
