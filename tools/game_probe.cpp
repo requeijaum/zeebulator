@@ -3118,7 +3118,7 @@ int main(int argc, char** argv) {
   // requisicao terminou, e ela nao terminou. O log e o que mede se o jogo espera
   // para sempre ou segue sem a resposta -- se esperar, o passo seguinte e
   // entregar a falha pelo callback, e nao inventar uma resposta.
-  {
+  if (std::getenv("ZEEB_NO_WEB") == nullptr) {
     auto web_log = std::make_shared<std::map<uint32_t, uint64_t>>();
     std::vector<zeebulator::HleRuntime::HleFunction> web_methods(8);
     for (uint32_t slot = 0; slot < web_methods.size(); ++slot) {
